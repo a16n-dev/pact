@@ -1,0 +1,19 @@
+packages:
+  - "packages/*"
+
+catalog:
+  '@cloudflare/workers-oauth-provider': ^0.7.0
+  '@cloudflare/workers-types': ^4
+  '@types/qrcode-generator': ^1.0.6
+  dayjs: ^1.11.13
+  eslint: ^9
+  eslint-config-prettier: ^10
+  eslint-plugin-unused-imports: ^4
+  hono: ^4
+  nanoid: ^5.1.7
+  prettier: ^3
+  qrcode-generator: ^1.4.4
+  typescript: ~6.0.3
+  typescript-eslint: ^8
+  vitest: ^3
+  zod: 4.4.1

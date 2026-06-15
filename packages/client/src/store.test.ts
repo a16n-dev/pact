@@ -1,0 +1,576 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Store, type SeedSet, type StoreDomain, type StoreOptions } from './store';
+import { InMemoryAdapter } from './memoryAdapter';
+import { Migrator } from './migrator';
+import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
+import type { BaseDocument } from './types';
+
+type Widget = BaseDocument & { name: string; upgraded?: boolean };
+
+const SYNC = { syncUrl: 'https://sync.test', syncToken: 'tok' };
+
+function mkDoc(id: string, name: string, updatedAt: string, by = 'us/1'): Widget {
+  return {
+    id,
+    schemaVersion: 1,
+    createdAt: updatedAt,
+    updatedAt,
+    createdBy: by,
+    updatedBy: by,
+    deletedAt: null,
+    deletedBy: null,
+    name,
+  };
+}
+
+function setup(domain: StoreDomain = {}, options?: StoreOptions) {
+  const adapter = new InMemoryAdapter();
+  const store = new Store(adapter, null, domain, options);
+  return { adapter, store };
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('Store CRUD + tombstones', () => {
+  it('create stamps base fields, persists, and emits a change', async () => {
+    const { store } = setup();
+    const onChange = vi.fn();
+    store.on('change', onChange);
+    await store.setAuthor('us/1');
+    const w = await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    expect(w).toMatchObject({
+      id: 'w1',
+      name: 'Alpha',
+      createdBy: 'us/1',
+      updatedBy: 'us/1',
+      deletedAt: null,
+    });
+    expect(await store.get<Widget>('widgets', 'w1')).toMatchObject({ id: 'w1', name: 'Alpha' });
+    expect(onChange).toHaveBeenCalledWith('widgets');
+  });
+
+  it('update preserves createdAt/createdBy and bumps the editor', async () => {
+    const { store } = setup();
+    await store.setAuthor('us/1');
+    const created = await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.setAuthor('us/2');
+    const updated = await store.update<Widget>('widgets', 'w1', { name: 'Beta' });
+    expect(updated.name).toBe('Beta');
+    expect(updated.createdBy).toBe('us/1');
+    expect(updated.createdAt).toBe(created.createdAt);
+    expect(updated.updatedBy).toBe('us/2');
+  });
+
+  it('delete soft-deletes; get/list hide it but getIncludingDeleted returns it', async () => {
+    const { store } = setup();
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.create<Widget>('widgets', 'w2', { name: 'Beta' });
+    await store.delete('widgets', 'w2');
+
+    expect(await store.get<Widget>('widgets', 'w2')).toBeNull();
+    expect((await store.list<Widget>('widgets')).map((w) => w.id)).toEqual(['w1']);
+    expect((await store.getMany<Widget>('widgets', ['w1', 'w2'])).map((w) => w.id)).toEqual(['w1']);
+
+    const tomb = await store.getIncludingDeleted<Widget>('widgets', 'w2');
+    expect(tomb?.deletedAt).not.toBeNull();
+    expect(tomb?.deletedBy).toBe('us/1');
+  });
+});
+
+describe('Store migrate-on-read', () => {
+  it('upgrades a stale doc on read and lazily writes it back', async () => {
+    const registry = {
+      widgets: {
+        current: 2,
+        migrations: [{ from: 1, to: 2, up: (d: Widget) => ({ ...d, upgraded: true }) }],
+      },
+    };
+    const { adapter, store } = setup({ migrator: new Migrator(registry) });
+    await adapter.put('widgets', mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'));
+
+    const got = await store.get<Widget>('widgets', 'w1');
+    expect(got?.schemaVersion).toBe(2);
+    expect(got?.upgraded).toBe(true);
+
+    // write-back is fire-and-forget; let the microtask flush.
+    await new Promise((r) => setTimeout(r, 0));
+    const raw = await adapter.get<Widget>('widgets', 'w1');
+    expect(raw?.schemaVersion).toBe(2);
+  });
+});
+
+describe('Store author flow', () => {
+  it('setAuthor records the id, writes _config/author, and runs the domain hook', async () => {
+    const hook = vi.fn(async () => {});
+    const { adapter, store } = setup({ onSetAuthor: hook });
+    await store.setAuthor('us/1');
+
+    expect(await store.getCurrentAuthor()).toBe('us/1');
+    expect(hook).toHaveBeenCalledWith(store, 'us/1');
+    expect(await adapter.get('_config', 'author')).toMatchObject({ authorId: 'us/1' });
+  });
+
+  it('setAuthor rejects the system and local sentinel ids', async () => {
+    const { store } = setup();
+    await expect(store.setAuthor(SYSTEM_AUTHOR_ID)).rejects.toThrow();
+    await expect(store.setAuthor(LOCAL_AUTHOR_ID)).rejects.toThrow();
+  });
+
+  it('reassignLocalAuthor moves local-authored docs (incl. tombstone deletedBy) to a real id', async () => {
+    const { adapter, store } = setup();
+    const w = await store.create<Widget>('widgets', 'w1', { name: 'X' });
+    expect(w.createdBy).toBe(LOCAL_AUTHOR_ID);
+    await store.create<Widget>('widgets', 'w2', { name: 'Y' });
+    await store.delete('widgets', 'w2'); // soft-deleted while local: deletedBy === _local
+
+    await store.reassignLocalAuthor('us/9');
+
+    const after = await adapter.get<Widget>('widgets', 'w1');
+    expect(after?.createdBy).toBe('us/9');
+    expect(after?.updatedBy).toBe('us/9');
+
+    const tomb = await adapter.get<Widget>('widgets', 'w2');
+    expect(tomb?.createdBy).toBe('us/9');
+    expect(tomb?.deletedBy).toBe('us/9');
+  });
+});
+
+describe('Store pull (last-write-wins)', () => {
+  it('applies a server doc newer than the local copy and emits', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    const onChange = vi.fn();
+    store.on('change', onChange);
+    await adapter.put('widgets', mkDoc('w1', 'old', '2026-01-01T00:00:00.000Z'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              updatedAt: '2026-05-05T00:00:00.000Z',
+              data: mkDoc('w1', 'new', '2026-05-05T00:00:00.000Z'),
+            },
+          ],
+          cursor: 1,
+        })
+      )
+    );
+
+    const applied = await store.pull<Widget>('widgets');
+    expect(applied).toHaveLength(1);
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('new');
+    expect(onChange).toHaveBeenCalledWith('widgets');
+  });
+
+  it('skips a server doc older than a newer local edit, and does not emit', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    const onChange = vi.fn();
+    store.on('change', onChange);
+    await adapter.put('widgets', mkDoc('w1', 'local-new', '2026-05-05T00:00:00.000Z'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              data: mkDoc('w1', 'server-old', '2026-01-01T00:00:00.000Z'),
+            },
+          ],
+          cursor: 1,
+        })
+      )
+    );
+
+    const applied = await store.pull<Widget>('widgets');
+    expect(applied).toHaveLength(0);
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('local-new');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('applies on a timestamp tie (incoming wins)', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('w1', 'local', '2026-05-05T00:00:00.000Z'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              updatedAt: '2026-05-05T00:00:00.000Z',
+              data: mkDoc('w1', 'server', '2026-05-05T00:00:00.000Z'),
+            },
+          ],
+          cursor: 1,
+        })
+      )
+    );
+
+    const applied = await store.pull<Widget>('widgets');
+    expect(applied).toHaveLength(1);
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('server');
+  });
+
+  it('drains every page, advancing the cursor until hasMore is false', async () => {
+    const { store } = setup({}, SYNC);
+    const pageFor = (cursor: number) => {
+      // Two full pages (w1@cursor 0 -> 1, w2@cursor 1 -> 2) then an empty tail.
+      if (cursor === 0) {
+        return {
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              updatedAt: '2026-05-05T00:00:00.000Z',
+              data: mkDoc('w1', 'page1', '2026-05-05T00:00:00.000Z'),
+            },
+          ],
+          cursor: 1,
+          hasMore: true,
+        };
+      }
+      if (cursor === 1) {
+        return {
+          documents: [
+            {
+              id: 'w2',
+              collection: 'widgets',
+              updatedAt: '2026-05-05T00:00:00.000Z',
+              data: mkDoc('w2', 'page2', '2026-05-05T00:00:00.000Z'),
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        };
+      }
+      return { documents: [], cursor, hasMore: false };
+    };
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const cursor = Number(new URL(String(url)).searchParams.get('cursor'));
+      return jsonResponse(pageFor(cursor));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const applied = await store.pull<Widget>('widgets');
+    expect(applied.map((w) => w.id)).toEqual(['w1', 'w2']);
+    // One request per page; the loop stopped once hasMore was false.
+    const pullCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'));
+    expect(pullCalls).toHaveLength(2);
+    expect(String(pullCalls[0][0])).toContain('cursor=0');
+    expect(String(pullCalls[1][0])).toContain('cursor=1');
+  });
+});
+
+describe('Store pull-on-read', () => {
+  it('fires a background pull on read when enabled, landing server changes', async () => {
+    const { adapter, store } = setup({}, { ...SYNC, pullOnRead: true });
+    await adapter.put('widgets', mkDoc('w1', 'old', '2026-01-01T00:00:00.000Z'));
+    const fetchMock = vi.fn(async (..._args: unknown[]) =>
+      jsonResponse({
+        documents: [
+          {
+            id: 'w1',
+            collection: 'widgets',
+            updatedAt: '2026-05-05T00:00:00.000Z',
+            data: mkDoc('w1', 'new', '2026-05-05T00:00:00.000Z'),
+          },
+        ],
+        cursor: 1,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    // The read resolves immediately against local state...
+    expect((await store.list<Widget>('widgets'))[0].name).toBe('old');
+    // ...while the background pull lands the newer server copy.
+    await vi.waitFor(async () => {
+      expect((await adapter.get<Widget>('widgets', 'w1'))?.name).toBe('new');
+    });
+
+    // A second read inside the throttle window must not pull again.
+    await store.list<Widget>('widgets');
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'))).toHaveLength(1);
+  });
+
+  it('does not pull on read when the option is off', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('w1', 'x', '2026-01-01T00:00:00.000Z'));
+    const fetchMock = vi.fn(async () => jsonResponse({ documents: [], cursor: 0 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.list<Widget>('widgets');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('Store realtime enablement', () => {
+  it('opens a realtime socket after registering on a fresh store', async () => {
+    // Regression: Store.create used to drop the realtime flag when no client
+    // doc existed yet, so registering on a fresh install left realtime dead
+    // until the next app restart.
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      url: string;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((e: { data: string }) => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        FakeWebSocket.instances.push(this);
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/register')) return jsonResponse({ clientId: 'cl/x', token: 'tok' });
+        if (u.includes('/info')) return jsonResponse({ realtime: true });
+        return jsonResponse({ documents: [], cursor: 0 });
+      })
+    );
+
+    const store = await Store.create(new InMemoryAdapter(), null, {}, { realtime: true });
+    const res = await store.registerClient('https://sync.test', 'pw', 'My Device');
+    expect(res.ok).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+    expect(FakeWebSocket.instances[0].url).toContain('wss://sync.test/realtime?token=tok');
+  });
+});
+
+describe('Store pushAll', () => {
+  it('pushes every doc, including system-authored seeds', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('seed', 'S', '2026-01-01T00:00:00.000Z', SYSTEM_AUTHOR_ID));
+    await adapter.put('widgets', mkDoc('real', 'R', '2026-01-01T00:00:00.000Z', 'us/1'));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ accepted: 2, skipped: 0 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.pushAll();
+
+    const pushCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/sync/push'));
+    expect(pushCall).toBeDefined();
+    const body = JSON.parse((pushCall![1] as RequestInit).body as string) as {
+      documents: { id: string }[];
+    };
+    expect(body.documents.map((d) => d.id).sort()).toEqual(['real', 'seed']);
+  });
+});
+
+describe('Store.seed', () => {
+  const seedSet = (version: string, name = 'Garlic'): SeedSet => ({
+    version,
+    docs: new Map([['widgets', [{ id: 'w-seed', name }]]]),
+  });
+
+  it('writes system-authored docs and records the version marker', async () => {
+    const { store } = setup();
+    const { written } = await store.seed(seedSet('v1'));
+    expect(written).toBe(1);
+    expect(await store.get<Widget>('widgets', 'w-seed')).toMatchObject({
+      name: 'Garlic',
+      createdBy: SYSTEM_AUTHOR_ID,
+      updatedBy: SYSTEM_AUTHOR_ID,
+    });
+  });
+
+  it('is a no-op while the stored version matches', async () => {
+    const { adapter, store } = setup();
+    await store.seed(seedSet('v1'));
+    const before = await adapter.get<Widget>('widgets', 'w-seed');
+    expect((await store.seed(seedSet('v1', 'Changed'))).written).toBe(0);
+    expect(await adapter.get<Widget>('widgets', 'w-seed')).toEqual(before);
+  });
+
+  it('applies a new version but skips docs whose content is unchanged', async () => {
+    const { adapter, store } = setup();
+    await store.seed(seedSet('v1'));
+    const before = await adapter.get<Widget>('widgets', 'w-seed');
+    const { written } = await store.seed(seedSet('v2'));
+    expect(written).toBe(0);
+    // No timestamp churn: the doc was not rewritten just to bump updatedAt.
+    expect(await adapter.get<Widget>('widgets', 'w-seed')).toEqual(before);
+    // ...but the marker advanced, so the next call is a single read again.
+    expect((await store.seed(seedSet('v2'))).written).toBe(0);
+  });
+
+  it('updates untouched docs when their content changes', async () => {
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    const { written } = await store.seed(seedSet('v2', 'Roasted garlic'));
+    expect(written).toBe(1);
+    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Roasted garlic');
+  });
+
+  it('never clobbers user-edited docs', async () => {
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    await store.setAuthor('us/1');
+    await store.update<Widget>('widgets', 'w-seed', { name: 'Mine' });
+    await store.seed(seedSet('v2', 'Roasted garlic'));
+    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Mine');
+  });
+
+  it('fills undefined fields on user-edited docs without touching their values', async () => {
+    type Enriched = Widget & { note?: string | null };
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    await store.setAuthor('us/1');
+    await store.update<Widget>('widgets', 'w-seed', { name: 'Mine' });
+
+    const { written } = await store.seed({
+      version: 'v2',
+      docs: new Map([['widgets', [{ id: 'w-seed', name: 'Garlic', note: 'Allium' }]]]),
+    });
+
+    expect(written).toBe(1);
+    const doc = await store.get<Enriched>('widgets', 'w-seed');
+    expect(doc?.name).toBe('Mine'); // user's value kept
+    expect(doc?.note).toBe('Allium'); // previously-undefined field filled
+    expect(doc?.updatedBy).toBe('us/1'); // still author-touched for future seeds
+  });
+
+  it('does not fill fields an author explicitly set to null', async () => {
+    type Enriched = Widget & { note?: string | null };
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    await store.setAuthor('us/1');
+    await store.update<Enriched>('widgets', 'w-seed', { note: null });
+
+    await store.seed({
+      version: 'v2',
+      docs: new Map([['widgets', [{ id: 'w-seed', name: 'Garlic', note: 'Allium' }]]]),
+    });
+
+    expect((await store.get<Enriched>('widgets', 'w-seed'))?.note).toBeNull();
+  });
+
+  it('never resurrects user-deleted docs', async () => {
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    await store.setAuthor('us/1');
+    await store.delete('widgets', 'w-seed');
+    await store.seed(seedSet('v2'));
+    expect(await store.get<Widget>('widgets', 'w-seed')).toBeNull();
+  });
+
+  it('force re-applies even when the version matches', async () => {
+    const { store } = setup();
+    await store.seed(seedSet('v1'));
+    await store.seed(seedSet('v1', 'Changed'), { force: true });
+    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Changed');
+  });
+});
+
+describe('Store outbox (durable push retry)', () => {
+  // A fetch mock whose push leg fails until `online` flips true; pull always
+  // returns an empty page. Records each pushed batch body for assertions.
+  function syncMock(state: { online: boolean }) {
+    const pushedBatches: { documents: { data: Widget }[] }[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/sync/push')) {
+        if (!state.online) throw new Error('offline');
+        pushedBatches.push(JSON.parse((init!.body as string) ?? '{}'));
+        return jsonResponse({ accepted: 1, skipped: 0 });
+      }
+      return jsonResponse({ documents: [], cursor: 0, hasMore: false });
+    });
+    return { fetchMock, pushedBatches };
+  }
+
+  it('keeps a write that failed to push and retries it on the next drain', async () => {
+    const { store } = setup({}, SYNC);
+    await store.setAuthor('us/1');
+    const state = { online: false };
+    const { fetchMock } = syncMock(state);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    // The local write survives and is queued even though the push failed.
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+    expect(await store.pendingPushCount()).toBe(1);
+
+    // Back online: a drain flushes the queue and clears it.
+    state.online = true;
+    await store.drainOutbox();
+    expect(await store.pendingPushCount()).toBe(0);
+    const pushCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'));
+    expect(pushCalls.length).toBeGreaterThanOrEqual(2); // initial failure + drain success
+  });
+
+  it('clears the queue immediately when the push succeeds online', async () => {
+    const { store } = setup({}, SYNC);
+    await store.setAuthor('us/1');
+    const { fetchMock } = syncMock({ online: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    // The mutation's own drain is fire-and-forget; wait for it to settle.
+    await vi.waitFor(async () => expect(await store.pendingPushCount()).toBe(0));
+  });
+
+  it('coalesces repeated edits of one doc into a single push of the latest version', async () => {
+    const { store } = setup({}, SYNC);
+    await store.setAuthor('us/1');
+    const state = { online: false };
+    const { fetchMock, pushedBatches } = syncMock(state);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.create<Widget>('widgets', 'w1', { name: 'v1' });
+    await store.update<Widget>('widgets', 'w1', { name: 'v2' });
+    // One entry for the doc, not one per edit.
+    expect(await store.pendingPushCount()).toBe(1);
+
+    state.online = true;
+    await store.drainOutbox();
+    expect(await store.pendingPushCount()).toBe(0);
+    // The drained push carried the latest version.
+    const lastBatch = pushedBatches[pushedBatches.length - 1];
+    expect(lastBatch.documents[0].data.name).toBe('v2');
+  });
+
+  it('leaves writes queued until an identity is claimed', async () => {
+    const { store } = setup({}, SYNC);
+    // No setAuthor: still the local-author placeholder, which the server rejects.
+    const { fetchMock } = syncMock({ online: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.drainOutbox();
+    // Drain is a no-op pre-claim; the write stays queued and no push is attempted.
+    expect(await store.pendingPushCount()).toBe(1);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'))).toHaveLength(0);
+  });
+
+  it('does not queue anything without a sync client', async () => {
+    const { store } = setup(); // no sync configured
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    expect(await store.pendingPushCount()).toBe(0);
+  });
+});

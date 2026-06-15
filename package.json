@@ -1,0 +1,21 @@
+{
+  "name": "@pact/monorepo",
+  "private": true,
+  "type": "module",
+  "description": "A generic, domain-agnostic document sync framework",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "tc": "pnpm -r --parallel tc",
+    "check": "pnpm -r --parallel check",
+    "format": "pnpm -r --parallel format",
+    "test": "pnpm -r --parallel --if-present test"
+  },
+  "devDependencies": {
+    "eslint": "catalog:",
+    "eslint-config-prettier": "catalog:",
+    "eslint-plugin-unused-imports": "catalog:",
+    "prettier": "catalog:",
+    "typescript": "catalog:",
+    "typescript-eslint": "catalog:"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@pact/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tc": "tsc --noEmit",
+    "check": "eslint . && prettier --check .",
+    "format": "eslint --fix . && prettier --write ."
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "catalog:",
+    "@pact/client": "workspace:*",
+    "dayjs": "catalog:",
+    "hono": "catalog:",
+    "nanoid": "catalog:",
+    "qrcode-generator": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/qrcode-generator": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
