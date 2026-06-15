@@ -1,4 +1,4 @@
-import type { BaseDocument } from './types';
+import type { BaseDocument } from '../types';
 
 export interface DatabaseAdapter {
   get<T extends BaseDocument>(collection: string, id: string): Promise<T | null>;

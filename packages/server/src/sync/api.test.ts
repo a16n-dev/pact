@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { pushDocuments } from './api';
 import { getDocumentsSince, upsertDocuments } from './db';
-import type { Env, SyncDocument } from './types';
+import type { Env, SyncDocument } from '../types';
 
 function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): SyncDocument {
   return {

@@ -8,7 +8,7 @@ import {
   listBlobHashes,
   wipeAllBlobRecords,
 } from './db';
-import type { Env, SyncDocument } from './types';
+import type { Env, SyncDocument } from '../types';
 
 export interface SyncHooks {
   /**

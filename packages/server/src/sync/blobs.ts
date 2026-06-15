@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { getBlob, listBlobs, putBlob } from './api';
-import type { Env } from './types';
+import type { Env } from '../types';
 
 type HonoEnv = { Bindings: Env };
 

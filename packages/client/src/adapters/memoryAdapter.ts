@@ -1,4 +1,4 @@
-import type { BaseDocument } from './types';
+import type { BaseDocument } from '../types';
 import type { DatabaseAdapter } from './adapter';
 
 export class InMemoryAdapter implements DatabaseAdapter {

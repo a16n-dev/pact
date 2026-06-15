@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { pushDocuments, pullDocument, pullDocumentsSince, type SyncHooks } from './api';
-import type { Env, PushRequest, PullResponse } from './types';
+import type { Env, PushRequest, PullResponse } from '../types';
 
 type HonoEnv = { Bindings: Env };
 

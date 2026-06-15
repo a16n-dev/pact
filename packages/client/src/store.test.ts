@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Store, type SeedSet, type StoreDomain, type StoreOptions } from './store';
-import { InMemoryAdapter } from './memoryAdapter';
+import { InMemoryAdapter } from './adapters/memoryAdapter';
 import { Migrator } from './migrator';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
 import type { BaseDocument } from './types';

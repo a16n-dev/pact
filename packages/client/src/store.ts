@@ -1,11 +1,15 @@
 import { nanoid } from 'nanoid';
 import dayjs from 'dayjs';
-import type { DatabaseAdapter } from './adapter';
-import type { BlobAdapter } from './blobAdapter';
+import type { DatabaseAdapter } from './adapters/adapter';
+import type { BlobAdapter } from './blobs/blobAdapter';
 import type { BaseDocument } from './types';
-import { SyncClient, registerClient as registerClientFetch, type RegisterResult } from './sync';
+import {
+  SyncClient,
+  registerClient as registerClientFetch,
+  type RegisterResult,
+} from './sync/sync';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
-import { RealtimeConnection } from './realtime';
+import { RealtimeConnection } from './sync/realtime';
 import { Migrator, noopMigrator } from './migrator';
 
 export interface StoreOptions {

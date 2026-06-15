@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import qrcode from 'qrcode-generator';
-import type { Env } from './types';
+import type { Env } from '../types';
 import { escapeHtml } from './html';
 
 export interface LandingOptions {

@@ -1,4 +1,4 @@
-import type { Store } from './store';
+import type { Store } from '../store';
 import type { BlobAdapter } from './blobAdapter';
 
 /**

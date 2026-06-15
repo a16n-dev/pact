@@ -1,4 +1,4 @@
-import type { SyncDocument, BlobRecord } from './types';
+import type { SyncDocument, BlobRecord } from '../types';
 
 // `seq` is the server-assigned monotonic write sequence (see schema.sql). It's
 // computed here, on the server, so the pull cursor never depends on a client's

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import type { OAuthHelpers, AuthRequest } from '@cloudflare/workers-oauth-provider';
 import { registerClient, timingSafeEqual } from './auth';
-import type { Env } from './types';
-import { escapeHtml } from './html';
+import type { Env } from '../types';
+import { escapeHtml } from '../landing/html';
 
 export interface OAuthAuthBranding {
   /** Page title text. Receives the connecting agent's display name. */

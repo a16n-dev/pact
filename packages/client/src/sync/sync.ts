@@ -1,4 +1,4 @@
-import type { BaseDocument } from './types';
+import type { BaseDocument } from '../types';
 import { fetchWithTimeout } from './http';
 
 interface SyncDocument {

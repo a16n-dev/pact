@@ -1,9 +1,9 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { handlePull, makePushHandler } from './handlers';
-import type { SyncHooks } from './api';
-import { handleBlobGet, handleBlobList, handleBlobPut } from './blobs';
+import { handlePull, makePushHandler } from './sync/handlers';
+import type { SyncHooks } from './sync/api';
+import { handleBlobGet, handleBlobList, handleBlobPut } from './sync/blobs';
 import {
   bumpClientLastSeen,
   extractBearerToken,
@@ -11,19 +11,19 @@ import {
   registerClient,
   timingSafeEqual,
   type ClientRow,
-} from './auth';
+} from './auth/auth';
 
 export { RealtimeDO } from './realtime';
 export { D1Adapter, type D1AdapterOptions } from './d1Adapter';
-export { createLandingApp, type LandingOptions } from './landing';
+export { createLandingApp, type LandingOptions } from './landing/landing';
 export {
   createOAuthAuthApp,
   type OAuthAuthOptions,
   type OAuthAuthBranding,
   type AuthIdentity,
-} from './oauthAuth';
+} from './auth/oauthAuth';
 export type { Env, SyncDocument, PushRequest, PushResponse, PullResponse } from './types';
-export type { ClientRow } from './auth';
+export type { ClientRow } from './auth/auth';
 export {
   pushDocuments,
   pullDocument,
@@ -33,15 +33,15 @@ export {
   getBlob,
   putBlob,
   listBlobs,
-} from './api';
-export type { SyncHooks, PushOptions, PushOutcome, PushResult } from './api';
+} from './sync/api';
+export type { SyncHooks, PushOptions, PushOutcome, PushResult } from './sync/api';
 export {
   bumpClientLastSeen,
   extractBearerToken,
   lookupClientByToken,
   registerClient,
   timingSafeEqual,
-} from './auth';
+} from './auth/auth';
 
 type Variables = { client: ClientRow };
 

@@ -5,7 +5,7 @@ import {
   pushDocuments,
   wipeAllDocumentsViaApi,
   type SyncHooks,
-} from './api';
+} from './sync/api';
 import type { Env } from './types';
 
 export interface D1AdapterOptions {
