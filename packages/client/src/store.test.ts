@@ -343,7 +343,7 @@ describe('Store realtime enablement', () => {
       'fetch',
       vi.fn(async (url: string) => {
         const u = String(url);
-        if (u.includes('/auth/register')) return jsonResponse({ clientId: 'cl/x', token: 'tok' });
+        if (u.includes('/auth/register')) return jsonResponse({ clientId: 'cl-x', token: 'tok' });
         if (u.includes('/info')) return jsonResponse({ realtime: true });
         return jsonResponse({ documents: [], cursor: 0 });
       })
@@ -572,5 +572,112 @@ describe('Store outbox (durable push retry)', () => {
     await store.setAuthor('us/1');
     await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
     expect(await store.pendingPushCount()).toBe(0);
+  });
+});
+
+describe('Store resyncFromScratch', () => {
+  // A registered _config/client doc: the credentials + identity that must
+  // survive the reset (unlike wipe, the install stays registered).
+  function clientDoc() {
+    return {
+      ...mkDoc('client', '', '2026-01-01T00:00:00.000Z'),
+      clientId: 'cl-1',
+      clientName: 'Dev',
+      url: SYNC.syncUrl,
+      token: SYNC.syncToken,
+    };
+  }
+
+  it('drops all local synced data and re-pulls from a fresh cursor, keeping _config', async () => {
+    const { adapter, store } = setup({ collections: ['widgets'] }, SYNC);
+    // Stale local world + sync bookkeeping that the reset must clear.
+    await adapter.put('widgets', mkDoc('w1', 'stale', '2026-01-01T00:00:00.000Z'));
+    await adapter.put('widgets', mkDoc('w2', 'gone-on-server', '2026-01-01T00:00:00.000Z'));
+    await adapter.put('_sync_meta', {
+      ...mkDoc('widgets', '', '2026-01-01T00:00:00.000Z'),
+      cursor: 5,
+      syncedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await adapter.put('_outbox', {
+      ...mkDoc('widgets-w1', '', '2026-01-01T00:00:00.000Z'),
+      collection: 'widgets',
+      docId: 'w1',
+    });
+    await adapter.put('_config', clientDoc());
+
+    const fetchMock = vi.fn(async (_url: unknown) =>
+      jsonResponse({
+        documents: [
+          {
+            id: 'w3',
+            collection: 'widgets',
+            updatedAt: '2026-05-05T00:00:00.000Z',
+            data: mkDoc('w3', 'from-server', '2026-05-05T00:00:00.000Z'),
+          },
+        ],
+        cursor: 1,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.resyncFromScratch();
+
+    // Local world is now exactly what the server returned — the stale local
+    // docs are gone, not merged.
+    expect((await adapter.getAll<Widget>('widgets')).map((w) => w.id)).toEqual(['w3']);
+    // The cursor was reset: the re-pull started from 0, not the stale 5.
+    const pullCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'));
+    expect(pullCalls).toHaveLength(1);
+    expect(String(pullCalls[0][0])).toContain('cursor=0');
+    // The outbox is dropped, not drained (its entries target old ids).
+    expect(await adapter.getAll('_outbox')).toHaveLength(0);
+    // _config survives, so the install stays registered + identified.
+    expect(await adapter.get('_config', 'client')).toMatchObject({ clientId: 'cl-1' });
+  });
+
+  it('clears cursors even when the immediate re-pull fails, so a later sync backfills', async () => {
+    const { adapter, store } = setup({ collections: ['widgets'] }, SYNC);
+    await adapter.put('widgets', mkDoc('w1', 'stale', '2026-01-01T00:00:00.000Z'));
+    await adapter.put('_sync_meta', {
+      ...mkDoc('widgets', '', '2026-01-01T00:00:00.000Z'),
+      cursor: 5,
+      syncedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await adapter.put('_config', clientDoc());
+
+    // The immediate re-pull fails (offline): resyncFromScratch must still
+    // resolve and leave the store in a re-pullable state.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline');
+      })
+    );
+    await expect(store.resyncFromScratch()).resolves.toBeUndefined();
+
+    // Local data was dropped and the stale cursor cleared; _config kept.
+    expect(await adapter.getAll('widgets')).toHaveLength(0);
+    expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
+    expect(await adapter.get('_config', 'client')).toMatchObject({ clientId: 'cl-1' });
+
+    // The reset cursor means the next foreground sync re-pulls from 0 and
+    // backfills the rewritten world — no data lost to the offline failure.
+    const fetchMock = vi.fn(async (_url: unknown) =>
+      jsonResponse({
+        documents: [
+          {
+            id: 'w9',
+            collection: 'widgets',
+            updatedAt: '2026-05-05T00:00:00.000Z',
+            data: mkDoc('w9', 'backfilled', '2026-05-05T00:00:00.000Z'),
+          },
+        ],
+        cursor: 1,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await store.pull<Widget>('widgets');
+    expect((await store.get<Widget>('widgets', 'w9'))?.name).toBe('backfilled');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('cursor=0');
   });
 });

@@ -25,8 +25,8 @@ export interface OAuthAuthOptions {
   /**
    * Mint the sync-client + OAuth identity for a freshly-authenticated agent.
    * Called once per successful authorize POST, after the password check
-   * passes. Lets the deploy package own its id conventions (e.g. `us/mcp-…`,
-   * `cl/…`) and pick the shape of props its agent sees later.
+   * passes. Lets the deploy package own its id conventions (e.g. `us-mcp…`,
+   * `cl-…`) and pick the shape of props its agent sees later.
    */
   buildIdentity: (context: { agentName: string }) => AuthIdentity;
 }

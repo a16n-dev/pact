@@ -1,3 +1,4 @@
+export * from './ids';
 export * from './adapters/adapter';
 export * from './adapters/memoryAdapter';
 export * from './blobs/blobAdapter';

@@ -70,10 +70,10 @@ const store = await Store.create(
   { realtime: true }
 );
 
-await store.setAuthor('us/alice');
+await store.setAuthor('us-alice');
 
 const recipes = store.collection('recipes');
-await recipes.create('r/123', { title: 'Soup', servings: 4 });
+await recipes.create('r-123', { title: 'Soup', servings: 4 });
 const live = await recipes.list();
 ```
 
@@ -133,8 +133,8 @@ An **author id** records who created/updated a document. Two ids are reserved:
 Identity flow:
 
 ```ts
-await store.setAuthor('us/alice');           // records current author in _config/author
-await store.reassignLocalAuthor('us/alice'); // rewrites _local docs to a real id so they can sync
+await store.setAuthor('us-alice');           // records current author in _config/author
+await store.reassignLocalAuthor('us-alice'); // rewrites _local docs to a real id so they can sync
 ```
 
 `onSetAuthor` lets a domain that models authors *as documents* (e.g. a `users/` collection) materialize that entity the first time an identity is set.

@@ -1,136 +1,46 @@
-import { nanoid } from 'nanoid';
 import dayjs from 'dayjs';
-import type { DatabaseAdapter } from './adapters/adapter';
-import type { BlobAdapter } from './blobs/blobAdapter';
-import type { BaseDocument } from './types';
+import { randomId } from '../ids';
+import type { DatabaseAdapter } from '../adapters/adapter';
+import type { BlobAdapter } from '../blobs/blobAdapter';
+import type { BaseDocument } from '../types';
 import {
   SyncClient,
   registerClient as registerClientFetch,
   type RegisterResult,
-} from './sync/sync';
-import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
-import { RealtimeConnection } from './sync/realtime';
-import { Migrator, noopMigrator } from './migrator';
-
-export interface StoreOptions {
-  syncUrl?: string;
-  syncToken?: string;
-  realtime?: boolean;
-  /**
-   * When true, every `get`/`getMany`/`list` kicks off a background pull for
-   * that collection (deduped per in-flight collection and throttled to
-   * `READ_PULL_THROTTLE_MS`). A no-op without sync credentials.
-   */
-  pullOnRead?: boolean;
-}
-
-// Floor on how often a single collection re-pulls in response to reads. Reads
-// fire on every render that touches a hook, so without this a busy screen
-// would spray pulls; realtime + foreground sync cover the gaps in between.
-const READ_PULL_THROTTLE_MS = 10_000;
-
-/**
- * Hooks injected by the consuming domain package. The Store treats stored
- * docs as opaque `BaseDocument`-shaped bags; this config tells it how to
- * validate writes, walk migrations, and enumerate known collections for
- * batch operations (pull-all, push-all). All fields are optional — when
- * omitted, the Store skips that step.
- */
-export interface StoreDomain {
-  /**
-   * Validate (and stamp `schemaVersion` on) a doc before it's written.
-   * Typically a Zod schema parse. Throws to reject the write.
-   */
-  validate?: (collection: string, doc: unknown) => unknown;
-  /**
-   * Migrator pre-bound to the domain's migration registry. Defaults to a
-   * no-op (docs pass through unchanged, currentVersion always returns 1).
-   */
-  migrator?: Migrator;
-  /**
-   * Collections the Store iterates over for `pushAll` / pull-all-on-reconnect.
-   * Omit to fall back to whatever the adapter currently has data for.
-   */
-  collections?: readonly string[];
-  /**
-   * Called from `setAuthor` after the current-author id is recorded, with
-   * the Store and the new author id. The generic Store only tracks *who* the
-   * current author is (in `_config/author`); domains that model the author as
-   * an actual document use this hook to materialize that entity (e.g. create
-   * a `users/<id>` doc). No-op when omitted.
-   */
-  onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
-}
-
-type ClientConfigDoc = BaseDocument & {
-  clientId: string;
-  clientName: string;
-  url: string;
-  token: string;
-};
-type AuthorConfigDoc = BaseDocument & { authorId: string };
-
-export interface ClientRegistration {
-  id: string;
-  name: string;
-  url: string;
-}
-
-type ChangeHandler = (collection: string) => void;
-
-/**
- * A versioned set of seed documents for `Store.seed`. `docs` entries carry the
- * document content (sans audit fields) plus its id; the Store stamps audit
- * fields and validates on write. `version` identifies the payload — seeding is
- * skipped entirely while the stored marker matches it, so derive it from the
- * seed content (e.g. a hash) or bump it manually on every seed change.
- */
-export interface SeedSet {
-  version: string;
-  docs: ReadonlyMap<string, ReadonlyArray<{ id: string } & Record<string, unknown>>>;
-}
-
-type SeedMarkerDoc = BaseDocument & { version: string };
-
-/** Field-wise equality ignoring audit timestamps — used to skip seed writes
- *  that would change nothing but `updatedAt`. */
-function seedContentEqual(a: BaseDocument, b: BaseDocument): boolean {
-  const strip = ({ createdAt: _c, updatedAt: _u, ...rest }: BaseDocument) => rest;
-  return deepEqual(strip(a), strip(b));
-}
-
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  const keysA = Object.keys(a).filter((k) => (a as Record<string, unknown>)[k] !== undefined);
-  const keysB = Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined);
-  if (keysA.length !== keysB.length) return false;
-  return keysA.every((k) =>
-    deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
-  );
-}
+} from '../sync/sync';
+import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../system';
+import { RealtimeConnection } from '../sync/realtime';
+import { Migrator, noopMigrator } from '../migrator';
+import type { ParsedId } from '../collection';
+import { SyncEngine } from './syncEngine';
+import { Collection } from './collectionRef';
+import { seedContentEqual } from './helpers';
+import type {
+  StoreOptions,
+  StoreDomain,
+  ClientConfigDoc,
+  AuthorConfigDoc,
+  ClientRegistration,
+  ChangeHandler,
+  SeedSet,
+  SeedMarkerDoc,
+} from './types';
 
 export class Store {
-  private syncClient: SyncClient | null;
   private realtime: RealtimeConnection | null = null;
   private realtimeEnabled: boolean;
-  private readonly pullOnReadEnabled: boolean;
-  private readonly lastReadPullAt = new Map<string, number>();
-  private readonly inFlightReadPulls = new Set<string>();
-  // Coalesces concurrent outbox drains: `drainTask` is the in-flight drain, so
-  // callers await the same one; `drainPending` flags that another drain was
-  // requested mid-flight, making the runner take one more pass (a write enqueued
-  // — or a retry requested — during a drain isn't stranded).
-  private drainTask: Promise<void> | null = null;
-  private drainPending = false;
   private changeHandlers = new Set<ChangeHandler>();
   private cachedAuthorId: string = LOCAL_AUTHOR_ID;
   private adapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly validate: (collection: string, doc: unknown) => unknown;
   private readonly collections: readonly string[];
+  private readonly idParser: (id: string) => ParsedId | null;
   private readonly onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
+  // Owns the push outbox, pulls, and cursors. Fed live views of this Store's
+  // author id + change emitter; its SyncClient is swapped in/out by the
+  // client-registration methods below.
+  private readonly sync: SyncEngine;
   /**
    * Sidecar for opaque byte blobs. Null on consumers that only deal in
    * JSON docs (e.g. CLI tools). A BlobStore requires a non-null blobs.
@@ -147,6 +57,7 @@ export class Store {
     this.blobs = blobs;
     this.migrator = domain.migrator ?? noopMigrator;
     this.collections = domain.collections ?? [];
+    this.idParser = domain.parseId ?? (() => null);
     this.onSetAuthor = domain.onSetAuthor;
     this.validate = (collection, doc) => {
       const stamped = {
@@ -155,35 +66,23 @@ export class Store {
       };
       return domain.validate ? domain.validate(collection, stamped) : stamped;
     };
-    this.syncClient =
+    this.realtimeEnabled = options?.realtime ?? false;
+    this.sync = new SyncEngine({
+      adapter: this.adapter,
+      migrator: this.migrator,
+      collections: this.collections,
+      pullOnRead: options?.pullOnRead ?? false,
+      getAuthorId: () => this.cachedAuthorId,
+      emit: (collection) => this.emit(collection),
+    });
+    this.sync.setSyncClient(
       options?.syncUrl && options.syncToken
         ? new SyncClient(options.syncUrl, options.syncToken)
-        : null;
-    this.realtimeEnabled = options?.realtime ?? false;
-    this.pullOnReadEnabled = options?.pullOnRead ?? false;
+        : null
+    );
     if (options?.syncUrl && options?.syncToken) {
       this.openRealtime(options.syncUrl, options.syncToken);
     }
-  }
-
-  /**
-   * Fire-and-forget background pull triggered by a read, when `pullOnRead` is
-   * on. Deduped while a pull for the collection is in flight and throttled to
-   * `READ_PULL_THROTTLE_MS` so re-renders don't spray requests. The applied
-   * docs emit `change`, which the UI layer turns into a refetch — and that
-   * refetch is throttled out here, so there's no read→pull→read loop.
-   */
-  private triggerReadPull(collection: string): void {
-    if (!this.pullOnReadEnabled || !this.syncClient) return;
-    if (collection.startsWith('_')) return;
-    if (this.inFlightReadPulls.has(collection)) return;
-    const now = dayjs().valueOf();
-    if (now - (this.lastReadPullAt.get(collection) ?? 0) < READ_PULL_THROTTLE_MS) return;
-    this.lastReadPullAt.set(collection, now);
-    this.inFlightReadPulls.add(collection);
-    void this.pull(collection)
-      .catch(() => {})
-      .finally(() => this.inFlightReadPulls.delete(collection));
   }
 
   private openRealtime(url: string, token: string): void {
@@ -195,13 +94,13 @@ export class Store {
       // Internal `_`-prefixed collections are per-store bookkeeping (e.g. the
       // `_seeds` marker); pulling another party's copy would clobber ours.
       onInvalidate: (collection) => {
-        if (!collection.startsWith('_')) void this.pull(collection);
+        if (!collection.startsWith('_')) void this.sync.pull(collection);
       },
       onReconnect: () => {
         // Regained connectivity: pull others' changes and flush any writes
         // whose push failed while we were offline.
-        void this.pullRegisteredCollections();
-        void this.drainOutbox().catch(() => {});
+        void this.sync.pullRegisteredCollections();
+        void this.sync.drainOutbox().catch(() => {});
       },
     });
     void this.realtime.start();
@@ -232,14 +131,6 @@ export class Store {
    */
   notifyBlobsChanged(): void {
     this.emit('_blobs');
-  }
-
-  private async pullRegisteredCollections(): Promise<void> {
-    const list =
-      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
-    await Promise.all(
-      list.filter((c) => !c.startsWith('_')).map((c) => this.pull(c).catch(() => {}))
-    );
   }
 
   static async create(
@@ -295,6 +186,14 @@ export class Store {
     return this.cachedAuthorId;
   }
 
+  /**
+   * Resolve a document id to its collection (and parts) via the domain's
+   * prefix map. Returns `null` for ids with an unknown prefix.
+   */
+  parseId(id: string): ParsedId | null {
+    return this.idParser(id);
+  }
+
   // Client registration / sync config
 
   /**
@@ -307,7 +206,7 @@ export class Store {
   async registerClient(url: string, password: string, clientName: string): Promise<RegisterResult> {
     const normalisedUrl = url.replace(/\/+$/, '');
     const existing = await this.adapter.get<ClientConfigDoc>('_config', 'client');
-    const clientId = existing?.clientId ?? `cl/${nanoid(10)}`;
+    const clientId = existing?.clientId ?? `cl-${randomId(10)}`;
     const result = await registerClientFetch(normalisedUrl, password, clientId, clientName);
     if (!result.ok) return result;
 
@@ -327,7 +226,7 @@ export class Store {
       url: normalisedUrl,
       token: result.token,
     } as ClientConfigDoc);
-    this.syncClient = new SyncClient(normalisedUrl, result.token);
+    this.sync.setSyncClient(new SyncClient(normalisedUrl, result.token));
     this.openRealtime(normalisedUrl, result.token);
     return result;
   }
@@ -350,7 +249,7 @@ export class Store {
 
   async clearClientRegistration(): Promise<void> {
     await this.adapter.delete('_config', 'client');
-    this.syncClient = null;
+    this.sync.setSyncClient(null);
     this.realtime?.stop();
     this.realtime = null;
   }
@@ -445,7 +344,7 @@ export class Store {
   }
 
   async get<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
-    this.triggerReadPull(collection);
+    this.sync.triggerReadPull(collection);
     const doc = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
     return doc?.deletedAt ? null : doc;
   }
@@ -460,7 +359,7 @@ export class Store {
   }
 
   async getMany<T extends BaseDocument>(collection: string, ids: string[]): Promise<T[]> {
-    this.triggerReadPull(collection);
+    this.sync.triggerReadPull(collection);
     const docs = await this.adapter.getMany<T>(collection, ids);
     return docs
       .map((doc) => this.migrateRead<T>(collection, doc) as T)
@@ -468,7 +367,7 @@ export class Store {
   }
 
   async list<T extends BaseDocument>(collection: string): Promise<T[]> {
-    this.triggerReadPull(collection);
+    this.sync.triggerReadPull(collection);
     const all = await this.adapter.getAll<T>(collection);
     return all
       .map((doc) => this.migrateRead<T>(collection, doc) as T)
@@ -478,7 +377,7 @@ export class Store {
   /** Like `list`, but includes soft-deleted docs (tombstones). Inspect
    *  `deletedAt` on each result to tell them apart. For debug/admin surfaces. */
   async listIncludingDeleted<T extends BaseDocument>(collection: string): Promise<T[]> {
-    this.triggerReadPull(collection);
+    this.sync.triggerReadPull(collection);
     const all = await this.adapter.getAll<T>(collection);
     return all.map((doc) => this.migrateRead<T>(collection, doc) as T);
   }
@@ -610,7 +509,7 @@ export class Store {
     } as unknown as T;
     const validated = this.validateDoc(collection, doc);
     await this.adapter.put(collection, validated);
-    await this.queuePush(collection, [validated.id]);
+    await this.sync.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
   }
@@ -634,7 +533,7 @@ export class Store {
     } as T;
     const validated = this.validateDoc(collection, updated);
     await this.adapter.put(collection, validated);
-    await this.queuePush(collection, [validated.id]);
+    await this.sync.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
   }
@@ -655,7 +554,7 @@ export class Store {
       deletedBy: authorId,
     };
     await this.adapter.put(collection, deleted);
-    await this.queuePush(collection, [deleted.id]);
+    await this.sync.queuePush(collection, [deleted.id]);
     this.emit(collection);
   }
 
@@ -679,7 +578,7 @@ export class Store {
       return this.validateDoc(collection, doc);
     });
     await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
-    await this.queuePush(
+    await this.sync.queuePush(
       collection,
       docs.map((doc) => doc.id)
     );
@@ -709,7 +608,7 @@ export class Store {
       docs.push(updated);
     }
     await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
-    await this.queuePush(
+    await this.sync.queuePush(
       collection,
       docs.map((doc) => doc.id)
     );
@@ -736,7 +635,7 @@ export class Store {
       });
     }
     await Promise.all(deleted.map((doc) => this.adapter.put(collection, doc)));
-    await this.queuePush(
+    await this.sync.queuePush(
       collection,
       deleted.map((doc) => doc.id)
     );
@@ -762,278 +661,58 @@ export class Store {
     this.emit(collection);
   }
 
-  async pushAll(): Promise<void> {
-    if (!this.syncClient) return;
-    const list =
-      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
-    for (const collection of list) {
-      if (collection.startsWith('_')) continue;
-      const raw = await this.adapter.getAll<BaseDocument>(collection);
-      const docs = raw.map((doc) => this.migrator.migrate<BaseDocument>(collection, doc));
-      if (docs.length > 0) {
-        await this.syncClient.push(collection, docs);
-      }
-    }
+  // Sync — thin delegations to the SyncEngine, preserving the public surface.
+
+  pushAll(): Promise<void> {
+    return this.sync.pushAll();
   }
 
-  /**
-   * Record documents as needing a push, then kick a drain. This replaces a
-   * fire-and-forget `push`: the queue entry is written to local storage first,
-   * so a push that fails — offline, server error, or the app dying mid-flight —
-   * is retried on the next drain instead of being silently lost. No-op without
-   * a sync client: a purely local store (CLI, the in-Worker D1 adapter) has
-   * nowhere to push and must not accumulate a queue.
-   */
-  private async queuePush(collection: string, ids: readonly string[]): Promise<void> {
-    if (!this.syncClient || ids.length === 0) return;
-    const now = dayjs().toISOString();
-    const author = this.cachedAuthorId;
-    const entries: OutboxDoc[] = ids.map((docId) => ({
-      id: outboxKey(collection, docId),
-      schemaVersion: this.migrator.currentVersion(OUTBOX),
-      createdAt: now,
-      updatedAt: now,
-      createdBy: author,
-      updatedBy: author,
-      deletedAt: null,
-      deletedBy: null,
-      collection,
-      docId,
-    }));
-    // Keyed by collection+id, so re-editing a still-pending doc overwrites its
-    // entry rather than queuing a duplicate — the drain sends the latest version.
-    if (this.adapter.putMany) await this.adapter.putMany(OUTBOX, entries);
-    else for (const entry of entries) await this.adapter.put(OUTBOX, entry);
-    this.emit(OUTBOX);
-    void this.drainOutbox().catch(() => {});
-  }
-
-  /**
-   * Push every queued document to the server, clearing entries the server
-   * accepts. The single mechanism that moves local writes upstream; safe to
-   * call anytime. Triggered on each mutation, on realtime reconnect, and on a
-   * full sync. Concurrent calls coalesce. Stops on the first failing collection
-   * and leaves the rest queued for the next trigger rather than spinning while
-   * offline.
-   */
-  async drainOutbox(): Promise<void> {
-    if (!this.syncClient) return;
-    // Pre-identity writes are local-authored and the server rejects them (a
-    // client must claim an identity first). Leave them queued — the claim flow
-    // pushes them once an author is assigned.
-    if (this.cachedAuthorId === LOCAL_AUTHOR_ID) return;
-    // Mark a drain wanted *before* checking for one in flight: a concurrent
-    // drain sees this flag and takes another pass, and we await that same task
-    // so a coalesced caller still observes a settled drain. The window between
-    // the loop's last `drainPending` check and clearing `drainTask` is fully
-    // synchronous, so no request can slip through unobserved.
-    this.drainPending = true;
-    if (!this.drainTask) this.drainTask = this.runDrain();
-    return this.drainTask;
-  }
-
-  private async runDrain(): Promise<void> {
-    try {
-      while (this.drainPending) {
-        this.drainPending = false;
-        await this.drainOnce();
-        // Loop only if another drain was requested mid-pass (a fresh write, or a
-        // retry after connectivity returned). A failed pass leaves its entries
-        // queued and, absent a new request, exits — no spin while offline.
-      }
-    } finally {
-      // Clear here, in the same synchronous continuation as the loop's exit, so
-      // there's no gap in which a coalescing caller could grab a settled task.
-      this.drainTask = null;
-    }
-  }
-
-  /**
-   * One drain pass: group queued entries by collection, push each group's
-   * current document versions, and remove the entries a push accepted. A
-   * group whose push throws is left queued for a later pass.
-   */
-  private async drainOnce(): Promise<void> {
-    const entries = await this.adapter.getAll<OutboxDoc>(OUTBOX);
-    if (entries.length === 0) return;
-
-    const byCollection = new Map<string, OutboxDoc[]>();
-    for (const entry of entries) {
-      const group = byCollection.get(entry.collection);
-      if (group) group.push(entry);
-      else byCollection.set(entry.collection, [entry]);
-    }
-
-    let changed = false;
-    for (const [collection, group] of byCollection) {
-      // Push the docs' *current* versions, coalescing edits made since they were
-      // queued. A doc that's vanished locally (hard-deleted before its push
-      // landed) has nothing to send, but its entry is still cleared.
-      const docs: BaseDocument[] = [];
-      for (const entry of group) {
-        const doc = await this.adapter.get<BaseDocument>(collection, entry.docId);
-        if (doc) docs.push(this.migrator.migrate<BaseDocument>(collection, doc));
-      }
-      try {
-        if (docs.length > 0) await this.syncClient!.push(collection, docs);
-        await Promise.all(group.map((entry) => this.adapter.delete(OUTBOX, entry.id)));
-        changed = true;
-      } catch {
-        // Leave this collection's entries queued; a later drain retries them.
-      }
-    }
-    if (changed) this.emit(OUTBOX);
+  drainOutbox(): Promise<void> {
+    return this.sync.drainOutbox();
   }
 
   /** Count of documents written locally but not yet accepted by the server. */
-  async pendingPushCount(): Promise<number> {
-    const entries = await this.adapter.getAll<OutboxDoc>(OUTBOX);
-    return entries.length;
+  pendingPushCount(): Promise<number> {
+    return this.sync.pendingPushCount();
   }
 
-  async pull<T extends BaseDocument>(collection: string): Promise<T[]> {
-    if (!this.syncClient) return [];
-    const applied: T[] = [];
-    // Pull is paged server-side; drain from the stored cursor until the server
-    // reports no more pages. Each page's cursor is persisted as it lands, so an
-    // interrupted drain (offline, crash) resumes mid-stream instead of
-    // restarting the whole collection.
-    let cursor = await this.getLastSyncCursor(collection);
-    for (;;) {
-      const page = await this.syncClient.pull<T>(collection, cursor);
-      const upgraded = page.documents.map((doc) => this.migrator.migrate<T>(collection, doc));
-      for (const doc of upgraded) {
-        const local = await this.adapter.get<T>(collection, doc.id);
-        // Last-write-wins: skip an incoming doc that's older than the local
-        // copy, so a not-yet-pushed local edit isn't clobbered by a stale
-        // server version. Mirrors the server's upsert guard (db.ts); ties go
-        // to the incoming doc. The cursor still advances past it — the local
-        // copy is newer and will be pushed, so re-pulling the server's is moot.
-        if (local && local.updatedAt > doc.updatedAt) continue;
-        await this.adapter.put(collection, doc);
-        applied.push(doc);
+  pull<T extends BaseDocument>(collection: string): Promise<T[]> {
+    return this.sync.pull<T>(collection);
+  }
+
+  /**
+   * Drop all locally-cached state except `_config` (sync credentials + author
+   * identity), then re-pull every registered collection from a fresh cursor.
+   * Unlike `wipe`, the install stays registered and identified. Clears the
+   * outbox, so callers with unsynced writes that matter must `drainOutbox`
+   * first. Intended as a one-off recovery after the server's documents were
+   * rewritten out-of-band (e.g. an id-format change) and the local copies can
+   * no longer be reconciled doc-by-doc.
+   */
+  async resyncFromScratch(): Promise<void> {
+    const collections = await this.adapter.listCollections();
+    for (const collection of collections) {
+      if (collection === '_config') continue;
+      const all = await this.adapter.getAll<BaseDocument>(collection);
+      if (all.length > 0) {
+        await this.hardDeleteMany(
+          collection,
+          all.map((d) => d.id)
+        );
       }
-      await this.setLastSyncCursor(collection, page.cursor);
-      // hasMore implies a full page, so the cursor strictly advanced; the
-      // no-progress check is a backstop against a misbehaving server.
-      if (!page.hasMore || page.cursor === cursor) break;
-      cursor = page.cursor;
     }
-    if (applied.length > 0) this.emit(collection);
-    return applied;
+    await this.sync.pullRegisteredCollections();
   }
 
-  async pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
-    if (!this.syncClient) return null;
-    const doc = await this.syncClient.pullDocument<T>(collection, id);
-    if (!doc) return null;
-    const upgraded = this.migrator.migrate<T>(collection, doc);
-    const local = await this.adapter.get<T>(collection, id);
-    // Last-write-wins: a newer local edit takes precedence over the pulled
-    // server copy (see `pull`). Return the version that's now authoritative.
-    if (local && local.updatedAt > upgraded.updatedAt) return local;
-    await this.adapter.put(collection, upgraded);
-    this.emit(collection);
-    return upgraded;
+  pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+    return this.sync.pullDocument<T>(collection, id);
+  }
+
+  getLastSyncedAt(collections: string[]): Promise<Date | null> {
+    return this.sync.getLastSyncedAt(collections);
   }
 
   collection<T extends BaseDocument>(name: string): Collection<T> {
     return new Collection<T>(this, name);
-  }
-
-  async getLastSyncedAt(collections: string[]): Promise<Date | null> {
-    if (collections.length === 0) return null;
-    const metas = await Promise.all(
-      collections.map((c) => this.adapter.get<SyncMetaDoc>('_sync_meta', c))
-    );
-    const times = metas.map((m) => m?.syncedAt).filter((t): t is string => typeof t === 'string');
-    if (times.length === 0) return null;
-    const latest = times.reduce((a, b) => (a > b ? a : b));
-    return dayjs(latest).toDate();
-  }
-
-  // The pull cursor is a server-assigned `seq` high-water mark, not a
-  // timestamp — see `pull` / the server's db.ts. Stored alongside `syncedAt`
-  // (this device's wall clock at last pull) which drives the human-facing
-  // "last synced" display only. A client upgrading from the old
-  // timestamp-cursor scheme has no `cursor` field yet, so this returns 0 and
-  // the collection re-pulls from the start once — which also backfills any
-  // writes the old clock-based cursor had skipped.
-  private async getLastSyncCursor(collection: string): Promise<number> {
-    const meta = await this.adapter.get<SyncMetaDoc>('_sync_meta', collection);
-    return meta?.cursor ?? 0;
-  }
-
-  private async setLastSyncCursor(collection: string, cursor: number): Promise<void> {
-    const authorId = await this.getCurrentAuthor();
-    const now = dayjs().toISOString();
-    await this.adapter.put<SyncMetaDoc>('_sync_meta', {
-      id: collection,
-      schemaVersion: this.migrator.currentVersion('_sync_meta'),
-      createdAt: now,
-      updatedAt: now,
-      createdBy: authorId,
-      updatedBy: authorId,
-      deletedAt: null,
-      deletedBy: null,
-      cursor,
-      syncedAt: now,
-    });
-  }
-}
-
-type SyncMetaDoc = BaseDocument & { cursor: number; syncedAt: string };
-
-// The internal, never-synced collection of pending document pushes. One entry
-// per locally-written doc, keyed `${collection}/${docId}`, holding just a
-// reference — the drain reads the doc's current version at push time. `_`-prefix
-// keeps it out of every sync/pull/push-all path (those skip `_*` collections).
-const OUTBOX = '_outbox';
-type OutboxDoc = BaseDocument & { collection: string; docId: string };
-function outboxKey(collection: string, docId: string): string {
-  return `${collection}/${docId}`;
-}
-
-export class Collection<T extends BaseDocument> {
-  private readonly store: Store;
-  private readonly name: string;
-
-  constructor(store: Store, name: string) {
-    this.store = store;
-    this.name = name;
-  }
-
-  get(id: string): Promise<T | null> {
-    return this.store.get<T>(this.name, id);
-  }
-  getMany(ids: string[]): Promise<T[]> {
-    return this.store.getMany<T>(this.name, ids);
-  }
-  list(): Promise<T[]> {
-    return this.store.list<T>(this.name);
-  }
-  create(id: string, input: Omit<T, keyof BaseDocument>): Promise<T> {
-    return this.store.create<T>(this.name, id, input);
-  }
-  update(id: string, input: Partial<Omit<T, keyof BaseDocument>>): Promise<T> {
-    return this.store.update<T>(this.name, id, input);
-  }
-  delete(id: string): Promise<void> {
-    return this.store.delete(this.name, id);
-  }
-  createMany(items: Array<{ id: string } & Omit<T, keyof BaseDocument>>): Promise<T[]> {
-    return this.store.createMany<T>(this.name, items);
-  }
-  updateMany(updates: Array<{ id: string } & Partial<Omit<T, keyof BaseDocument>>>): Promise<T[]> {
-    return this.store.updateMany<T>(this.name, updates);
-  }
-  deleteMany(ids: string[]): Promise<void> {
-    return this.store.deleteMany(this.name, ids);
-  }
-  pull(): Promise<T[]> {
-    return this.store.pull<T>(this.name);
-  }
-  pullDocument(id: string): Promise<T | null> {
-    return this.store.pullDocument<T>(this.name, id);
   }
 }

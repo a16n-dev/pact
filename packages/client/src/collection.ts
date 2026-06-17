@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { nanoid } from 'nanoid';
+import { randomId } from './ids';
 import { BaseDocumentSchema } from './types';
 import { Migrator, type CollectionMigrations, type MigrationRegistry } from './migrator';
 import type { StoreDomain } from './store';
@@ -9,7 +9,7 @@ import type { StoreDomain } from './store';
  * for a collection's own `id` (injected by `defineCollection`) and for
  * foreign-key fields referencing another collection's docs.
  */
-export const docId = (prefix: string) => z.string().startsWith(`${prefix}/`);
+export const docId = (prefix: string) => z.string().startsWith(`${prefix}-`);
 
 const baseSchemaFor = (idPrefix: string) => BaseDocumentSchema.extend({ id: docId(idPrefix) });
 
@@ -63,7 +63,42 @@ export function defineCollection<Name extends string, Schema extends z.ZodType>(
     synced,
     migrations,
     schema: def.schema(baseSchemaFor(idPrefix)),
-    generateId: () => `${idPrefix}/${nanoid(idLength)}`,
+    generateId: () => `${idPrefix}-${randomId(idLength)}`,
+  };
+}
+
+/** A document id decomposed into the collection it belongs to and its parts. */
+export interface ParsedId {
+  /** The owning collection's name. */
+  collection: string;
+  /** The prefix code (the part before the first `-`). */
+  prefix: string;
+  /** The id with the prefix and separator stripped. */
+  localId: string;
+}
+
+/**
+ * Builds a parser that maps a document id back to its collection by splitting
+ * off the prefix at the first `-` and looking it up. Prefixes may be any
+ * length (they can't contain `-`). Returns `null` for ids whose prefix isn't
+ * known or that carry no `-` — callers use that to tell a real doc reference
+ * apart from arbitrary text (e.g. a markdown link). Throws if two collections
+ * share a prefix.
+ */
+export function createIdParser(
+  collections: readonly CollectionDefinition[]
+): (id: string) => ParsedId | null {
+  const byPrefix = new Map(collections.map((c) => [c.idPrefix, c.name]));
+  if (byPrefix.size !== collections.length) {
+    throw new Error('Duplicate collection id prefix');
+  }
+  return (id: string): ParsedId | null => {
+    if (typeof id !== 'string') return null;
+    const sep = id.indexOf('-');
+    if (sep <= 0) return null;
+    const prefix = id.slice(0, sep);
+    const collection = byPrefix.get(prefix);
+    return collection ? { collection, prefix, localId: id.slice(sep + 1) } : null;
   };
 }
 
@@ -92,6 +127,7 @@ export function createDomain(
     ...hooks,
     migrator: new Migrator(buildMigrationRegistry(collections)),
     collections: collections.filter((c) => c.synced).map((c) => c.name),
+    parseId: createIdParser(collections),
     validate: (collection, doc) => {
       const schema = schemas.get(collection);
       return schema ? schema.parse(doc) : doc;

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { buildMigrationRegistry, createDomain, defineCollection } from './collection';
+import {
+  buildMigrationRegistry,
+  createDomain,
+  createIdParser,
+  defineCollection,
+} from './collection';
 
 const widgets = defineCollection({
   name: 'widgets',
@@ -33,14 +38,14 @@ const baseFields = {
 describe('defineCollection', () => {
   it('generates ids with the collection prefix and length', () => {
     const id = widgets.generateId();
-    expect(id).toMatch(/^wg\/.{10}$/);
-    expect(localNotes.generateId()).toMatch(/^ln\/.{4}$/);
+    expect(id).toMatch(/^wg-[A-Za-z0-9]{10}$/);
+    expect(localNotes.generateId()).toMatch(/^ln-[A-Za-z0-9]{4}$/);
   });
 
   it('injects the prefix-checked id into the schema', () => {
-    const doc = { ...baseFields, id: 'wg/abc', label: 'a' };
+    const doc = { ...baseFields, id: 'wg-abc', label: 'a' };
     expect(() => widgets.schema.parse(doc)).not.toThrow();
-    expect(() => widgets.schema.parse({ ...doc, id: 'ln/abc' })).toThrow();
+    expect(() => widgets.schema.parse({ ...doc, id: 'ln-abc' })).toThrow();
   });
 });
 
@@ -52,7 +57,7 @@ describe('createDomain', () => {
   });
 
   it('validates docs in known collections and passes unknown ones through', () => {
-    const doc = { ...baseFields, id: 'wg/abc', label: 'a' };
+    const doc = { ...baseFields, id: 'wg-abc', label: 'a' };
     expect(domain.validate!('widgets', doc)).toEqual(doc);
     expect(() => domain.validate!('widgets', { ...doc, label: '' })).toThrow();
     const opaque = { anything: true };
@@ -64,10 +69,48 @@ describe('createDomain', () => {
     const migrated = domain.migrator!.migrate<{ label: string }>('widgets', {
       ...baseFields,
       schemaVersion: 1,
-      id: 'wg/abc',
+      id: 'wg-abc',
       name: 'a',
     });
     expect(migrated.label).toBe('a');
+  });
+
+  it('parses ids back to their collection by splitting on the first dash', () => {
+    expect(domain.parseId!('wg-abc')).toEqual({
+      collection: 'widgets',
+      prefix: 'wg',
+      localId: 'abc',
+    });
+    // localId keeps any further dashes (e.g. a seed key like `yellow-onion`).
+    expect(domain.parseId!('ln-yellow-onion')).toEqual({
+      collection: 'localNotes',
+      prefix: 'ln',
+      localId: 'yellow-onion',
+    });
+    expect(domain.parseId!('zz-abc')).toBeNull();
+    expect(domain.parseId!('wg')).toBeNull();
+  });
+});
+
+describe('createIdParser', () => {
+  it('handles prefixes of differing lengths', () => {
+    const longPrefixed = defineCollection({
+      name: 'longPrefixed',
+      idPrefix: 'widget',
+      schema: (base) => base,
+    });
+    const domain = createDomain([widgets, longPrefixed]);
+    expect(domain.parseId!('widget-xyz')).toEqual({
+      collection: 'longPrefixed',
+      prefix: 'widget',
+      localId: 'xyz',
+    });
+    expect(domain.parseId!('wg-xyz')).toMatchObject({ collection: 'widgets' });
+  });
+
+  it('throws when two collections share a prefix', () => {
+    const clash = defineCollection({ name: 'clash', idPrefix: 'wg', schema: (base) => base });
+    expect(() => createIdParser([widgets, clash])).toThrow(/prefix/i);
   });
 });
 
