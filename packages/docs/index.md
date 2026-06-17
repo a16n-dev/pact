@@ -109,12 +109,10 @@ const live = await recipes.list(); // optimistic, offline-safe
 
 ### 2. Extend with a server for realtime collaboration
 
-When a single device stops being enough — a second user, another device, an agent — deploy [`@pact/server`](/server/deployment) and point your client at it. **Your app code doesn't change.** Sync is additive: the same writes that were local-only now propagate, and a flag turns on realtime.
+When a single device stops being enough — a second user, another device, an agent — deploy [`@pact/server`](/server/deployment) and point your client at it. **Your app code doesn't change.** Sync is additive: the same writes that were local-only now propagate, and realtime turns on automatically when the server supports it.
 
 ```ts
-const store = await Store.create(adapter, blobAdapter, domain, {
-  realtime: true, // ← the one addition
-});
+const store = await Store.create(adapter, blobAdapter, domain);
 
 await store.registerClient(serverUrl, password, "Alice's laptop");
 await store.setAuthor('us-alice');

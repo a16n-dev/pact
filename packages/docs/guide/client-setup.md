@@ -33,7 +33,6 @@ The arguments:
 | adapter | `DatabaseAdapter` | Where documents are persisted. |
 | blobAdapter | `BlobAdapter \| null` | Where binary blobs live locally. `null` opts out. |
 | domain | `StoreDomain` | Your validation, migrations, collection list, seed rules. |
-| options | `StoreOptions` | Optional. e.g. `{ realtime: true }` once a server is configured — see [Connecting to a server](#connecting-to-a-server). |
 
 ## The storage adapter
 
@@ -152,10 +151,6 @@ await store.reassignLocalAuthor('us-alice');
 
 `registerClient` returns `{ clientId, token }` and persists both — the token is long-lived, so subsequent `Store.create` calls reconnect automatically. Re-registering the same client rotates its token while keeping its identity.
 
-To receive other clients' changes in realtime, pass `{ realtime: true }` to `Store.create` (it's a no-op until a server is configured and has realtime enabled):
-
-```ts
-const store = await Store.create(adapter, blobAdapter, domain, { realtime: true });
-```
+Realtime needs no client flag. Once a server is configured, the client probes `GET /info` and opens a realtime socket automatically whenever the server advertises support — and stays silent when it doesn't.
 
 Identity and the `_local` author are covered in depth in [Authors & Identity](/guide/authors-identity); the wire protocol is in [Sync](/guide/sync), and realtime in [Realtime](/guide/realtime).

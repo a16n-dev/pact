@@ -3,16 +3,12 @@ import type { Migrator } from '../migrator';
 import type { ParsedId } from '../collection';
 import type { Store } from './store';
 
-export interface StoreOptions {
+// Sync credentials handed to the Store constructor. Internal plumbing —
+// `Store.create` populates it from the persisted client doc; callers configure
+// sync via `registerClient`, not by passing this directly.
+export interface StoreSyncConfig {
   syncUrl?: string;
   syncToken?: string;
-  realtime?: boolean;
-  /**
-   * When true, every `get`/`getMany`/`list` kicks off a background pull for
-   * that collection (deduped per in-flight collection and throttled to
-   * `READ_PULL_THROTTLE_MS`). A no-op without sync credentials.
-   */
-  pullOnRead?: boolean;
 }
 
 // Floor on how often a single collection re-pulls in response to reads. Reads

@@ -1,6 +1,6 @@
 # Realtime
 
-When `realtime: true` and the server has the feature enabled, the client opens a WebSocket to `/realtime`. The server doesn't push document *bodies* — it pushes lightweight **invalidations**, and the client pulls what changed.
+When the server has the feature enabled, the client opens a WebSocket to `/realtime`. The server doesn't push document *bodies* — it pushes lightweight **invalidations**, and the client pulls what changed.
 
 ## The invalidation model
 
@@ -46,12 +46,6 @@ Hibernation means the Durable Object evicts from memory while sockets stay open,
 
 You enable it with two pieces of deployment config — the `ENABLE_REALTIME` var and the `RealtimeDO` binding. See [Deployment](/server/deployment) and [Building Blocks](/server/building-blocks#realtimedo).
 
-## Enabling it on the client
+## The client needs no opt-in
 
-```ts
-const store = await Store.create(adapter, blobAdapter, domain, {
-  realtime: true,
-});
-```
-
-That's the whole client opt-in. If the server reports realtime disabled via `/info`, the flag is a harmless no-op.
+There's nothing to enable on the client — realtime is entirely server-driven. Every store with sync credentials probes `GET /info` and opens a socket if (and only if) the server advertises `realtime: true`. Flip `ENABLE_REALTIME` server-side and clients pick it up on their next connect; turn it off and they stop opening sockets. No client config, no redeploy.

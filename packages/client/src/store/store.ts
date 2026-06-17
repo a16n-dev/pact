@@ -22,7 +22,7 @@ import { SyncEngine } from './syncEngine';
 import { Collection } from './collectionRef';
 import { seedContentEqual } from './helpers';
 import type {
-  StoreOptions,
+  StoreSyncConfig,
   StoreDomain,
   ClientConfigDoc,
   AuthorConfigDoc,
@@ -36,7 +36,6 @@ import type {
 
 export class Store {
   private realtime: RealtimeConnection | null = null;
-  private realtimeEnabled: boolean;
   private changeHandlers = new Set<ChangeHandler>();
   private cachedAuthorId: string = LOCAL_AUTHOR_ID;
   private adapter: DatabaseAdapter;
@@ -59,7 +58,7 @@ export class Store {
     adapter: DatabaseAdapter,
     blobs: BlobAdapter | null,
     domain: StoreDomain = {},
-    options?: StoreOptions
+    options?: StoreSyncConfig
   ) {
     this.adapter = adapter;
     this.blobs = blobs;
@@ -74,12 +73,10 @@ export class Store {
       };
       return domain.validate ? domain.validate(collection, stamped) : stamped;
     };
-    this.realtimeEnabled = options?.realtime ?? false;
     this.sync = new SyncEngine({
       adapter: this.adapter,
       migrator: this.migrator,
       collections: this.collections,
-      pullOnRead: options?.pullOnRead ?? false,
       getAuthorId: () => this.cachedAuthorId,
       emit: (collection) => this.emit(collection),
     });
@@ -93,8 +90,11 @@ export class Store {
     }
   }
 
+  // Realtime is server-driven: RealtimeConnection.start() probes `GET /info`
+  // and silently no-ops unless the server advertises `realtime: true`, so this
+  // always attempts to connect and the server is the sole authority on whether
+  // a socket actually opens.
   private openRealtime(url: string, token: string): void {
-    if (!this.realtimeEnabled) return;
     this.realtime?.stop();
     this.realtime = new RealtimeConnection({
       url,
@@ -144,21 +144,13 @@ export class Store {
   static async create(
     adapter: DatabaseAdapter,
     blobs: BlobAdapter | null = null,
-    domain: StoreDomain = {},
-    options?: { realtime?: boolean; pullOnRead?: boolean }
+    domain: StoreDomain = {}
   ): Promise<Store> {
     const clientDoc = await adapter.get<ClientConfigDoc>('_config', 'client');
-    // Capability flags (realtime, pullOnRead) must survive even when there's no
-    // client doc yet: on a fresh install the user registers a server *after*
-    // create(), and registerClient() only opens realtime if the flag was set
-    // here. Folding it into the clientDoc branch left realtime dead until the
-    // next app restart.
-    const storeOptions: StoreOptions = {
-      realtime: options?.realtime,
-      pullOnRead: options?.pullOnRead,
-      ...(clientDoc ? { syncUrl: clientDoc.url, syncToken: clientDoc.token } : {}),
-    };
-    const store = new Store(adapter, blobs, domain, storeOptions);
+    const syncConfig: StoreSyncConfig = clientDoc
+      ? { syncUrl: clientDoc.url, syncToken: clientDoc.token }
+      : {};
+    const store = new Store(adapter, blobs, domain, syncConfig);
     // Pre-sync, the author is implicitly LOCAL_AUTHOR_ID. If a real identity
     // was previously claimed (via a sync server), restore it from the author
     // config doc.

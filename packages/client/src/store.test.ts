@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Store, type SeedSet, type StoreDomain, type StoreOptions } from './store';
+import { Store, type SeedSet, type StoreDomain } from './store';
+import type { StoreSyncConfig } from './store/types';
 import { InMemoryAdapter } from './adapters/memoryAdapter';
 import { Migrator } from './migrator';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
@@ -24,7 +25,7 @@ function mkDoc(id: string, name: string, updatedAt: string, by = 'us/1'): Widget
   };
 }
 
-function setup(domain: StoreDomain = {}, options?: StoreOptions) {
+function setup(domain: StoreDomain = {}, options?: StoreSyncConfig) {
   const adapter = new InMemoryAdapter();
   const store = new Store(adapter, null, domain, options);
   return { adapter, store };
@@ -279,8 +280,8 @@ describe('Store pull (last-write-wins)', () => {
 });
 
 describe('Store pull-on-read', () => {
-  it('fires a background pull on read when enabled, landing server changes', async () => {
-    const { adapter, store } = setup({}, { ...SYNC, pullOnRead: true });
+  it('fires a background pull on read, landing server changes', async () => {
+    const { adapter, store } = setup({}, SYNC);
     await adapter.put('widgets', mkDoc('w1', 'old', '2026-01-01T00:00:00.000Z'));
     const fetchMock = vi.fn(async (..._args: unknown[]) =>
       jsonResponse({
@@ -309,8 +310,8 @@ describe('Store pull-on-read', () => {
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'))).toHaveLength(1);
   });
 
-  it('does not pull on read when the option is off', async () => {
-    const { adapter, store } = setup({}, SYNC);
+  it('does not pull on read without sync credentials', async () => {
+    const { adapter, store } = setup({});
     await adapter.put('widgets', mkDoc('w1', 'x', '2026-01-01T00:00:00.000Z'));
     const fetchMock = vi.fn(async () => jsonResponse({ documents: [], cursor: 0 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -323,9 +324,9 @@ describe('Store pull-on-read', () => {
 
 describe('Store realtime enablement', () => {
   it('opens a realtime socket after registering on a fresh store', async () => {
-    // Regression: Store.create used to drop the realtime flag when no client
-    // doc existed yet, so registering on a fresh install left realtime dead
-    // until the next app restart.
+    // Realtime is server-driven: registering on a fresh install (no client doc
+    // yet) must open a socket as soon as the server advertises realtime via
+    // /info, without waiting for an app restart.
     class FakeWebSocket {
       static instances: FakeWebSocket[] = [];
       url: string;
@@ -350,7 +351,7 @@ describe('Store realtime enablement', () => {
       })
     );
 
-    const store = await Store.create(new InMemoryAdapter(), null, {}, { realtime: true });
+    const store = await Store.create(new InMemoryAdapter(), null, {});
     const res = await store.registerClient('https://sync.test', 'pw', 'My Device');
     expect(res.ok).toBe(true);
 
