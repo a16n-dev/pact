@@ -8,5 +8,6 @@ export * from './sync/sync';
 export * from './blobs/blobStore';
 export * from './sync/realtime';
 export * from './migrator';
+export * from './backup/archive';
 export * from './store';
 export * from './collection';

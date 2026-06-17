@@ -90,6 +90,34 @@ export type SeedMarkerDoc = BaseDocument & { version: string };
 
 export type SyncMetaDoc = BaseDocument & { cursor: number; syncedAt: string };
 
+/**
+ * How `restoreBackup` reconciles the archive against existing local data:
+ * - `merge` (default): last-write-wins per document (the same strict
+ *   `updatedAt` rule sync uses), so it's safe to run onto a live or
+ *   partially-synced store. Blobs are content-addressed, so a backup blob is
+ *   written only when its hash is missing locally.
+ * - `replace`: clears every scope the archive carries (the document
+ *   collections it contains, and all blobs if it carries any), then loads it
+ *   verbatim. Internal `_*` state (credentials, cursors, outbox) is left
+ *   untouched in both modes — the archive never contains it.
+ */
+export type RestoreMode = 'merge' | 'replace';
+
+/** Summary of what a `restoreBackup` call applied. */
+export interface RestoreResult {
+  mode: RestoreMode;
+  /** Collections present in the archive. */
+  collections: string[];
+  /** Documents written to local storage. */
+  docsWritten: number;
+  /** Documents skipped because a newer local copy won (merge only). */
+  docsSkipped: number;
+  /** Blob bytes written locally. */
+  blobsWritten: number;
+  /** Blobs in the archive that couldn't be restored (store has no blob adapter). */
+  blobsSkipped: number;
+}
+
 // The internal, never-synced collection of pending document pushes. One entry
 // per locally-written doc, keyed `${collection}/${docId}`, holding just a
 // reference — the drain reads the doc's current version at push time. `_`-prefix

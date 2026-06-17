@@ -4,6 +4,7 @@ import { InMemoryAdapter } from './adapters/memoryAdapter';
 import { Migrator } from './migrator';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
 import type { BaseDocument } from './types';
+import type { BlobAdapter } from './blobs/blobAdapter';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
 
@@ -679,5 +680,161 @@ describe('Store resyncFromScratch', () => {
     await store.pull<Widget>('widgets');
     expect((await store.get<Widget>('widgets', 'w9'))?.name).toBe('backfilled');
     expect(String(fetchMock.mock.calls[0][0])).toContain('cursor=0');
+  });
+});
+
+class InMemoryBlobAdapter implements BlobAdapter {
+  private bytes = new Map<string, Uint8Array>();
+  private mimes = new Map<string, string>();
+  async has(hash: string) {
+    return this.bytes.has(hash);
+  }
+  async read(hash: string) {
+    return this.bytes.get(hash) ?? null;
+  }
+  async mimeType(hash: string) {
+    return this.mimes.get(hash) ?? null;
+  }
+  async write(hash: string, bytes: Uint8Array, mimeType: string) {
+    this.bytes.set(hash, bytes);
+    this.mimes.set(hash, mimeType);
+  }
+  async delete(hash: string) {
+    this.bytes.delete(hash);
+    this.mimes.delete(hash);
+  }
+  async list() {
+    return Array.from(this.bytes.keys());
+  }
+  uriFor(hash: string) {
+    return this.bytes.has(hash) ? `mem://${hash}` : null;
+  }
+}
+
+describe('Store backup/restore', () => {
+  function setupWithBlobs(domain: StoreDomain = {}) {
+    const adapter = new InMemoryAdapter();
+    const blobs = new InMemoryBlobAdapter();
+    const store = new Store(adapter, blobs, domain);
+    return { adapter, blobs, store };
+  }
+
+  it('round-trips documents and tombstones, excluding internal _* collections', async () => {
+    const { adapter: srcAdapter, store: source } = setup();
+    await source.setAuthor('us/1');
+    await source.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await source.create<Widget>('widgets', 'w2', { name: 'Beta' });
+    await source.delete('widgets', 'w2'); // tombstone — must travel
+    // Device-specific bookkeeping that must NOT end up in a portable backup.
+    await srcAdapter.put('_config', { ...mkDoc('client', '', '2026-01-01T00:00:00.000Z') });
+    await srcAdapter.put('_sync_meta', {
+      ...mkDoc('widgets', '', '2026-01-01T00:00:00.000Z'),
+      cursor: 7,
+      syncedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const archive = await source.createBackup();
+
+    const { adapter, store } = setup();
+    const result = await store.restoreBackup(archive);
+
+    expect(result).toMatchObject({ mode: 'merge', collections: ['widgets'], docsWritten: 2 });
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+    expect(await store.get<Widget>('widgets', 'w2')).toBeNull(); // hidden (deleted)...
+    expect((await store.getIncludingDeleted<Widget>('widgets', 'w2'))?.deletedAt).not.toBeNull();
+    // Internal collections never crossed over.
+    expect(await adapter.get('_config', 'client')).toBeNull();
+    expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
+  });
+
+  it('merge keeps a newer local doc and overwrites an older one (last-write-wins)', async () => {
+    // Build the backup directly via the adapter so the timestamps are explicit.
+    const { adapter: sa, store: src } = setup();
+    await sa.put('widgets', mkDoc('w1', 'backup-1', '2026-01-01T00:00:00.000Z'));
+    await sa.put('widgets', mkDoc('w2', 'backup-2', '2026-06-01T00:00:00.000Z'));
+    const archive = await src.createBackup({ blobs: false });
+
+    const { adapter, store } = setup();
+    await adapter.put('widgets', mkDoc('w1', 'local-1', '2026-03-01T00:00:00.000Z')); // newer
+    await adapter.put('widgets', mkDoc('w2', 'local-2', '2026-01-01T00:00:00.000Z')); // older
+
+    const result = await store.restoreBackup(archive, { mode: 'merge' });
+
+    expect(result).toMatchObject({ docsWritten: 1, docsSkipped: 1 });
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('local-1'); // kept
+    expect((await store.get<Widget>('widgets', 'w2'))?.name).toBe('backup-2'); // overwritten
+  });
+
+  it('replace clears the carried collections then loads the backup verbatim', async () => {
+    const { adapter: sa, store: src } = setup();
+    await sa.put('widgets', mkDoc('w1', 'backup-1', '2026-01-01T00:00:00.000Z'));
+    const archive = await src.createBackup({ blobs: false });
+
+    const { adapter, store } = setup();
+    await adapter.put('widgets', mkDoc('w1', 'local-old', '2026-09-01T00:00:00.000Z'));
+    await adapter.put('widgets', mkDoc('w2', 'local-extra', '2026-09-01T00:00:00.000Z'));
+
+    const result = await store.restoreBackup(archive, { mode: 'replace' });
+
+    expect(result).toMatchObject({ mode: 'replace', docsWritten: 1, docsSkipped: 0 });
+    // Even though local w1 was newer, replace ignores LWW and loads verbatim;
+    // w2 (absent from the backup) is dropped.
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('backup-1');
+    expect(await store.get<Widget>('widgets', 'w2')).toBeNull();
+  });
+
+  it('round-trips blob bytes; merge skips a hash already present', async () => {
+    const { blobs: srcBlobs, store: source } = setupWithBlobs();
+    const bytes = Uint8Array.from([1, 2, 3, 250, 0, 99]);
+    await srcBlobs.write('hash-a', bytes, 'image/png');
+    const archive = await source.createBackup();
+
+    const { blobs, store } = setupWithBlobs();
+    const result = await store.restoreBackup(archive);
+    expect(result.blobsWritten).toBe(1);
+    expect(Array.from((await blobs.read('hash-a'))!)).toEqual(Array.from(bytes));
+    expect(await blobs.mimeType('hash-a')).toBe('image/png');
+
+    // Re-restoring is idempotent: the hash is content-addressed, so it's skipped.
+    const again = await store.restoreBackup(archive);
+    expect(again.blobsWritten).toBe(0);
+  });
+
+  it('replace wipes local blobs before loading the backup set', async () => {
+    const { blobs: srcBlobs, store: source } = setupWithBlobs();
+    await srcBlobs.write('hash-keep', Uint8Array.from([1]), 'image/png');
+    const archive = await source.createBackup();
+
+    const { blobs, store } = setupWithBlobs();
+    await blobs.write('hash-stale', Uint8Array.from([9]), 'image/png');
+    await store.restoreBackup(archive, { mode: 'replace' });
+
+    expect(await blobs.has('hash-stale')).toBe(false);
+    expect(await blobs.has('hash-keep')).toBe(true);
+  });
+
+  it('reports blobs as skipped when the target store has no blob adapter', async () => {
+    const { blobs: srcBlobs, store: source } = setupWithBlobs();
+    await srcBlobs.write('hash-a', Uint8Array.from([1, 2]), 'image/png');
+    await source.setAuthor('us/1');
+    await source.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    const archive = await source.createBackup();
+
+    const { store } = setup(); // no blob adapter
+    const result = await store.restoreBackup(archive);
+
+    expect(result).toMatchObject({ docsWritten: 1, blobsWritten: 0, blobsSkipped: 1 });
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+  });
+
+  it('omits blobs from a documents-only archive', async () => {
+    const { blobs: srcBlobs, store: source } = setupWithBlobs();
+    await srcBlobs.write('hash-a', Uint8Array.from([1]), 'image/png');
+    const archive = await source.createBackup({ blobs: false });
+
+    const { blobs, store } = setupWithBlobs();
+    const result = await store.restoreBackup(archive);
+    expect(result.blobsWritten).toBe(0);
+    expect(await blobs.has('hash-a')).toBe(false);
   });
 });

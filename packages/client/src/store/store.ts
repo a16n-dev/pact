@@ -12,6 +12,12 @@ import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../system';
 import { RealtimeConnection } from '../sync/realtime';
 import { Migrator, noopMigrator } from '../migrator';
 import type { ParsedId } from '../collection';
+import {
+  packBackup,
+  unpackBackup,
+  BACKUP_FORMAT_VERSION,
+  type BackupBlob,
+} from '../backup/archive';
 import { SyncEngine } from './syncEngine';
 import { Collection } from './collectionRef';
 import { seedContentEqual } from './helpers';
@@ -24,6 +30,8 @@ import type {
   ChangeHandler,
   SeedSet,
   SeedMarkerDoc,
+  RestoreMode,
+  RestoreResult,
 } from './types';
 
 export class Store {
@@ -702,6 +710,111 @@ export class Store {
       }
     }
     await this.sync.pullRegisteredCollections();
+  }
+
+  // Backup / restore — a self-contained, server-independent snapshot.
+
+  /**
+   * Pack every document (tombstones included) into a single portable archive,
+   * optionally bundling the local blobs. Internal `_*` collections — sync
+   * credentials, pull cursors, the push outbox — are excluded: they're
+   * device-specific and must not travel. The result is a `Uint8Array` the
+   * caller persists however it likes (a file, a cloud object); the framework
+   * makes no filesystem assumption.
+   *
+   * Blobs are included by default when this store has a `BlobAdapter`; pass
+   * `{ blobs: false }` for a documents-only archive (blobs can be re-pulled
+   * from a sync server later via their referenced hashes).
+   */
+  async createBackup(opts?: { blobs?: boolean }): Promise<Uint8Array> {
+    const collections: Record<string, BaseDocument[]> = {};
+    for (const name of await this.adapter.listCollections()) {
+      if (name.startsWith('_')) continue;
+      const docs = await this.adapter.getAll<BaseDocument>(name);
+      if (docs.length > 0) collections[name] = docs;
+    }
+
+    const includeBlobs = (opts?.blobs ?? true) && this.blobs !== null;
+    const blobs: BackupBlob[] = [];
+    if (includeBlobs && this.blobs) {
+      for (const hash of await this.blobs.list()) {
+        const bytes = await this.blobs.read(hash);
+        if (!bytes) continue;
+        const mimeType = (await this.blobs.mimeType(hash)) ?? 'application/octet-stream';
+        blobs.push({ hash, mimeType, bytes });
+      }
+    }
+
+    return packBackup(
+      { formatVersion: BACKUP_FORMAT_VERSION, createdAt: dayjs().toISOString(), collections },
+      blobs
+    );
+  }
+
+  /**
+   * Load an archive produced by `createBackup`. Docs are written raw so their
+   * audit fields and `schemaVersion` survive intact (reads migrate lazily, as
+   * with pulled docs); restored docs reach a sync server on the next
+   * `pushAll`. Throws if `archive` isn't a recognized backup.
+   *
+   * `mode` defaults to `merge` (last-write-wins, safe on a live store); see
+   * `RestoreMode`.
+   */
+  async restoreBackup(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult> {
+    const mode = opts?.mode ?? 'merge';
+    const { manifest, blobs } = unpackBackup(archive);
+    const collections = Object.keys(manifest.collections);
+
+    let docsWritten = 0;
+    let docsSkipped = 0;
+    for (const name of collections) {
+      const incoming = manifest.collections[name];
+      if (mode === 'replace') {
+        const existing = await this.adapter.getAll<BaseDocument>(name);
+        await Promise.all(existing.map((d) => this.adapter.delete(name, d.id)));
+      }
+      const toWrite: BaseDocument[] = [];
+      for (const doc of incoming) {
+        if (mode === 'merge') {
+          // Last-write-wins, mirroring the pull path (syncEngine): skip only
+          // when the local copy is strictly newer; ties go to the archive.
+          const local = await this.adapter.get<BaseDocument>(name, doc.id);
+          if (local && local.updatedAt > doc.updatedAt) {
+            docsSkipped++;
+            continue;
+          }
+        }
+        toWrite.push(doc);
+      }
+      if (toWrite.length > 0) {
+        if (this.adapter.putMany) await this.adapter.putMany(name, toWrite);
+        else for (const doc of toWrite) await this.adapter.put(name, doc);
+        docsWritten += toWrite.length;
+        this.emit(name);
+      }
+    }
+
+    let blobsWritten = 0;
+    let blobsSkipped = 0;
+    if (blobs.length > 0) {
+      if (!this.blobs) {
+        blobsSkipped = blobs.length;
+      } else {
+        if (mode === 'replace') {
+          for (const hash of await this.blobs.list()) await this.blobs.delete(hash);
+        }
+        for (const blob of blobs) {
+          // Content-addressed: a present hash already holds these exact bytes,
+          // so skip it in merge mode. Replace cleared the set above.
+          if (mode === 'merge' && (await this.blobs.has(blob.hash))) continue;
+          await this.blobs.write(blob.hash, blob.bytes, blob.mimeType);
+          blobsWritten++;
+        }
+        if (blobsWritten > 0) this.notifyBlobsChanged();
+      }
+    }
+
+    return { mode, collections, docsWritten, docsSkipped, blobsWritten, blobsSkipped };
   }
 
   pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
