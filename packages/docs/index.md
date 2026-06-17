@@ -28,13 +28,13 @@ features:
     title: Agents are people too
     details: Give your agents the same Store your app uses. They read and write the same data as the humans, at the same time, with no special-case plumbing.
   - icon: 🐱
-    title: Documents and blobs
-    details: Store structured JSON documents and large binary files together — your shopping list and the 4MB photo of your cat live happily in the same little world.
+    title: Blob support included
+    details: Apps look better with photos! A content-addressed Blob store gives you the same offline-first, sync later API for images and other binary data
   - icon: 🧬
     title: Change your mind freely
     details: Reshape your data as you go — old documents catch up the moment you read them, no migration step in the way.
   - icon: ☁️
-    title: A backend in one command
+    title: Serverless on Cloudflare
     details: When you're ready for a server, it's one deploy to Cloudflare. No ops, no cluster, no pager — and it costs nothing while it sits idle.
 ---
 
