@@ -17,7 +17,6 @@ export interface SyncEngineDeps {
   migrator: Migrator;
   /** Collections iterated for push-all / pull-all; empty falls back to the adapter. */
   collections: readonly string[];
-  pullOnRead: boolean;
   /** Live read of the Store's current author id (changes via setAuthor/wipe). */
   getAuthorId: () => string;
   /** Routes a collection-changed signal back through the Store's `change` channel. */
@@ -35,7 +34,6 @@ export class SyncEngine {
   private readonly adapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly collections: readonly string[];
-  private readonly pullOnRead: boolean;
   private readonly getAuthorId: () => string;
   private readonly emit: (collection: string) => void;
 
@@ -53,7 +51,6 @@ export class SyncEngine {
     this.adapter = deps.adapter;
     this.migrator = deps.migrator;
     this.collections = deps.collections;
-    this.pullOnRead = deps.pullOnRead;
     this.getAuthorId = deps.getAuthorId;
     this.emit = deps.emit;
   }
@@ -64,14 +61,14 @@ export class SyncEngine {
   }
 
   /**
-   * Fire-and-forget background pull triggered by a read, when `pullOnRead` is
-   * on. Deduped while a pull for the collection is in flight and throttled to
-   * `READ_PULL_THROTTLE_MS` so re-renders don't spray requests. The applied
-   * docs emit `change`, which the UI layer turns into a refetch — and that
-   * refetch is throttled out here, so there's no read→pull→read loop.
+   * Fire-and-forget background pull triggered by a read. A no-op without sync
+   * credentials. Deduped while a pull for the collection is in flight and
+   * throttled to `READ_PULL_THROTTLE_MS` so re-renders don't spray requests.
+   * The applied docs emit `change`, which the UI layer turns into a refetch —
+   * and that refetch is throttled out here, so there's no read→pull→read loop.
    */
   triggerReadPull(collection: string): void {
-    if (!this.pullOnRead || !this.syncClient) return;
+    if (!this.syncClient) return;
     if (collection.startsWith('_')) return;
     if (this.inFlightReadPulls.has(collection)) return;
     const now = dayjs().valueOf();
