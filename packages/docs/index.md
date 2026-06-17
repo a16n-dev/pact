@@ -5,7 +5,7 @@ layout: home
 hero:
   name: Pact
   text: Build local, then collaborate
-  tagline: Start with a fully local, offline app on @pact/client. When you want realtime collaboration between people and agents, add a server — the same code keeps working.
+  tagline: The fast way to build local-first apps — for yourself, your family, your friends, your agents, and your cat.
   actions:
     - theme: brand
       text: Build a Client
@@ -18,24 +18,24 @@ hero:
       link: /guide/introduction
 
 features:
-  - icon: 📴
-    title: Local-first, standalone
-    details: "Step 1: build a complete app on @pact/client alone. Local CRUD, optimistic writes, blobs, migrations, backups — fully functional with no server and no network."
-  - icon: ⚡
-    title: Add a server to collaborate
-    details: "Step 2: stand up @pact/server and your existing app syncs. A Durable Object fans out invalidations over WebSockets, so clients see each other's changes in realtime."
+  - icon: 🚀
+    title: Local-first from day one
+    details: No backend to provision — local reads and writes return instantly, so the app feels fast from the first line of code.
+  - icon: 🤝
+    title: Collaboration at your fingertips
+    details: Spin up a server and share your data across devices — the same app you already built, now synced in realtime and collaborating with everyone you invited.
   - icon: 🤖
-    title: Agents as first-class users
-    details: Build MCP tools directly into the server. Agents read and write the same data clients do — through the same Store API, with no schema divergence.
-  - icon: 📦
-    title: Documents + blobs
-    details: Store structured JSON documents alongside images and files. Blobs are content-addressed by SHA-256, so dedupe and idempotency fall out of the bytes.
+    title: Agents are people too
+    details: Give your agents the same Store your app uses. They read and write the same data as the humans, at the same time, with no special-case plumbing.
+  - icon: 🐱
+    title: Documents and blobs
+    details: Store structured JSON documents and large binary files together — your shopping list and the 4MB photo of your cat live happily in the same little world.
   - icon: 🧬
-    title: Migrate on read
-    details: Each collection carries a version chain. Old documents are walked forward as they're read, so schema upgrades drain through naturally.
+    title: Change your mind freely
+    details: Reshape your data as you go — old documents catch up the moment you read them, no migration step in the way.
   - icon: ☁️
-    title: Runs on Cloudflare
-    details: When you do add a server, it's a composable Hono app backed by D1 (documents) and R2 (blobs). One Worker, one Durable Object, deploy with wrangler.
+    title: A backend in one command
+    details: When you're ready for a server, it's one deploy to Cloudflare. No ops, no cluster, no pager — and it costs nothing while it sits idle.
 ---
 
 ## Two steps, not two rewrites
@@ -86,4 +86,4 @@ Because `@pact/server` depends on `@pact/client` for shared types, the **same `S
 
 ## Is Pact for you?
 
-Pact deliberately [trades generality for simplicity](/guide/concepts#design-assumptions). It's a great fit when you want to **start local and grow into collaboration** for a small, high-trust group (a household, a team, a few agents), where last-write-wins is good enough. It is **not** the right tool for high-contention concurrent editing, per-document access control, or untrusted multi-tenant deployments.
+Pact deliberately [trades generality for simplicity](/guide/concepts#design-assumptions). It's a great fit when you want to **build fast** and **start local, then grow into collaboration** for a small, high-trust group — you, your family, your friends, your agents, your cat — where last-write-wins is good enough. It is **not** the right tool for high-contention concurrent editing, per-document access control, or untrusted multi-tenant deployments.
