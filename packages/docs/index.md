@@ -8,14 +8,11 @@ hero:
   tagline: The fast way to build local-first apps — for yourself, your family, your friends, your agents, and your cat.
   actions:
     - theme: brand
-      text: Build a Client
-      link: /guide/client-setup
-    - theme: alt
-      text: Add a Server
-      link: /server/deployment
-    - theme: alt
-      text: Get Started
+      text: Start Building
       link: /guide/introduction
+    - theme: alt
+      text: Server Setup
+      link: /server/deployment
 
 features:
   - icon: 🚀
@@ -37,6 +34,55 @@ features:
     title: Serverless on Cloudflare
     details: When you're ready for a server, it's one deploy to Cloudflare. No ops, no cluster, no pager — and it costs nothing while it sits idle.
 ---
+
+## Is Pact for you?
+
+Pact deliberately [trades generality for simplicity](/guide/concepts#design-assumptions). A quick gut check:
+
+<div class="pact-fit">
+  <div class="pact-fit-card pact-fit-yes">
+    <h3>👍 Likely a great fit</h3>
+    <p>If you answer <strong>yes</strong> to most of these:</p>
+    <ul>
+      <li>Building for a small, high-trust group — you, your family, your friends, your agents?</li>
+      <li>Want it to work offline and feel fast, with sync as a later add-on?</li>
+      <li>Is last-write-wins good enough for your data?</li>
+      <li>Would you rather start building today than stand up infrastructure first?</li>
+    </ul>
+  </div>
+  <div class="pact-fit-card pact-fit-no">
+    <h3>👎 Probably the wrong tool</h3>
+    <p>If you answer <strong>yes</strong> to any of these:</p>
+    <ul>
+      <li>Do you need per-document access control, or untrusted users?</li>
+      <li>Will people routinely edit the same field at the same moment and need every change merged?</li>
+      <li>Are you shipping multi-tenant SaaS to the public?</li>
+    </ul>
+  </div>
+</div>
+
+<style>
+.pact-fit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+@media (max-width: 640px) {
+  .pact-fit { grid-template-columns: 1fr; }
+}
+.pact-fit-card {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 12px;
+  padding: 4px 20px 12px;
+  background: var(--vp-c-bg-soft);
+}
+.pact-fit-card h3 { margin: 16px 0 4px; }
+.pact-fit-card ul { padding-left: 1.1rem; }
+.pact-fit-card li { margin: 8px 0; }
+.pact-fit-yes { border-color: var(--vp-c-green-2); }
+.pact-fit-no { border-color: var(--vp-c-yellow-2); }
+</style>
 
 ## Two steps, not two rewrites
 
@@ -83,7 +129,3 @@ The two packages:
 | [`@pact/server`](/server/deployment) | Cloudflare Workers | The optional sync layer as a Hono app, backed by D1 + R2, with a Durable Object for realtime fan-out. |
 
 Because `@pact/server` depends on `@pact/client` for shared types, the **same `Store` can even run inside the Worker** on top of D1 — letting agent tools and client code share repositories built on one API.
-
-## Is Pact for you?
-
-Pact deliberately [trades generality for simplicity](/guide/concepts#design-assumptions). It's a great fit when you want to **build fast** and **start local, then grow into collaboration** for a small, high-trust group — you, your family, your friends, your agents, your cat — where last-write-wins is good enough. It is **not** the right tool for high-contention concurrent editing, per-document access control, or untrusted multi-tenant deployments.
