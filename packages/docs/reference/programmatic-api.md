@@ -42,7 +42,7 @@ These power destructive operations that are **deliberately not exposed over HTTP
 An MCP tool that needs the authoritative blob set doesn't make an HTTP call to its own Worker — it calls the function:
 
 ```ts
-import { listBlobs, getBlob } from '@pact/server';
+import { listBlobs, getBlob } from '@a16n/pact-server';
 
 const hashes = await listBlobs(env); // same logic as GET /sync/blobs
 const bytes = await getBlob(env, hashes[0]); // same logic as GET /sync/blobs/:hash

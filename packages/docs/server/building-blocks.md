@@ -1,6 +1,6 @@
 # Building Blocks
 
-Beyond `createSyncApp`, `@pact/server` exports a few optional pieces you compose into your Worker as needed. Each is independent — mount what you want, ignore the rest.
+Beyond `createSyncApp`, `@a16n/pact-server` exports a few optional pieces you compose into your Worker as needed. Each is independent — mount what you want, ignore the rest.
 
 ## `createLandingApp`
 
@@ -8,7 +8,7 @@ A `GET /` **connection page** that renders a QR code encoding a deep link, plus 
 
 ```ts
 import { Hono } from 'hono';
-import { createSyncApp, createLandingApp, RealtimeDO } from '@pact/server';
+import { createSyncApp, createLandingApp, RealtimeDO } from '@a16n/pact-server';
 
 export { RealtimeDO };
 
@@ -30,7 +30,7 @@ The OAuth authorize surface for connecting **agents** — a `GET`/`POST /authori
 The **Durable Object** backing `/realtime`. Export it from your Worker entry and declare it in `wrangler.toml`:
 
 ```ts
-export { RealtimeDO } from '@pact/server';
+export { RealtimeDO } from '@a16n/pact-server';
 ```
 
 ```toml
@@ -47,7 +47,7 @@ It uses hibernatable WebSockets, so idle connections evict from memory and cost 
 
 ## `D1Adapter`
 
-A `DatabaseAdapter` that lets code **inside** the Worker build the same `@pact/client` `Store` clients use, backed by the deployed D1 documents table. This is the foundation for in-Worker agents and MCP tools — see [Agents & MCP](/server/mcp#in-worker-store-d1adapter).
+A `DatabaseAdapter` that lets code **inside** the Worker build the same `@a16n/pact-client` `Store` clients use, backed by the deployed D1 documents table. This is the foundation for in-Worker agents and MCP tools — see [Agents & MCP](/server/mcp#in-worker-store-d1adapter).
 
 ## How they compose
 
@@ -60,7 +60,7 @@ import {
   createLandingApp,
   createOAuthAuthApp,
   RealtimeDO,
-} from '@pact/server';
+} from '@a16n/pact-server';
 
 export { RealtimeDO };
 

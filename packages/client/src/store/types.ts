@@ -52,6 +52,16 @@ export interface StoreDomain {
    * a `users/<id>` doc). No-op when omitted.
    */
   onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
+  /**
+   * Blob hashes a document references. The Store unions these across all
+   * *live* documents to power blob garbage collection (`pruneBlobs`) and
+   * reference-driven pull (`BlobStore.pullReferenced`). Omit for domains with
+   * no blobs — `pruneBlobs` then refuses to run rather than treat every blob
+   * as an orphan. For the common case of flat top-level hash fields, build
+   * this with the `blobFields` helper; write it by hand when references are
+   * nested, in arrays, or parsed out of a body.
+   */
+  blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>;
 }
 
 export type ClientConfigDoc = BaseDocument & {

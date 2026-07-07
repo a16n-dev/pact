@@ -1,4 +1,4 @@
-import type { BaseDocument, DatabaseAdapter } from '@pact/client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
 import {
   pullDocument,
   pullDocumentsSince,
@@ -32,10 +32,10 @@ export interface D1AdapterOptions {
 
 /**
  * DatabaseAdapter that reads/writes the deployed Worker's D1 documents table
- * via the @pact/server programmatic API. In-Worker consumers (notably an MCP
+ * via the @a16n/pact-server programmatic API. In-Worker consumers (notably an MCP
  * agent's tool layer) use this so they share one source of truth with the
  * HTTP sync surface — no loopback fetch, no schema divergence. The Store this
- * backs is the same `@pact/client` Store other clients build on, so tool and
+ * backs is the same `@a16n/pact-client` Store other clients build on, so tool and
  * client code can share repositories on top of it.
  *
  * The Store's client-side sync bookkeeping collections (`_config`,

@@ -44,6 +44,10 @@ export class Store {
   private readonly collections: readonly string[];
   private readonly idParser: (id: string) => ParsedId | null;
   private readonly onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
+  // Domain-supplied blob-reference extractor and whether one was configured.
+  // Without it, blob GC has no notion of "referenced" and must refuse to run.
+  private readonly blobHashesOf: (collection: string, doc: BaseDocument) => Iterable<string>;
+  private readonly hasBlobRefs: boolean;
   // Owns the push outbox, pulls, and cursors. Fed live views of this Store's
   // author id + change emitter; its SyncClient is swapped in/out by the
   // client-registration methods below.
@@ -66,6 +70,8 @@ export class Store {
     this.collections = domain.collections ?? [];
     this.idParser = domain.parseId ?? (() => null);
     this.onSetAuthor = domain.onSetAuthor;
+    this.hasBlobRefs = domain.blobHashes !== undefined;
+    this.blobHashesOf = domain.blobHashes ?? (() => []);
     this.validate = (collection, doc) => {
       const stamped = {
         ...(doc as object),
@@ -139,6 +145,70 @@ export class Store {
    */
   notifyBlobsChanged(): void {
     this.emit('_blobs');
+  }
+
+  /**
+   * Union of blob hashes referenced by every *live* document across all
+   * registered collections, via the domain's `blobHashes` extractor.
+   * Tombstones are skipped — a blob kept alive only by deleted docs is
+   * collectable. Returns an empty set when the domain declares no extractor.
+   *
+   * Drives `pruneBlobs`, and lets a caller pull exactly the blobs the local
+   * doc set needs: `blobStore.pull(await store.referencedBlobHashes())` (or
+   * just `blobStore.pullReferenced()`). Docs are migrated in memory before
+   * extraction (no write-back), so the extractor always sees current field
+   * names — running it against a stale shape could miss a reference and
+   * wrongly mark a live blob as an orphan.
+   */
+  async referencedBlobHashes(): Promise<Set<string>> {
+    const refs = new Set<string>();
+    if (!this.hasBlobRefs) return refs;
+    const list =
+      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
+    for (const collection of list) {
+      if (collection.startsWith('_')) continue;
+      const all = await this.adapter.getAll<BaseDocument>(collection);
+      for (const raw of all) {
+        if (raw.deletedAt) continue;
+        const doc = this.migrator.needsMigration(collection, raw)
+          ? this.migrator.migrate<BaseDocument>(collection, raw)
+          : raw;
+        for (const hash of this.blobHashesOf(collection, doc)) refs.add(hash);
+      }
+    }
+    return refs;
+  }
+
+  /**
+   * Delete local blobs that no live document references, reclaiming device
+   * storage. Returns the hashes removed.
+   *
+   * Local-only by design: the server's bucket is left untouched. Deleting a
+   * shared, content-addressed blob server-side would break any *other* device
+   * still referencing it — last-write-wins gives no safe moment to know every
+   * client has dropped the reference. A locally-pruned blob simply re-pulls if
+   * a document referencing it arrives later.
+   *
+   * Throws if the domain declares no `blobHashes` extractor: with no notion of
+   * what's referenced, every blob would look like an orphan. No-op (empty
+   * result) on a store without a blob adapter.
+   */
+  async pruneBlobs(): Promise<{ deleted: string[] }> {
+    if (!this.blobs) return { deleted: [] };
+    if (!this.hasBlobRefs) {
+      throw new Error(
+        'pruneBlobs requires a StoreDomain.blobHashes extractor; refusing to treat every blob as an orphan'
+      );
+    }
+    const referenced = await this.referencedBlobHashes();
+    const deleted: string[] = [];
+    for (const hash of await this.blobs.list()) {
+      if (referenced.has(hash)) continue;
+      await this.blobs.delete(hash);
+      deleted.push(hash);
+    }
+    if (deleted.length > 0) this.notifyBlobsChanged();
+    return { deleted };
   }
 
   static async create(
@@ -258,7 +328,7 @@ export class Store {
    * Clear all local data and reset to the unidentified local author. There is
    * deliberately no remote-wipe path: a single client credential must not be
    * able to erase the household's shared server database. Server data is wiped
-   * out-of-band by the operator (see @pact/server).
+   * out-of-band by the operator (see @a16n/pact-server).
    */
   async wipe(): Promise<void> {
     await this.adapter.wipe();

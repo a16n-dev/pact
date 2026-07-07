@@ -1,13 +1,13 @@
-# @pact/docs
+# @a16n/pact-docs
 
 The Pact documentation site, built with [VitePress](https://vitepress.dev).
 
 ## Develop
 
 ```bash
-pnpm --filter @pact/docs dev      # local dev server with hot reload
-pnpm --filter @pact/docs build    # static build → .vitepress/dist
-pnpm --filter @pact/docs preview  # preview the production build
+pnpm --filter @a16n/pact-docs dev      # local dev server with hot reload
+pnpm --filter @a16n/pact-docs build    # static build → .vitepress/dist
+pnpm --filter @a16n/pact-docs preview  # preview the production build
 ```
 
 ## Structure

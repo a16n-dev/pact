@@ -1,5 +1,5 @@
 {
-  "name": "@pact/server",
+  "name": "@a16n/pact-server",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "catalog:",
-    "@pact/client": "workspace:*",
+    "@a16n/pact-client": "workspace:*",
     "dayjs": "catalog:",
     "hono": "catalog:",
     "nanoid": "catalog:",

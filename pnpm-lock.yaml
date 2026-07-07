@@ -102,12 +102,12 @@ importers:
 
   packages/server:
     dependencies:
+      '@a16n/pact-client':
+        specifier: workspace:*
+        version: link:../client
       '@cloudflare/workers-oauth-provider':
         specifier: 'catalog:'
         version: 0.7.0
-      '@pact/client':
-        specifier: workspace:*
-        version: link:../client
       dayjs:
         specifier: 'catalog:'
         version: 1.11.21

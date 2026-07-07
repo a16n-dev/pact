@@ -7,7 +7,7 @@ This page covers step 1: a working client-only app. Connecting it to a server fo
 ## Install
 
 ```bash
-pnpm add @pact/client
+pnpm add @a16n/pact-client
 ```
 
 ## Create a Store
@@ -15,7 +15,7 @@ pnpm add @pact/client
 No server, no network — this is a fully working store on its own:
 
 ```ts
-import { Store, InMemoryAdapter } from '@pact/client';
+import { Store, InMemoryAdapter } from '@a16n/pact-client';
 
 const store = await Store.create(
   new InMemoryAdapter(), // storage adapter (or a SQLite-backed adapter)
@@ -47,9 +47,9 @@ interface DatabaseAdapter {
 
 | Adapter | Where it lives | Use it for |
 |---------|----------------|------------|
-| `InMemoryAdapter` | `@pact/client` | Tests, CLIs, ephemeral scratch stores. |
+| `InMemoryAdapter` | `@a16n/pact-client` | Tests, CLIs, ephemeral scratch stores. |
 | SQLite-backed | Your app | Real persistence on device (mobile / desktop). |
-| `D1Adapter` | `@pact/server` | Code running *inside* the Worker (agents, MCP tools). |
+| `D1Adapter` | `@a16n/pact-server` | Code running *inside* the Worker (agents, MCP tools). |
 
 ## The domain
 
@@ -60,8 +60,9 @@ interface StoreDomain {
   validate?: (collection: string, doc: unknown) => unknown; // throw to reject; typically a Zod parse
   migrator?: Migrator; // defaults to a no-op
   collections?: readonly string[]; // collections iterated by pushAll / pull-all
-  isSeedDoc?: (doc: BaseDocument) => boolean; // which docs pushAll skips (see Seeds)
+  parseId?: (id: string) => ParsedId | null; // map a doc id back to its collection
   onSetAuthor?: (store: Store, authorId: string) => Promise<void>; // materialize the author as a doc
+  blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>; // blob refs for GC / pull (see Blobs)
 }
 ```
 
@@ -84,7 +85,7 @@ const domain: StoreDomain = {
 };
 ```
 
-See [Migrations](/guide/migrations) for `migrator`, [Authors & Identity](/guide/authors-identity) for `onSetAuthor`, and [Seeds](/guide/seeds) for `isSeedDoc`.
+See [Migrations](/guide/migrations) for `migrator`, [Authors & Identity](/guide/authors-identity) for `onSetAuthor`, and [Blobs](/guide/blobs#declaring-which-fields-hold-blob-hashes) for `blobHashes`.
 
 ## Reading and writing
 

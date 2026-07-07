@@ -3,7 +3,7 @@
 Each collection has a migration chain. A document carries its `schemaVersion`; the `Migrator` walks it forward to the collection's current version as the document is read.
 
 ```ts
-import { Migrator } from '@pact/client';
+import { Migrator } from '@a16n/pact-client';
 
 const migrator = new Migrator({
   recipes: {
@@ -40,7 +40,7 @@ read recipe r-123 (schemaVersion: 1)
 The server can run the **same chain** on the push path via the `migrate` hook, so documents are normalized to a known version as they land in D1:
 
 ```ts
-import { createSyncApp } from '@pact/server';
+import { createSyncApp } from '@a16n/pact-server';
 
 export default createSyncApp({
   hooks: {

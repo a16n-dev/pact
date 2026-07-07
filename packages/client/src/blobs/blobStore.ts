@@ -66,9 +66,10 @@ export class BlobStore {
   }
 
   /**
-   * Download blobs referenced by docs but missing locally. Caller passes
-   * the union of hashes referenced across all doc collections (today just
-   * `Recipe.imageContentHash`).
+   * Download blobs referenced by docs but missing locally. Caller passes the
+   * union of hashes referenced across all doc collections. Prefer
+   * `pullReferenced()` when the domain declares a `blobHashes` extractor — it
+   * sources that union from the Store for you.
    */
   async pull(referencedHashes: Iterable<string>): Promise<void> {
     const creds = await this.store.getSyncCredentials();
@@ -83,6 +84,15 @@ export class BlobStore {
       }
     }
     if (any) this.store.notifyBlobsChanged();
+  }
+
+  /**
+   * Pull every blob the local document set references but doesn't yet have,
+   * sourcing the hash set from the Store's registered collections. Requires a
+   * `StoreDomain.blobHashes` extractor; a no-op (downloads nothing) without one.
+   */
+  async pullReferenced(): Promise<void> {
+    await this.pull(await this.store.referencedBlobHashes());
   }
 
   private async tryPush(

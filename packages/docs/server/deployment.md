@@ -1,6 +1,6 @@
 # Deployment (Cloudflare)
 
-`@pact/server` ships the sync surface as a **composable Hono app** you mount or export directly. It's designed to run as a Cloudflare Worker backed by:
+`@a16n/pact-server` ships the sync surface as a **composable Hono app** you mount or export directly. It's designed to run as a Cloudflare Worker backed by:
 
 - **D1** — documents, the clients table, and the blob registry.
 - **R2** — blob bytes.
@@ -14,7 +14,7 @@ The minimal Worker entry exports the sync app and re-exports the Durable Object 
 
 ```ts
 // src/worker.ts
-import { createSyncApp, RealtimeDO } from '@pact/server';
+import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 
 export { RealtimeDO }; // Durable Object class for realtime fan-out
 

@@ -2,6 +2,7 @@ export * from './ids';
 export * from './adapters/adapter';
 export * from './adapters/memoryAdapter';
 export * from './blobs/blobAdapter';
+export * from './blobs/blobFields';
 export * from './types';
 export * from './system';
 export * from './sync/sync';

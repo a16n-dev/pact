@@ -1,5 +1,5 @@
 {
-  "name": "@pact/docs",
+  "name": "@a16n/pact-docs",
   "version": "0.0.1",
   "private": true,
   "type": "module",

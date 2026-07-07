@@ -6,11 +6,11 @@ Two pieces make this work: the `D1Adapter` (so agent code can build a real `Stor
 
 ## In-Worker Store: `D1Adapter`
 
-`D1Adapter` is a [`DatabaseAdapter`](/guide/client-setup#the-storage-adapter) that reads and writes the deployed Worker's D1 `documents` table directly, via the [programmatic API](/reference/programmatic-api). Code running *inside* the Worker — notably an MCP agent's tools — can build the **same `@pact/client` `Store`** other clients use:
+`D1Adapter` is a [`DatabaseAdapter`](/guide/client-setup#the-storage-adapter) that reads and writes the deployed Worker's D1 `documents` table directly, via the [programmatic API](/reference/programmatic-api). Code running *inside* the Worker — notably an MCP agent's tools — can build the **same `@a16n/pact-client` `Store`** other clients use:
 
 ```ts
-import { Store } from '@pact/client';
-import { D1Adapter } from '@pact/server';
+import { Store } from '@a16n/pact-client';
+import { D1Adapter } from '@a16n/pact-server';
 
 // inside a Worker request / MCP tool handler, with access to env.DB
 const store = await Store.create(new D1Adapter(env.DB), null, domain);
@@ -42,7 +42,7 @@ This lets an agent read the same unit catalog or reference list a client has, ev
 Agents connect over OAuth (via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider)) rather than a raw `POST /auth/register`. `createOAuthAuthApp` is the **authorize surface**: a `GET`/`POST /authorize` pair that renders a "connect this agent" password form, validates the password against `API_KEY`, registers a sync-client row, and completes the OAuth grant.
 
 ```ts
-import { createOAuthAuthApp } from '@pact/server';
+import { createOAuthAuthApp } from '@a16n/pact-server';
 
 const authApp = createOAuthAuthApp({
   branding: {

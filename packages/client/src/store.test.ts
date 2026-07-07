@@ -6,6 +6,7 @@ import { Migrator } from './migrator';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
 import type { BaseDocument } from './types';
 import type { BlobAdapter } from './blobs/blobAdapter';
+import { blobFields } from './blobs/blobFields';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
 
@@ -837,5 +838,73 @@ describe('Store backup/restore', () => {
     const result = await store.restoreBackup(archive);
     expect(result.blobsWritten).toBe(0);
     expect(await blobs.has('hash-a')).toBe(false);
+  });
+});
+
+describe('Store blob GC', () => {
+  type Photo = BaseDocument & { imageHash?: string };
+  const blobDomain: StoreDomain = {
+    collections: ['photos'],
+    blobHashes: blobFields({ photos: ['imageHash'] }),
+  };
+
+  function setupWithBlobs(domain: StoreDomain = {}) {
+    const adapter = new InMemoryAdapter();
+    const blobs = new InMemoryBlobAdapter();
+    const store = new Store(adapter, blobs, domain);
+    return { adapter, blobs, store };
+  }
+
+  it('collects only blobs no live document references', async () => {
+    const { blobs, store } = setupWithBlobs(blobDomain);
+    await store.setAuthor('us/1');
+    await blobs.write('h-used', Uint8Array.from([1]), 'image/png');
+    await blobs.write('h-orphan', Uint8Array.from([2]), 'image/png');
+    await store.create<Photo>('photos', 'p1', { imageHash: 'h-used' });
+
+    const { deleted } = await store.pruneBlobs();
+
+    expect(deleted).toEqual(['h-orphan']);
+    expect(await blobs.has('h-used')).toBe(true);
+    expect(await blobs.has('h-orphan')).toBe(false);
+  });
+
+  it('treats a blob referenced only by a tombstone as collectable', async () => {
+    const { blobs, store } = setupWithBlobs(blobDomain);
+    await store.setAuthor('us/1');
+    await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
+    await store.create<Photo>('photos', 'p1', { imageHash: 'h-x' });
+    await store.delete('photos', 'p1'); // soft delete — doc stays as a tombstone
+
+    const { deleted } = await store.pruneBlobs();
+
+    expect(deleted).toEqual(['h-x']);
+    expect(await blobs.has('h-x')).toBe(false);
+  });
+
+  it('refuses to prune when the domain declares no blobHashes extractor', async () => {
+    const { blobs, store } = setupWithBlobs({ collections: ['photos'] });
+    await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
+
+    await expect(store.pruneBlobs()).rejects.toThrow(/blobHashes extractor/);
+    // The guard must not have deleted anything.
+    expect(await blobs.has('h-x')).toBe(true);
+  });
+
+  it('referencedBlobHashes unions across live docs and skips not-yet-set fields', async () => {
+    const { store } = setupWithBlobs(blobDomain);
+    await store.setAuthor('us/1');
+    await store.create<Photo>('photos', 'p1', { imageHash: 'h-a' });
+    await store.create<Photo>('photos', 'p2', { imageHash: 'h-b' });
+    await store.create<Photo>('photos', 'p3', {}); // no hash field set
+
+    const refs = await store.referencedBlobHashes();
+
+    expect(refs).toEqual(new Set(['h-a', 'h-b']));
+  });
+
+  it('pruneBlobs is a no-op without a blob adapter', async () => {
+    const store = new Store(new InMemoryAdapter(), null, blobDomain);
+    await expect(store.pruneBlobs()).resolves.toEqual({ deleted: [] });
   });
 });

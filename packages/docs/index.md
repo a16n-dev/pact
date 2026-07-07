@@ -90,10 +90,10 @@ Pact is built so the same code carries you from a local prototype to a collabora
 
 ### 1. Build a client-only app
 
-Everything you need to ship a real app lives in `@pact/client`. The `Store` gives you local CRUD, optimistic writes, blobs, migrations, and backups — all fully functional **offline, with no server in the picture**.
+Everything you need to ship a real app lives in `@a16n/pact-client`. The `Store` gives you local CRUD, optimistic writes, blobs, migrations, and backups — all fully functional **offline, with no server in the picture**.
 
 ```ts
-import { Store, InMemoryAdapter } from '@pact/client';
+import { Store, InMemoryAdapter } from '@a16n/pact-client';
 
 // No server. No network. A complete, working store.
 const store = await Store.create(
@@ -109,7 +109,7 @@ const live = await recipes.list(); // optimistic, offline-safe
 
 ### 2. Extend with a server for realtime collaboration
 
-When a single device stops being enough — a second user, another device, an agent — deploy [`@pact/server`](/server/deployment) and point your client at it. **Your app code doesn't change.** Sync is additive: the same writes that were local-only now propagate, and realtime turns on automatically when the server supports it.
+When a single device stops being enough — a second user, another device, an agent — deploy [`@a16n/pact-server`](/server/deployment) and point your client at it. **Your app code doesn't change.** Sync is additive: the same writes that were local-only now propagate, and realtime turns on automatically when the server supports it.
 
 ```ts
 const store = await Store.create(adapter, blobAdapter, domain);
@@ -123,7 +123,7 @@ The two packages:
 
 | Package | Runs where | Purpose |
 |---------|-----------|---------|
-| [`@pact/client`](/guide/client-setup) | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, blobs, migrations, backups. Sync and realtime when a server is configured. |
-| [`@pact/server`](/server/deployment) | Cloudflare Workers | The optional sync layer as a Hono app, backed by D1 + R2, with a Durable Object for realtime fan-out. |
+| [`@a16n/pact-client`](/guide/client-setup) | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, blobs, migrations, backups. Sync and realtime when a server is configured. |
+| [`@a16n/pact-server`](/server/deployment) | Cloudflare Workers | The optional sync layer as a Hono app, backed by D1 + R2, with a Durable Object for realtime fan-out. |
 
-Because `@pact/server` depends on `@pact/client` for shared types, the **same `Store` can even run inside the Worker** on top of D1 — letting agent tools and client code share repositories built on one API.
+Because `@a16n/pact-server` depends on `@a16n/pact-client` for shared types, the **same `Store` can even run inside the Worker** on top of D1 — letting agent tools and client code share repositories built on one API.

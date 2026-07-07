@@ -21,10 +21,10 @@ Pact deliberately trades generality for simplicity. It assumes:
 
 | Package | Runs where | Purpose |
 |---------|-----------|---------|
-| `@pact/client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, sync, realtime, migrations. Pluggable storage via adapters. |
-| `@pact/server` | Cloudflare Workers | The sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
+| `@a16n/pact-client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, sync, realtime, migrations. Pluggable storage via adapters. |
+| `@a16n/pact-server` | Cloudflare Workers | The sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
 
-`@pact/server` depends on `@pact/client` for shared types (`BaseDocument`, `DatabaseAdapter`), so the same Store can run *inside* the Worker on top of D1 (see [`D1Adapter`](#in-worker-store-d1adapter)) — letting agent/tool code and client code share repositories built on one Store API.
+`@a16n/pact-server` depends on `@a16n/pact-client` for shared types (`BaseDocument`, `DatabaseAdapter`), so the same Store can run *inside* the Worker on top of D1 (see [`D1Adapter`](#in-worker-store-d1adapter)) — letting agent/tool code and client code share repositories built on one Store API.
 
 ## The document model
 
@@ -61,7 +61,7 @@ Documents live in named collections (`recipes`, `users`, …). Collection names 
 The `Store` is the single entry point. You construct it with a storage adapter, an optional blob adapter, and a domain config; it gives you optimistic local CRUD that transparently syncs when configured.
 
 ```ts
-import { Store, InMemoryAdapter } from '@pact/client';
+import { Store, InMemoryAdapter } from '@a16n/pact-client';
 
 const store = await Store.create(
   new InMemoryAdapter(),  // or a SQLite-backed adapter
@@ -173,7 +173,7 @@ Server-side, fan-out is a single Durable Object (`RealtimeDO`) using hibernatabl
 Each collection has a migration chain. A document carries its `schemaVersion`; the `Migrator` walks it forward to the collection's current version.
 
 ```ts
-import { Migrator } from '@pact/client';
+import { Migrator } from '@a16n/pact-client';
 
 const migrator = new Migrator({
   recipes: {
@@ -222,10 +222,10 @@ On the server side, seed-only collections that never reach D1 can still be read 
 
 ### Composing the app
 
-`@pact/server` ships the sync surface as a Hono app you mount or export directly. All behaviour is also exposed as named functions, so the HTTP routes are thin shells.
+`@a16n/pact-server` ships the sync surface as a Hono app you mount or export directly. All behaviour is also exposed as named functions, so the HTTP routes are thin shells.
 
 ```ts
-import { createSyncApp, RealtimeDO } from '@pact/server';
+import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 
 export { RealtimeDO };  // Durable Object class for realtime fan-out
 
@@ -298,7 +298,7 @@ Every route's logic is callable directly — for in-Worker consumers that want t
 
 ### In-Worker Store (`D1Adapter`)
 
-`D1Adapter` is a `DatabaseAdapter` that reads/writes the deployed Worker's D1 documents table via the programmatic API. It lets code running *inside* the Worker — notably an MCP agent's tools — build the **same** `@pact/client` `Store` other clients use, sharing one source of truth with the HTTP sync surface (no loopback fetch, no schema divergence). Tool and client code can then share repositories.
+`D1Adapter` is a `DatabaseAdapter` that reads/writes the deployed Worker's D1 documents table via the programmatic API. It lets code running *inside* the Worker — notably an MCP agent's tools — build the **same** `@a16n/pact-client` `Store` other clients use, sharing one source of truth with the HTTP sync surface (no loopback fetch, no schema divergence). Tool and client code can then share repositories.
 
 - Internal `_` collections are inert (reads empty, writes dropped) — local sync bookkeeping has no meaning when the adapter *is* the source of truth.
 - A `SeedOverlay` augments D1 reads with seed-only reference collections that never get persisted server-side. Real D1 rows win on id conflicts.
