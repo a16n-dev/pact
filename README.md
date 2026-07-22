@@ -74,6 +74,13 @@ Documents live in named collections (`recipes`, `users`, …). Collection names 
 - `_config` — the `client` doc (clientId, clientName, sync url, token) and the `author` doc (current author id).
 - `_sync_meta` — per-collection "last pulled at" timestamp, used to request only what's changed.
 
+## Examples
+
+[`examples/`](./examples) holds working, tested reference material:
+
+- [`examples/todo-cli`](./examples/todo-cli) — a complete client app (Node CLI TODO list): domain definition, storage adapter, typed CRUD, optional sync.
+- [`examples/adapters`](./examples/adapters) — copy-paste `DatabaseAdapter` recipes (localStorage, IndexedDB, JSON file, `node:sqlite`, `expo-sqlite`) plus a reusable adapter contract test.
+
 ## The Store (client)
 
 The `Store` is the single entry point. You construct it with a storage adapter, an optional blob adapter, and a domain config; it gives you optimistic local CRUD that transparently syncs when configured.

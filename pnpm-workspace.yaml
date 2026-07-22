@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "examples/*"
 
 catalog:
   '@cloudflare/workers-oauth-provider': ^0.7.0

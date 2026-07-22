@@ -1,0 +1,23 @@
+{
+  "name": "@a16n/pact-example-todo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A complete Pact client app in ~200 lines: a local-first TODO CLI with optional sync.",
+  "type": "module",
+  "scripts": {
+    "todo": "tsx src/main.ts",
+    "start": "tsx src/main.ts",
+    "tc": "tsc --noEmit",
+    "check": "eslint . && prettier --check .",
+    "format": "eslint --fix . && prettier --write ."
+  },
+  "dependencies": {
+    "@a16n/pact-client": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsx": "^4",
+    "typescript": "catalog:"
+  }
+}

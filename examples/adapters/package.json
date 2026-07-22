@@ -1,0 +1,22 @@
+{
+  "name": "@a16n/pact-adapter-recipes",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Copy-paste DatabaseAdapter recipes for @a16n/pact-client — not published; copy the file you need into your app.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "tc": "tsc --noEmit",
+    "check": "eslint . && prettier --check .",
+    "format": "eslint --fix . && prettier --write ."
+  },
+  "dependencies": {
+    "@a16n/pact-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "fake-indexeddb": "^6",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

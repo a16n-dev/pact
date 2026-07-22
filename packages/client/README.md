@@ -2,7 +2,7 @@
 
 The client half of **Pact** — an intentionally simple architecture for building **local-first apps** that can grow into **realtime collaboration** for a small, high-trust group of people and agents.
 
-Everything revolves around a `Store`: local CRUD over JSON documents with pluggable storage, optimistic writes that never block on the network, and — once you point it at a [pact server](https://github.com/a16n/pact) — background sync, realtime invalidations, blobs, and optional end-to-end encryption. Your app code is identical with or without a server.
+Everything revolves around a `Store`: local CRUD over JSON documents with pluggable storage, optimistic writes that never block on the network, and — once you point it at a [pact server](https://github.com/a16n-dev/pact) — background sync, realtime invalidations, blobs, and optional end-to-end encryption. Your app code is identical with or without a server.
 
 ```
 npm install @a16n/pact-client

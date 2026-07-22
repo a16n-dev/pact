@@ -50,6 +50,8 @@ interface DatabaseAdapter {
 | `InMemoryAdapter` | `@a16n/pact-client` | Tests, CLIs, ephemeral scratch stores. |
 | SQLite-backed | Your app | Real persistence on device (mobile / desktop). |
 
+You don't have to write one from scratch: the repo's [`examples/adapters`](https://github.com/a16n-dev/pact/tree/main/examples/adapters) directory has tested, copy-paste implementations for localStorage, IndexedDB, a JSON file, `node:sqlite`, and `expo-sqlite`, plus a reusable contract test for rolling your own. A complete app wired up end-to-end lives in [`examples/todo-cli`](https://github.com/a16n-dev/pact/tree/main/examples/todo-cli).
+
 ## The domain
 
 `StoreDomain` is where the consuming package injects everything Pact deliberately doesn't own. Its heart is `collections` — **the schemas you provide define which collections exist**. Each collection is declared once with `defineCollection` (name, id prefix, Zod schema, migration chain), and the Store derives everything from that list: write validation, the migrator, id parsing, and the sync enumeration. Reading or writing a collection that isn't defined throws.
