@@ -6,7 +6,22 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "tc": "tsc --noEmit",
@@ -24,6 +39,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@types/qrcode-generator": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

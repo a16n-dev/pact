@@ -5,6 +5,8 @@
   "description": "A generic, domain-agnostic document sync framework",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
+    "build": "pnpm -r --if-present build",
+    "pack:all": "pnpm --filter @a16n/pact-client --filter @a16n/pact-server exec pnpm pack --pack-destination ../../artifacts",
     "tc": "pnpm -r --parallel tc",
     "check": "pnpm -r --parallel check",
     "format": "pnpm -r --parallel format",

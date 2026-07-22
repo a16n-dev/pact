@@ -8,7 +8,23 @@
     ".": "./src/index.ts",
     "./package.json": "./package.json"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
   "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "tc": "tsc --noEmit",
@@ -21,6 +37,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

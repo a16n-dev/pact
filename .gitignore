@@ -4,4 +4,5 @@ dist
 *.tsbuildinfo
 .idea
 .wrangler
-.vitepress/cache
+.vitepress/cacheartifacts/
+*.tgz

@@ -26,6 +26,35 @@ Pact deliberately trades generality for simplicity. It assumes:
 
 `@a16n/pact-server` depends on `@a16n/pact-client` for shared types (`BaseDocument`, `DatabaseAdapter`), so the same Store can run *inside* the Worker on top of D1 (see [`D1Adapter`](#in-worker-store-d1adapter)) — letting agent/tool code and client code share repositories built on one Store API.
 
+## Building & consuming
+
+The packages aren't published to a registry; they're consumed as tarballs.
+
+```sh
+pnpm build     # tsup-bundles each package to dist/ (ESM + .d.ts + sourcemaps)
+pnpm pack:all  # packs both packages into artifacts/*.tgz (runs the build via prepack)
+```
+
+Inside this workspace, package `exports` point at raw TypeScript source (`src/index.ts`) so dev, tests, and typechecking need no build step. At pack time, `publishConfig` redirects `exports`/`types` to `dist/`, and pnpm rewrites `catalog:`/`workspace:` versions to concrete ones — so the tarballs are self-contained and installable anywhere.
+
+One caveat for consumers: the packed `@a16n/pact-server` depends on `@a16n/pact-client@0.0.1`, which doesn't exist on any registry. The consuming project must install **both** tarballs and add a pnpm override so the server's dependency resolves to the client tarball:
+
+```json
+{
+  "dependencies": {
+    "@a16n/pact-client": "file:./vendor/a16n-pact-client-0.0.1.tgz",
+    "@a16n/pact-server": "file:./vendor/a16n-pact-server-0.0.1.tgz"
+  },
+  "pnpm": {
+    "overrides": {
+      "@a16n/pact-client": "file:./vendor/a16n-pact-client-0.0.1.tgz"
+    }
+  }
+}
+```
+
+(`@a16n/pact-server` also imports `cloudflare:workers`, so it only runs under wrangler/workerd — plain Node can typecheck against it but not import it.)
+
 ## The document model
 
 Every document extends a `BaseDocument`. The consumer adds its own fields on top.
