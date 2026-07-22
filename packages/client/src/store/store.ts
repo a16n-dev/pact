@@ -7,11 +7,22 @@ import {
   SyncClient,
   registerClient as registerClientFetch,
   type RegisterResult,
+  type SyncTransform,
 } from '../sync/sync';
+import { EncryptedAdapter } from '../adapters/encryptedAdapter';
+import { encryptDoc, decryptDoc } from '../crypto/docCrypto';
+import type { DocCipher } from '../crypto/types';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../system';
 import { RealtimeConnection } from '../sync/realtime';
-import { Migrator, noopMigrator } from '../migrator';
-import type { ParsedId } from '../collection';
+import { Migrator } from '../migrator';
+import {
+  buildMigrationRegistry,
+  createIdParser,
+  type CollectionDefinition,
+  type CollectionName,
+  type DocumentOf,
+  type ParsedId,
+} from '../collection';
 import {
   packBackup,
   unpackBackup,
@@ -32,16 +43,33 @@ import type {
   SeedMarkerDoc,
   RestoreMode,
   RestoreResult,
+  EncryptionCheckDoc,
 } from './types';
 
-export class Store {
+// Sealed sentinel for the `_config/encryption` key check — any constant
+// works; wrong keys fail to open it regardless of content.
+const KEYCHECK_SENTINEL = 'pact-keycheck';
+const KEYCHECK_AAD = '_config/encryption';
+
+export class Store<
+  Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[],
+> {
   private realtime: RealtimeConnection | null = null;
   private changeHandlers = new Set<ChangeHandler>();
+  private readonly cipher: DocCipher | null;
+  // Encrypt/decrypt hooks handed to every SyncClient this Store creates, so
+  // wire bodies match what's persisted locally: base fields + ciphertext.
+  private readonly wireTransform: SyncTransform | null;
   private cachedAuthorId: string = LOCAL_AUTHOR_ID;
   private adapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly validate: (collection: string, doc: unknown) => unknown;
-  private readonly collections: readonly string[];
+  // The domain's collection definitions, keyed by name — the authoritative
+  // set of collections this Store serves. Anything else (bar `_*`) is
+  // rejected at the method boundary.
+  private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
+  // Names of `synced: true` collections — the pushAll / pull-all enumeration.
+  private readonly syncedCollections: readonly string[];
   private readonly idParser: (id: string) => ParsedId | null;
   private readonly onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
   // Domain-supplied blob-reference extractor and whether one was configured.
@@ -61,14 +89,35 @@ export class Store {
   constructor(
     adapter: DatabaseAdapter,
     blobs: BlobAdapter | null,
-    domain: StoreDomain = {},
+    domain: StoreDomain<Defs>,
     options?: StoreSyncConfig
   ) {
-    this.adapter = adapter;
+    this.cipher = domain.encryption?.cipher ?? null;
+    // With encryption on, wrap the adapter before anything else touches it:
+    // every layer above (migrations, LWW, sync engine, backups) then deals
+    // exclusively in plaintext while storage only ever holds ciphertext.
+    this.adapter = this.cipher ? new EncryptedAdapter(adapter, this.cipher) : adapter;
+    this.wireTransform = this.cipher
+      ? {
+          toWire: (collection, doc) => encryptDoc(this.cipher!, collection, doc),
+          fromWire: (collection, data) =>
+            decryptDoc(this.cipher!, collection, data as BaseDocument),
+        }
+      : null;
     this.blobs = blobs;
-    this.migrator = domain.migrator ?? noopMigrator;
-    this.collections = domain.collections ?? [];
-    this.idParser = domain.parseId ?? (() => null);
+    const defs = domain.collections;
+    this.definitions = new Map(defs.map((d) => [d.name, d]));
+    if (this.definitions.size !== defs.length) {
+      throw new Error('Duplicate collection name in StoreDomain.collections');
+    }
+    for (const def of defs) {
+      if (def.name.startsWith('_')) {
+        throw new Error(`Collection name "${def.name}" is reserved (the _* namespace is internal)`);
+      }
+    }
+    this.migrator = new Migrator(buildMigrationRegistry(defs));
+    this.syncedCollections = defs.filter((d) => d.synced).map((d) => d.name);
+    this.idParser = createIdParser(defs);
     this.onSetAuthor = domain.onSetAuthor;
     this.hasBlobRefs = domain.blobHashes !== undefined;
     this.blobHashesOf = domain.blobHashes ?? (() => []);
@@ -77,18 +126,20 @@ export class Store {
         ...(doc as object),
         schemaVersion: this.migrator.currentVersion(collection),
       };
-      return domain.validate ? domain.validate(collection, stamped) : stamped;
+      // Internal `_*` docs (config, cursors, outbox) carry no domain schema.
+      const def = this.definitions.get(collection);
+      return def ? def.schema.parse(stamped) : stamped;
     };
     this.sync = new SyncEngine({
       adapter: this.adapter,
       migrator: this.migrator,
-      collections: this.collections,
+      collections: this.syncedCollections,
       getAuthorId: () => this.cachedAuthorId,
       emit: (collection) => this.emit(collection),
     });
     this.sync.setSyncClient(
       options?.syncUrl && options.syncToken
-        ? new SyncClient(options.syncUrl, options.syncToken)
+        ? new SyncClient(options.syncUrl, options.syncToken, this.wireTransform)
         : null
     );
     if (options?.syncUrl && options?.syncToken) {
@@ -163,10 +214,7 @@ export class Store {
   async referencedBlobHashes(): Promise<Set<string>> {
     const refs = new Set<string>();
     if (!this.hasBlobRefs) return refs;
-    const list =
-      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
-    for (const collection of list) {
-      if (collection.startsWith('_')) continue;
+    for (const collection of this.definitions.keys()) {
       const all = await this.adapter.getAll<BaseDocument>(collection);
       for (const raw of all) {
         if (raw.deletedAt) continue;
@@ -211,11 +259,11 @@ export class Store {
     return { deleted };
   }
 
-  static async create(
+  static async create<Defs extends readonly CollectionDefinition[]>(
     adapter: DatabaseAdapter,
-    blobs: BlobAdapter | null = null,
-    domain: StoreDomain = {}
-  ): Promise<Store> {
+    blobs: BlobAdapter | null,
+    domain: StoreDomain<Defs>
+  ): Promise<Store<Defs>> {
     const clientDoc = await adapter.get<ClientConfigDoc>('_config', 'client');
     const syncConfig: StoreSyncConfig = clientDoc
       ? { syncUrl: clientDoc.url, syncToken: clientDoc.token }
@@ -226,7 +274,66 @@ export class Store {
     // config doc.
     const authorDoc = await adapter.get<AuthorConfigDoc>('_config', 'author');
     if (authorDoc) store.cachedAuthorId = authorDoc.authorId;
+    await store.verifyEncryptionKey();
     return store;
+  }
+
+  /**
+   * Fail fast on a wrong encryption key: verify (or, on first encrypted use,
+   * write) the sealed sentinel in `_config/encryption`. No-op without
+   * encryption. `Store.create` calls this automatically; call it yourself
+   * only when constructing a Store directly.
+   */
+  async verifyEncryptionKey(): Promise<void> {
+    if (!this.cipher) return;
+    const existing = await this.adapter.get<EncryptionCheckDoc>('_config', 'encryption');
+    if (!existing) {
+      const now = dayjs().toISOString();
+      await this.adapter.put<EncryptionCheckDoc>('_config', {
+        id: 'encryption',
+        schemaVersion: this.migrator.currentVersion('_config'),
+        createdAt: now,
+        updatedAt: now,
+        createdBy: this.cachedAuthorId,
+        updatedBy: this.cachedAuthorId,
+        deletedAt: null,
+        deletedBy: null,
+        check: await this.cipher.seal(new TextEncoder().encode(KEYCHECK_SENTINEL), KEYCHECK_AAD),
+      });
+      return;
+    }
+    try {
+      await this.cipher.open(existing.check, KEYCHECK_AAD);
+    } catch {
+      throw new Error(
+        'Encryption key does not match the data in this store. ' +
+          'The store was previously encrypted with a different key.'
+      );
+    }
+  }
+
+  /**
+   * One-time sweep for enabling encryption on an existing install: rewrite
+   * every doc in every non-internal collection through the encrypting
+   * adapter, so plaintext rows become ciphertext at rest. To also convert
+   * the server's copies, follow with `pushAll()` — the server's
+   * last-write-wins guard accepts equal `updatedAt`, so each plaintext row
+   * up there is overwritten by its encrypted twin. Idempotent: already
+   * encrypted docs pass through unchanged.
+   */
+  async encryptLocalData(): Promise<{ rewritten: number }> {
+    if (!this.cipher) throw new Error('encryptLocalData requires the encryption option');
+    let rewritten = 0;
+    for (const collection of this.definitions.keys()) {
+      // Reads decrypt (or pass plaintext through); writes seal — one
+      // round-trip through the wrapper re-encrypts the lot.
+      const docs = await this.adapter.getAll<BaseDocument>(collection);
+      for (const doc of docs) {
+        await this.adapter.put(collection, doc);
+        rewritten += 1;
+      }
+    }
+    return { rewritten };
   }
 
   // Current author
@@ -310,7 +417,7 @@ export class Store {
       token: result.token,
       appName,
     } as ClientConfigDoc);
-    this.sync.setSyncClient(new SyncClient(normalisedUrl, result.token));
+    this.sync.setSyncClient(new SyncClient(normalisedUrl, result.token, this.wireTransform));
     this.openRealtime(normalisedUrl, result.token);
     return result;
   }
@@ -352,21 +459,32 @@ export class Store {
   }
 
   async wipeAuthor(authorId: string): Promise<void> {
-    const collections = await this.adapter.listCollections();
     await Promise.all(
-      collections
-        .filter((c) => !c.startsWith('_'))
-        .map(async (collection) => {
-          const all = await this.adapter.getAll<BaseDocument>(collection);
-          const ids = all.filter((d) => d.createdBy === authorId && !d.deletedAt).map((d) => d.id);
-          if (ids.length > 0) await this.deleteMany(collection, ids);
-        })
+      Array.from(this.definitions.keys()).map(async (collection) => {
+        const all = await this.adapter.getAll<BaseDocument>(collection);
+        const ids = all.filter((d) => d.createdBy === authorId && !d.deletedAt).map((d) => d.id);
+        if (ids.length > 0) await this.deleteMany(collection, ids);
+      })
     );
   }
 
   // CRUD
 
+  /**
+   * The schemas handed to the constructor define which collections exist:
+   * any read, write, or pull naming a collection without a definition is a
+   * programming error and throws. Internal `_*` collections are exempt.
+   */
+  private assertDefined(collection: string): void {
+    if (collection.startsWith('_') || this.definitions.has(collection)) return;
+    throw new Error(
+      `Unknown collection "${collection}": every collection must be defined ` +
+        '(with its schema) in StoreDomain.collections'
+    );
+  }
+
   private validateDoc<T>(collection: string, doc: T): T {
+    this.assertDefined(collection);
     return this.validate(collection, doc) as T;
   }
 
@@ -430,6 +548,7 @@ export class Store {
   }
 
   async get<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+    this.assertDefined(collection);
     this.sync.triggerReadPull(collection);
     const doc = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
     return doc?.deletedAt ? null : doc;
@@ -441,10 +560,12 @@ export class Store {
     collection: string,
     id: string
   ): Promise<T | null> {
+    this.assertDefined(collection);
     return this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
   }
 
   async getMany<T extends BaseDocument>(collection: string, ids: string[]): Promise<T[]> {
+    this.assertDefined(collection);
     this.sync.triggerReadPull(collection);
     const docs = await this.adapter.getMany<T>(collection, ids);
     return docs
@@ -453,6 +574,7 @@ export class Store {
   }
 
   async list<T extends BaseDocument>(collection: string): Promise<T[]> {
+    this.assertDefined(collection);
     this.sync.triggerReadPull(collection);
     const all = await this.adapter.getAll<T>(collection);
     return all
@@ -463,6 +585,7 @@ export class Store {
   /** Like `list`, but includes soft-deleted docs (tombstones). Inspect
    *  `deletedAt` on each result to tell them apart. For debug/admin surfaces. */
   async listIncludingDeleted<T extends BaseDocument>(collection: string): Promise<T[]> {
+    this.assertDefined(collection);
     this.sync.triggerReadPull(collection);
     const all = await this.adapter.getAll<T>(collection);
     return all.map((doc) => this.migrateRead<T>(collection, doc) as T);
@@ -625,6 +748,7 @@ export class Store {
   }
 
   async delete(collection: string, id: string): Promise<void> {
+    this.assertDefined(collection);
     const authorId = await this.requireAuthor();
     const existing = this.migrateRead<BaseDocument>(
       collection,
@@ -703,6 +827,7 @@ export class Store {
   }
 
   async deleteMany(collection: string, ids: string[]): Promise<void> {
+    this.assertDefined(collection);
     const authorId = await this.requireAuthor();
     const now = dayjs().toISOString();
     const deleted: BaseDocument[] = [];
@@ -737,12 +862,14 @@ export class Store {
    * that still exists on the server will re-pull on the next sync.
    */
   async hardDelete(collection: string, id: string): Promise<void> {
+    this.assertDefined(collection);
     await this.adapter.delete(collection, id);
     this.emit(collection);
   }
 
   /** Batch form of `hardDelete`. */
   async hardDeleteMany(collection: string, ids: string[]): Promise<void> {
+    this.assertDefined(collection);
     await Promise.all(ids.map((id) => this.adapter.delete(collection, id)));
     this.emit(collection);
   }
@@ -763,6 +890,7 @@ export class Store {
   }
 
   pull<T extends BaseDocument>(collection: string): Promise<T[]> {
+    this.assertDefined(collection);
     return this.sync.pull<T>(collection);
   }
 
@@ -776,15 +904,15 @@ export class Store {
    * no longer be reconciled doc-by-doc.
    */
   async resyncFromScratch(): Promise<void> {
+    // Straight through the adapter, not hardDeleteMany: this must also clear
+    // data left behind by collections the current build no longer defines.
     const collections = await this.adapter.listCollections();
     for (const collection of collections) {
       if (collection === '_config') continue;
       const all = await this.adapter.getAll<BaseDocument>(collection);
       if (all.length > 0) {
-        await this.hardDeleteMany(
-          collection,
-          all.map((d) => d.id)
-        );
+        await Promise.all(all.map((d) => this.adapter.delete(collection, d.id)));
+        this.emit(collection);
       }
     }
     await this.sync.pullRegisteredCollections();
@@ -841,7 +969,14 @@ export class Store {
   async restoreBackup(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult> {
     const mode = opts?.mode ?? 'merge';
     const { manifest, blobs } = unpackBackup(archive);
-    const collections = Object.keys(manifest.collections);
+    // Only defined collections restore; an archive from a domain with
+    // collections this build doesn't know is reported, not silently merged.
+    const collectionsSkipped = Object.keys(manifest.collections).filter(
+      (name) => !this.definitions.has(name)
+    );
+    const collections = Object.keys(manifest.collections).filter((name) =>
+      this.definitions.has(name)
+    );
 
     let docsWritten = 0;
     let docsSkipped = 0;
@@ -892,10 +1027,19 @@ export class Store {
       }
     }
 
-    return { mode, collections, docsWritten, docsSkipped, blobsWritten, blobsSkipped };
+    return {
+      mode,
+      collections,
+      collectionsSkipped,
+      docsWritten,
+      docsSkipped,
+      blobsWritten,
+      blobsSkipped,
+    };
   }
 
   pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+    this.assertDefined(collection);
     return this.sync.pullDocument<T>(collection, id);
   }
 
@@ -903,7 +1047,14 @@ export class Store {
     return this.sync.getLastSyncedAt(collections);
   }
 
-  collection<T extends BaseDocument>(name: string): Collection<T> {
-    return new Collection<T>(this, name);
+  /**
+   * Typed handle to one defined collection. The name is narrowed to the
+   * domain's definition list and the document type is inferred from that
+   * collection's schema — undefined collections are a type error (and throw
+   * at runtime when the name arrives as a plain string).
+   */
+  collection<Name extends CollectionName<Defs>>(name: Name): Collection<DocumentOf<Defs, Name>> {
+    this.assertDefined(name);
+    return new Collection<DocumentOf<Defs, Name>>(this, name);
   }
 }

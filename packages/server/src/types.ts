@@ -52,6 +52,12 @@ export interface Env {
   API_KEY?: string;
   /** App name the legacy `API_KEY` fallback registers clients under. */
   DEFAULT_APP_NAME?: string;
+  /**
+   * Master key enabling dynamic app provisioning via `POST /apps` (create an
+   * app or rotate its password without redeploying). When unset, the route
+   * is disabled and apps come only from `APPS`/`API_KEY`.
+   */
+  PROVISION_KEY?: string;
   SERVER_NAME: string;
   ENABLE_REALTIME: string;
   REALTIME: DurableObjectNamespace<RealtimeDO>;

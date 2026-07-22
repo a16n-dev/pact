@@ -31,6 +31,7 @@ Some domains model authors *as documents* — e.g. a `users/` collection with a 
 
 ```ts
 const domain: StoreDomain = {
+  collections: [users /* … your other defineCollection definitions */],
   onSetAuthor: async (store, authorId) => {
     const users = store.collection('users');
     if (!(await users.get(authorId))) {

@@ -20,7 +20,7 @@ import { Store, InMemoryAdapter } from '@a16n/pact-client';
 const store = await Store.create(
   new InMemoryAdapter(), // storage adapter (or a SQLite-backed adapter)
   null, // optional BlobAdapter (null for JSON-only)
-  domain // StoreDomain: validate / migrator / collections / …
+  domain // StoreDomain: your collection definitions + hooks
 );
 ```
 
@@ -32,7 +32,7 @@ The arguments:
 |----------|------|---------|
 | adapter | `DatabaseAdapter` | Where documents are persisted. |
 | blobAdapter | `BlobAdapter \| null` | Where binary blobs live locally. `null` opts out. |
-| domain | `StoreDomain` | Your validation, migrations, collection list, seed rules. |
+| domain | `StoreDomain` | Your collection definitions (schemas, migrations, id prefixes) + hooks. |
 
 ## The storage adapter
 
@@ -52,46 +52,54 @@ interface DatabaseAdapter {
 
 ## The domain
 
-`StoreDomain` is where the consuming package injects everything Pact deliberately doesn't own. **All fields are optional** — omit one and the Store skips that step.
+`StoreDomain` is where the consuming package injects everything Pact deliberately doesn't own. Its heart is `collections` — **the schemas you provide define which collections exist**. Each collection is declared once with `defineCollection` (name, id prefix, Zod schema, migration chain), and the Store derives everything from that list: write validation, the migrator, id parsing, and the sync enumeration. Reading or writing a collection that isn't defined throws.
 
 ```ts
 interface StoreDomain {
-  validate?: (collection: string, doc: unknown) => unknown; // throw to reject; typically a Zod parse
-  migrator?: Migrator; // defaults to a no-op
-  collections?: readonly string[]; // collections iterated by pushAll / pull-all
-  parseId?: (id: string) => ParsedId | null; // map a doc id back to its collection
+  collections: readonly CollectionDefinition[]; // required — the schemas ARE the collections
   onSetAuthor?: (store: Store, authorId: string) => Promise<void>; // materialize the author as a doc
   blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>; // blob refs for GC / pull (see Blobs)
+  encryption?: { cipher: DocCipher }; // optional E2E encryption (see Encryption)
 }
 ```
 
-A realistic domain wires validation to Zod and lists the syncable collections:
+A realistic domain defines each collection's schema (and, over time, its migrations):
 
 ```ts
 import { z } from 'zod';
+import { defineCollection, type StoreDomain } from '@a16n/pact-client';
 
-const recipeSchema = z.object({
-  /* base fields + your fields */
+const recipes = defineCollection({
+  name: 'recipes',
+  idPrefix: 'rcp', // ids look like rcp-x7k2m9qp4w; also powers parseId
+  schema: (base) =>
+    // `base` already carries the audit fields and the prefix-checked id.
+    base.extend({
+      title: z.string().min(1),
+      servings: z.number().int().positive(),
+    }),
 });
 
-const domain: StoreDomain = {
-  collections: ['recipes', 'users', 'groceryItems'],
-  validate: (collection, doc) => {
-    if (collection === 'recipes') return recipeSchema.parse(doc);
-    return doc;
-  },
-  migrator,
-};
+const drafts = defineCollection({
+  name: 'drafts',
+  idPrefix: 'drf',
+  synced: false, // validated + migrated, but never leaves the device
+  schema: (base) => base.extend({ body: z.string() }),
+});
+
+const domain: StoreDomain = { collections: [recipes, drafts] };
 ```
 
-See [Migrations](/guide/migrations) for `migrator`, [Authors & Identity](/guide/authors-identity) for `onSetAuthor`, and [Blobs](/guide/blobs#declaring-which-fields-hold-blob-hashes) for `blobHashes`.
+Declaring the schemas here also makes `store.collection('recipes')` fully typed: the name is narrowed to your defined collections and the document type is inferred from the schema.
+
+See [Migrations](/guide/migrations) for per-collection `migrations`, [Authors & Identity](/guide/authors-identity) for `onSetAuthor`, [Blobs](/guide/blobs#declaring-which-fields-hold-blob-hashes) for `blobHashes`, and [Encryption](/guide/encryption) for `encryption`.
 
 ## Reading and writing
 
-`store.collection<T>(name)` returns a thin typed wrapper so you don't repeat the collection name:
+`store.collection(name)` returns a thin typed wrapper so you don't repeat the collection name. The name is type-narrowed to your defined collections and the document type comes from that collection's schema:
 
 ```ts
-const recipes = store.collection<Recipe>('recipes');
+const recipes = store.collection('recipes');
 
 // reads (tombstones filtered out)
 await recipes.get(id);
@@ -117,7 +125,7 @@ await recipes.pullDocument(id); // pull a single doc by id
 
 Every mutation (`create`, `update`, `delete`, and their `*Many` variants) follows the same path:
 
-1. **Validate + stamp** `schemaVersion` (via the domain `validate` hook).
+1. **Validate + stamp** `schemaVersion` (a parse against the collection's schema).
 2. **Write** to the local adapter.
 3. **Emit** a `change` event so the UI can re-read.
 4. **Fire-and-forget push** to the server. Failures are swallowed — the write is already durable locally and will be re-sent by `pushAll`.

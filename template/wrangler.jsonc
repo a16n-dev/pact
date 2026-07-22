@@ -4,8 +4,15 @@
   "main": "src/worker.ts",
   "compatibility_date": "2026-07-01",
 
-  // Plain (non-secret) config. The tenant roster lives in the APPS secret,
-  // set with `wrangler secret put APPS` after the first deploy.
+  // Custom domain (recommended): if the domain's zone is on the same
+  // Cloudflare account, uncomment and deploy — DNS + TLS are set up
+  // automatically. Optionally disable the *.workers.dev URL alongside it.
+  // "routes": [{ "pattern": "sync.yourdomain.com", "custom_domain": true }],
+  // "workers_dev": false,
+
+  // Plain (non-secret) config. Apps are provisioned via secrets set after
+  // the first deploy: `wrangler secret put PROVISION_KEY` then POST /apps
+  // per app (or a static roster via `wrangler secret put APPS`).
   "vars": {
     // Public name returned by GET /info.
     "SERVER_NAME": "My Pact Server",
@@ -14,7 +21,11 @@
   },
 
   // D1 — documents, clients, blob registry.
-  // Create with `wrangler d1 create pact-db`, then paste the id it prints:
+  // Create with `wrangler d1 create pact-db`, then paste the id it prints.
+  // NOTE: decline wrangler's offer to add its own config snippet — it invents
+  // binding names (pact_db / pact_blobs) that the server does not read. The
+  // "binding" values here (DB, BLOBS, REALTIME) are the server's Env contract
+  // and must not change; only the resource names/id are yours.
   "d1_databases": [
     {
       "binding": "DB",

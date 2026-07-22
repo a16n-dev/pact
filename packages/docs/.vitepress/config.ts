@@ -103,6 +103,7 @@ export default defineConfig({
         items: [
           { text: 'Sync Protocol', link: '/guide/sync' },
           { text: 'Realtime', link: '/guide/realtime' },
+          { text: 'Encryption (E2E)', link: '/guide/encryption' },
         ],
       },
       {

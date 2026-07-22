@@ -9,6 +9,7 @@ The complete route table exposed by `createSyncApp`. Every route's logic is also
 | `GET` | `/status` | none | Liveness — `{ "status": "ok" }`. |
 | `GET` | `/info` | none | `{ name, protocolVersion, realtime, …info }` — clients read this during connect. |
 | `POST` | `/auth/register` | Bearer **app password** | Body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }`. |
+| `POST` | `/apps` | Bearer **PROVISION_KEY** | Body `{ appName, password }` — create an app or rotate its password. `404` when `PROVISION_KEY` isn't configured. |
 | `GET` | `/auth/check` | Bearer **token** | Validate a token → `{ ok, client }`. |
 | `GET` | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes. |
 | `POST` | `/sync/push` | Bearer **token** | Upsert documents (last-write-wins). |
@@ -54,6 +55,14 @@ Returns:
 ```
 
 `appName` must match `[a-z0-9][a-z0-9_-]{0,63}` and name an app in the server's roster; the returned token is bound to that app, so no later request carries the app name. An unknown app returns the same `401` as a wrong password. Re-registering the same `clientId` rotates the token but keeps the client's identity. See [Authentication](/server/auth).
+
+## `POST /apps`
+
+Dynamic app provisioning, guarded by the `PROVISION_KEY` master secret (the route returns `404` when the secret isn't set). Creates the app on first call (`201`, `created: true`), rotates its password on repeat calls (`200`, `created: false`). Apps defined in the `APPS` env secret return `409` — they're rotated by editing the secret. Table-stored passwords are PBKDF2-hashed at rest. See [Authentication → Provisioning apps](/server/auth#provisioning-apps).
+
+```json
+{ "appName": "myapp", "password": "a-strong-password" }
+```
 
 ## `GET /sync/pull`
 

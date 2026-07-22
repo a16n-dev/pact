@@ -5,6 +5,15 @@
 -- server. Different apps share these tables but can never see each other's
 -- rows: every query the server issues filters on app_name.
 
+-- Dynamically provisioned apps (POST /apps, guarded by PROVISION_KEY).
+-- Apps defined in the APPS env secret don't get rows here; the env roster
+-- wins on a name collision. Passwords are stored PBKDF2-hashed.
+CREATE TABLE apps (
+  app_name TEXT NOT NULL PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE documents (
   app_name TEXT NOT NULL,
   id TEXT NOT NULL,

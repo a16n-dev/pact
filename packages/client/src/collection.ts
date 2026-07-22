@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import { randomId } from './ids';
-import { BaseDocumentSchema } from './types';
-import { Migrator, type CollectionMigrations, type MigrationRegistry } from './migrator';
-import type { StoreDomain } from './store';
+import { BaseDocumentSchema, type BaseDocument } from './types';
+import type { CollectionMigrations, MigrationRegistry } from './migrator';
 
 /**
  * Zod field for a document id in the collection with this prefix. Used both
@@ -40,8 +39,10 @@ const DEFAULT_ID_LENGTH = 10;
 
 /**
  * Single source of truth for a collection: its name, id prefix, document
- * schema, and migration chain. `createDomain` derives the Store wiring
- * (validation, migrator, sync enumeration) from a list of these.
+ * schema, and migration chain. The list of these handed to the Store *is*
+ * the set of available collections — the Store derives its validation,
+ * migrator, id parsing, and sync enumeration from it, and rejects reads
+ * and writes against any collection not in the list.
  */
 export function defineCollection<Name extends string, Schema extends z.ZodType>(def: {
   name: Name;
@@ -112,25 +113,15 @@ export function buildMigrationRegistry(
   return registry;
 }
 
+/** Union of the collection names in a definition list. */
+export type CollectionName<Defs extends readonly CollectionDefinition[]> = Defs[number]['name'];
+
 /**
- * Builds a `StoreDomain` from collection definitions: writes are parsed
- * against their collection's schema (unknown collections — e.g. internal
- * `_config`, `_sync_meta` — pass through unchanged), the migrator walks each
- * collection's chain, and the sync enumeration lists `synced` collections.
+ * Document type of the named collection, inferred from its schema. Falls
+ * back to `BaseDocument` when the definition list isn't statically known
+ * (the intersection is what keeps the result assignable to `BaseDocument`).
  */
-export function createDomain(
-  collections: readonly CollectionDefinition[],
-  hooks?: Pick<StoreDomain, 'onSetAuthor'>
-): StoreDomain {
-  const schemas = new Map<string, z.ZodType>(collections.map((c) => [c.name, c.schema]));
-  return {
-    ...hooks,
-    migrator: new Migrator(buildMigrationRegistry(collections)),
-    collections: collections.filter((c) => c.synced).map((c) => c.name),
-    parseId: createIdParser(collections),
-    validate: (collection, doc) => {
-      const schema = schemas.get(collection);
-      return schema ? schema.parse(doc) : doc;
-    },
-  };
-}
+export type DocumentOf<
+  Defs extends readonly CollectionDefinition[],
+  Name extends CollectionName<Defs>,
+> = z.output<Extract<Defs[number], { name: Name }>['schema']> & BaseDocument;

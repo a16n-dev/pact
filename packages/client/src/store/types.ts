@@ -1,7 +1,7 @@
 import type { BaseDocument } from '../types';
-import type { Migrator } from '../migrator';
-import type { ParsedId } from '../collection';
+import type { CollectionDefinition } from '../collection';
 import type { Store } from './store';
+import type { DocCipher } from '../crypto/types';
 
 // Sync credentials handed to the Store constructor. Internal plumbing —
 // `Store.create` populates it from the persisted client doc; callers configure
@@ -17,33 +17,24 @@ export interface StoreSyncConfig {
 export const READ_PULL_THROTTLE_MS = 10_000;
 
 /**
- * Hooks injected by the consuming domain package. The Store treats stored
- * docs as opaque `BaseDocument`-shaped bags; this config tells it how to
- * validate writes, walk migrations, and enumerate known collections for
- * batch operations (pull-all, push-all). All fields are optional — when
- * omitted, the Store skips that step.
+ * The consuming domain's configuration for a Store. Its heart is
+ * `collections`: the schemas provided here *define* which collections exist.
+ * The Store derives everything schema-adjacent from them — write validation
+ * (each collection's Zod schema), the migrator (each collection's migration
+ * chain), id parsing (each collection's id prefix), and the sync enumeration
+ * (`synced` collections) — and rejects reads and writes against any
+ * collection that isn't defined. Only internal `_*` collections live outside
+ * the definition list.
  */
-export interface StoreDomain {
+export interface StoreDomain<
+  Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[],
+> {
   /**
-   * Validate (and stamp `schemaVersion` on) a doc before it's written.
-   * Typically a Zod schema parse. Throws to reject the write.
+   * The collections this Store serves, each defined via `defineCollection`.
+   * Required — a collection with no definition (and therefore no schema)
+   * does not exist as far as the Store is concerned.
    */
-  validate?: (collection: string, doc: unknown) => unknown;
-  /**
-   * Migrator pre-bound to the domain's migration registry. Defaults to a
-   * no-op (docs pass through unchanged, currentVersion always returns 1).
-   */
-  migrator?: Migrator;
-  /**
-   * Collections the Store iterates over for `pushAll` / pull-all-on-reconnect.
-   * Omit to fall back to whatever the adapter currently has data for.
-   */
-  collections?: readonly string[];
-  /**
-   * Maps a document id back to its collection (by its prefix). Defaults to a
-   * parser that knows nothing — always returns `null`.
-   */
-  parseId?: (id: string) => ParsedId | null;
+  collections: Defs;
   /**
    * Called from `setAuthor` after the current-author id is recorded, with
    * the Store and the new author id. The generic Store only tracks *who* the
@@ -62,6 +53,15 @@ export interface StoreDomain {
    * nested, in arrays, or parsed out of a body.
    */
   blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>;
+  /**
+   * Optional end-to-end document encryption. When set, domain fields are
+   * sealed into one ciphertext string both at rest (the adapter only ever
+   * stores ciphertext; docs are decrypted as they're read into memory) and
+   * on the sync wire — the server sees base sync fields plus the envelope.
+   * All clients of the app (including an agent's MCP Worker) must hold the
+   * same key. Internal `_*` collections and blob bytes are not encrypted.
+   */
+  encryption?: { cipher: DocCipher };
 }
 
 export type ClientConfigDoc = BaseDocument & {
@@ -74,6 +74,13 @@ export type ClientConfigDoc = BaseDocument & {
   appName?: string;
 };
 export type AuthorConfigDoc = BaseDocument & { authorId: string };
+
+/**
+ * Local-only `_config/encryption` doc: a sealed sentinel written on first
+ * encrypted use, verified on every subsequent open so a wrong key fails
+ * loudly at startup instead of as scattered decrypt errors mid-read.
+ */
+export type EncryptionCheckDoc = BaseDocument & { check: string };
 
 export interface ClientRegistration {
   id: string;
@@ -119,6 +126,12 @@ export interface RestoreResult {
   mode: RestoreMode;
   /** Collections present in the archive. */
   collections: string[];
+  /**
+   * Archive collections this Store has no definition for — their docs were
+   * not restored. Non-empty means the archive came from a domain with
+   * collections this build doesn't know about.
+   */
+  collectionsSkipped: string[];
   /** Documents written to local storage. */
   docsWritten: number;
   /** Documents skipped because a newer local copy won (merge only). */

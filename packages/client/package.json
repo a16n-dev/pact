@@ -1,7 +1,8 @@
 {
   "name": "@a16n/pact-client",
-  "version": "0.0.1",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Local-first document store with optional sync, realtime, blobs, migrations, and end-to-end encryption — the client half of Pact.",
+  "license": "UNLICENSED",
   "type": "module",
   "types": "./src/index.ts",
   "exports": {
@@ -12,6 +13,7 @@
     "dist"
   ],
   "publishConfig": {
+    "access": "public",
     "types": "./dist/index.d.ts",
     "exports": {
       ".": {

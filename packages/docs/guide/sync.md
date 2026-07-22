@@ -11,6 +11,8 @@ Sync is HTTP: **pull-based for reads, push-based for writes**, with last-write-w
 | `store.pull(collection)` | Requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp. |
 | `store.pullDocument(collection, id)` | Pulls a single doc (LWW against the local copy). |
 
+With [encryption](/guide/encryption) enabled, the document body in every push/pull is the sealed envelope (base fields + one ciphertext string) — the protocol itself is unchanged, since the server never inspects `data`.
+
 ## Push: writes flow out optimistically
 
 You never call push explicitly in the common case. Each mutation already fire-and-forgets its changed documents to the server (step 4 of an [optimistic write](/guide/client-setup#optimistic-writes)). If the network is down, the failure is swallowed — the write is durable locally, and `pushAll()` will re-send it later.

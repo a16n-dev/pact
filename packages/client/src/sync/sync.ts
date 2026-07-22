@@ -64,13 +64,25 @@ export async function registerClient(
   return { ok: true, token: json.token };
 }
 
+/**
+ * Optional wire transform applied to document bodies at the sync boundary —
+ * the hook end-to-end encryption uses. `toWire` shapes a local doc into what
+ * the server stores; `fromWire` reverses it on pull. Identity when absent.
+ */
+export interface SyncTransform {
+  toWire(collection: string, doc: BaseDocument): Promise<unknown>;
+  fromWire(collection: string, data: unknown): Promise<unknown>;
+}
+
 export class SyncClient {
   private readonly endpoint: string;
   private readonly token: string;
+  private readonly transform: SyncTransform | null;
 
-  constructor(endpoint: string, token: string) {
+  constructor(endpoint: string, token: string, transform: SyncTransform | null = null) {
     this.endpoint = endpoint;
     this.token = token;
+    this.transform = transform;
   }
 
   private authHeaders(): Record<string, string> {
@@ -92,12 +104,14 @@ export class SyncClient {
   }
 
   async push(collection: string, docs: BaseDocument[]): Promise<PushResponse> {
-    const syncDocs: SyncDocument[] = docs.map((doc) => ({
-      id: doc.id,
-      collection,
-      updatedAt: doc.updatedAt,
-      data: doc,
-    }));
+    const syncDocs: SyncDocument[] = await Promise.all(
+      docs.map(async (doc) => ({
+        id: doc.id,
+        collection,
+        updatedAt: doc.updatedAt,
+        data: this.transform ? await this.transform.toWire(collection, doc) : doc,
+      }))
+    );
 
     const res = await fetchWithTimeout(`${this.endpoint}/sync/push`, {
       method: 'POST',
@@ -127,7 +141,13 @@ export class SyncClient {
 
     const result = (await res.json()) as PullResponse;
     return {
-      documents: result.documents.map((d) => d.data as T),
+      documents: await Promise.all(
+        result.documents.map(async (d) =>
+          this.transform
+            ? ((await this.transform.fromWire(collection, d.data)) as T)
+            : (d.data as T)
+        )
+      ),
       cursor: result.cursor,
       hasMore: result.hasMore ?? false,
     };
@@ -144,6 +164,8 @@ export class SyncClient {
     }
 
     const result = (await res.json()) as PullResponse;
-    return result.documents[0] ? (result.documents[0].data as T) : null;
+    if (!result.documents[0]) return null;
+    const data = result.documents[0].data;
+    return (this.transform ? await this.transform.fromWire(collection, data) : data) as T;
   }
 }

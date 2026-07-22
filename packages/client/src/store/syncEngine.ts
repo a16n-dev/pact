@@ -12,10 +12,22 @@ import {
   type SyncMetaDoc,
 } from './types';
 
+// Docs still authored by the pre-identity `_local` placeholder must never be
+// pushed. The server also rejects them — but only when it can read the
+// author fields, which it can't for end-to-end-encrypted docs, so this
+// client-side filter is the enforcement that survives encryption.
+function isLocalAuthored(doc: BaseDocument): boolean {
+  return (
+    doc.createdBy === LOCAL_AUTHOR_ID ||
+    doc.updatedBy === LOCAL_AUTHOR_ID ||
+    doc.deletedBy === LOCAL_AUTHOR_ID
+  );
+}
+
 export interface SyncEngineDeps {
   adapter: DatabaseAdapter;
   migrator: Migrator;
-  /** Collections iterated for push-all / pull-all; empty falls back to the adapter. */
+  /** The synced collections — the full push-all / pull-all enumeration. */
   collections: readonly string[];
   /** Live read of the Store's current author id (changes via setAuthor/wipe). */
   getAuthorId: () => string;
@@ -81,21 +93,16 @@ export class SyncEngine {
   }
 
   async pullRegisteredCollections(): Promise<void> {
-    const list =
-      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
-    await Promise.all(
-      list.filter((c) => !c.startsWith('_')).map((c) => this.pull(c).catch(() => {}))
-    );
+    await Promise.all(this.collections.map((c) => this.pull(c).catch(() => {})));
   }
 
   async pushAll(): Promise<void> {
     if (!this.syncClient) return;
-    const list =
-      this.collections.length > 0 ? this.collections : await this.adapter.listCollections();
-    for (const collection of list) {
-      if (collection.startsWith('_')) continue;
+    for (const collection of this.collections) {
       const raw = await this.adapter.getAll<BaseDocument>(collection);
-      const docs = raw.map((doc) => this.migrator.migrate<BaseDocument>(collection, doc));
+      const docs = raw
+        .map((doc) => this.migrator.migrate<BaseDocument>(collection, doc))
+        .filter((doc) => !isLocalAuthored(doc));
       if (docs.length > 0) {
         await this.syncClient.push(collection, docs);
       }
@@ -194,16 +201,26 @@ export class SyncEngine {
     for (const [collection, group] of byCollection) {
       // Push the docs' *current* versions, coalescing edits made since they were
       // queued. A doc that's vanished locally (hard-deleted before its push
-      // landed) has nothing to send, but its entry is still cleared.
+      // landed) has nothing to send, but its entry is still cleared. A doc
+      // still `_local`-authored stays queued (entry kept) until the claim
+      // flow reassigns it.
       const docs: BaseDocument[] = [];
+      const clearable: OutboxDoc[] = [];
       for (const entry of group) {
         const doc = await this.adapter.get<BaseDocument>(collection, entry.docId);
-        if (doc) docs.push(this.migrator.migrate<BaseDocument>(collection, doc));
+        if (!doc) {
+          clearable.push(entry);
+          continue;
+        }
+        const migrated = this.migrator.migrate<BaseDocument>(collection, doc);
+        if (isLocalAuthored(migrated)) continue;
+        docs.push(migrated);
+        clearable.push(entry);
       }
       try {
         if (docs.length > 0) await this.syncClient!.push(collection, docs);
-        await Promise.all(group.map((entry) => this.adapter.delete(OUTBOX, entry.id)));
-        changed = true;
+        await Promise.all(clearable.map((entry) => this.adapter.delete(OUTBOX, entry.id)));
+        changed = clearable.length > 0;
       } catch {
         // Leave this collection's entries queued; a later drain retries them.
       }

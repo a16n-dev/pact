@@ -60,7 +60,7 @@ The document store treats your docs as opaque bags, so it can't know which field
 import { blobFields } from '@a16n/pact-client';
 
 const domain = {
-  collections: ['recipes'],
+  collections: [recipes], // the defineCollection list
   blobHashes: blobFields({ recipes: ['imageContentHash'] }),
 };
 ```

@@ -1,11 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import {
-  buildMigrationRegistry,
-  createDomain,
-  createIdParser,
-  defineCollection,
-} from './collection';
+import { buildMigrationRegistry, createIdParser, defineCollection } from './collection';
+import { Migrator } from './migrator';
 
 const widgets = defineCollection({
   name: 'widgets',
@@ -49,63 +45,38 @@ describe('defineCollection', () => {
   });
 });
 
-describe('createDomain', () => {
-  const domain = createDomain([widgets, localNotes]);
-
-  it('enumerates only synced collections', () => {
-    expect(domain.collections).toEqual(['widgets']);
-  });
-
-  it('validates docs in known collections and passes unknown ones through', () => {
-    const doc = { ...baseFields, id: 'wg-abc', label: 'a' };
-    expect(domain.validate!('widgets', doc)).toEqual(doc);
-    expect(() => domain.validate!('widgets', { ...doc, label: '' })).toThrow();
-    const opaque = { anything: true };
-    expect(domain.validate!('_config', opaque)).toBe(opaque);
-  });
-
-  it('binds the migrator to each collection chain', () => {
-    expect(domain.migrator!.currentVersion('widgets')).toBe(2);
-    const migrated = domain.migrator!.migrate<{ label: string }>('widgets', {
-      ...baseFields,
-      schemaVersion: 1,
-      id: 'wg-abc',
-      name: 'a',
-    });
-    expect(migrated.label).toBe('a');
-  });
+describe('createIdParser', () => {
+  const parseId = createIdParser([widgets, localNotes]);
 
   it('parses ids back to their collection by splitting on the first dash', () => {
-    expect(domain.parseId!('wg-abc')).toEqual({
+    expect(parseId('wg-abc')).toEqual({
       collection: 'widgets',
       prefix: 'wg',
       localId: 'abc',
     });
     // localId keeps any further dashes (e.g. a seed key like `yellow-onion`).
-    expect(domain.parseId!('ln-yellow-onion')).toEqual({
+    expect(parseId('ln-yellow-onion')).toEqual({
       collection: 'localNotes',
       prefix: 'ln',
       localId: 'yellow-onion',
     });
-    expect(domain.parseId!('zz-abc')).toBeNull();
-    expect(domain.parseId!('wg')).toBeNull();
+    expect(parseId('zz-abc')).toBeNull();
+    expect(parseId('wg')).toBeNull();
   });
-});
 
-describe('createIdParser', () => {
   it('handles prefixes of differing lengths', () => {
     const longPrefixed = defineCollection({
       name: 'longPrefixed',
       idPrefix: 'widget',
       schema: (base) => base,
     });
-    const domain = createDomain([widgets, longPrefixed]);
-    expect(domain.parseId!('widget-xyz')).toEqual({
+    const parse = createIdParser([widgets, longPrefixed]);
+    expect(parse('widget-xyz')).toEqual({
       collection: 'longPrefixed',
       prefix: 'widget',
       localId: 'xyz',
     });
-    expect(domain.parseId!('wg-xyz')).toMatchObject({ collection: 'widgets' });
+    expect(parse('wg-xyz')).toMatchObject({ collection: 'widgets' });
   });
 
   it('throws when two collections share a prefix', () => {
@@ -118,5 +89,17 @@ describe('buildMigrationRegistry', () => {
   it('skips collections without migrations', () => {
     const registry = buildMigrationRegistry([widgets, localNotes]);
     expect(Object.keys(registry)).toEqual(['widgets']);
+  });
+
+  it('binds each collection chain for the migrator', () => {
+    const migrator = new Migrator(buildMigrationRegistry([widgets, localNotes]));
+    expect(migrator.currentVersion('widgets')).toBe(2);
+    const migrated = migrator.migrate<{ label: string }>('widgets', {
+      ...baseFields,
+      schemaVersion: 1,
+      id: 'wg-abc',
+      name: 'a',
+    });
+    expect(migrated.label).toBe('a');
   });
 });

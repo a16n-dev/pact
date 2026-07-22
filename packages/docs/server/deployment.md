@@ -26,10 +26,18 @@ pnpm exec wrangler d1 create pact-db
 pnpm exec wrangler r2 bucket create pact-blobs
 pnpm run schema        # applies node_modules/@a16n/pact-server/schema.sql
 
-# 4. Deploy, then set the tenant roster
+# 4. Deploy, then enable app provisioning
 pnpm run deploy
-pnpm exec wrangler secret put APPS   # {"myapp":"a-strong-password"}
+pnpm exec wrangler secret put PROVISION_KEY   # one master key
+
+# 5. Create apps whenever you need them — no redeploy
+curl -X POST https://<url>/apps \
+  -H "Authorization: Bearer <PROVISION_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"appName":"myapp","password":"a-strong-password"}'
 ```
+
+(Prefer a fixed roster? Skip `PROVISION_KEY` and set the `APPS` secret instead — `{"myapp":"pw", ...}`. Both modes are covered in [Authentication](/server/auth#provisioning-apps).)
 
 Verify with `curl <url>/status`, then clients [register](/server/auth) with the URL, their `appName`, and that app's password. Day-2 operations (adding a tenant, upgrading the vendored tarball, local dev via `.dev.vars`) are covered in the template README.
 
@@ -77,7 +85,8 @@ interface Env {
 | `DB` | D1 database | Holds `documents`, `clients`, `blobs` — every row scoped by `app_name`. |
 | `BLOBS` | R2 bucket | Raw blob bytes, keyed `<appName>/<sha-256>`. |
 | `REALTIME` | Durable Object namespace | Bound to the `RealtimeDO` class; one DO instance per app. |
-| `APPS` | Secret | The tenant roster: a JSON object of `{ "appName": "password" }`. Set with `wrangler secret put APPS`. Adding an app = editing this secret; no schema or binding changes. |
+| `APPS` | Secret (optional) | Static tenant roster: a JSON object of `{ "appName": "password" }`. Set with `wrangler secret put APPS`. |
+| `PROVISION_KEY` | Secret (optional) | Enables dynamic provisioning: `POST /apps` creates an app (or rotates its password) at runtime — no secret edits, no redeploy. Set at least one of `APPS` / `PROVISION_KEY`. |
 | `API_KEY` | Secret (deprecated) | Single-tenant fallback used only when `APPS` is unset — serves one app named `DEFAULT_APP_NAME` (default `"default"`). |
 | `DEFAULT_APP_NAME` | Var (optional) | App name for the `API_KEY` fallback. |
 | `SERVER_NAME` | Var | Human-readable name returned by `GET /info`. |
@@ -194,6 +203,13 @@ INSERT INTO blobs_new (app_name, hash, mime_type, size, created_at)
   SELECT 'myapp', hash, mime_type, size, created_at FROM blobs;
 DROP TABLE blobs;
 ALTER TABLE blobs_new RENAME TO blobs;
+
+-- apps (new table — nothing to migrate into it)
+CREATE TABLE apps (
+  app_name TEXT NOT NULL PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 -- clients
 CREATE TABLE clients_new (

@@ -99,7 +99,7 @@ import { Store, InMemoryAdapter } from '@a16n/pact-client';
 const store = await Store.create(
   new InMemoryAdapter(), // or a SQLite-backed adapter
   null, // optional BlobAdapter
-  domain // validate / migrator / collections
+  domain // your collection definitions (the schemas define what exists)
 );
 
 const recipes = store.collection('recipes');

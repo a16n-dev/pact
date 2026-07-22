@@ -1,22 +1,25 @@
 # Migrations
 
-Each collection has a migration chain. A document carries its `schemaVersion`; the `Migrator` walks it forward to the collection's current version as the document is read.
+Each collection has a migration chain, declared on its [collection definition](/guide/client-setup#the-domain). A document carries its `schemaVersion`; the Store's migrator walks it forward to the collection's current version as the document is read.
 
 ```ts
-import { Migrator } from '@a16n/pact-client';
+import { defineCollection } from '@a16n/pact-client';
 
-const migrator = new Migrator({
-  recipes: {
+const recipes = defineCollection({
+  name: 'recipes',
+  idPrefix: 'rcp',
+  migrations: {
     current: 3,
     migrations: [
       { from: 1, to: 2, up: (doc) => ({ ...doc, servings: doc.servings ?? 1 }) },
       { from: 2, to: 3, up: (doc) => ({ ...doc, tags: doc.tags ?? [] }) },
     ],
   },
+  schema: (base) => base.extend({ /* current shape */ }),
 });
 ```
 
-Pass the migrator into your [domain](/guide/client-setup#the-domain) (`domain.migrator`). If you omit it, the Store uses a no-op migrator and every document is assumed already current.
+A collection without `migrations` sits at version 1 and every document is assumed already current. New writes are stamped with `current` for their collection.
 
 ## Migrate on read
 

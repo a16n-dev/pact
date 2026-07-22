@@ -39,6 +39,8 @@ Pact's internal bookkeeping collections are **not** included:
 | `_sync_meta` | Per-collection "last pulled at" cursors — meaningless on another device. |
 | `_outbox` | Pending local writes — transient sync state. |
 
+Note that on an [encrypted store](/guide/encryption), backups still export **plaintext** — the archive reads through the decrypting layer. Treat backup files with the same care as the data itself.
+
 The result is that a backup captures **your data**, not your device's sync state. Restoring it onto a fresh client gives you the documents and files back; you still [connect and claim an identity](/guide/authors-identity) on that client as a separate step.
 
 ::: tip Backups vs. sync

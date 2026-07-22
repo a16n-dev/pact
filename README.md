@@ -8,6 +8,7 @@ Pact is an intentionally simple client/server architecture for building local-fi
 - [x] **Realtime** — clients are notified of changes as they land on the server, enabling real-time collaboration
 - [x] **Agents as first-class users** — an agent (e.g. an MCP server built on `@a16n/pact-client`) registers as an ordinary sync client and reads and writes the same data other clients do, in real time
 - [x] **JSON document + blob storage** — store and sync structured documents alongside images and other files
+- [x] **Optional end-to-end encryption** — domain fields sealed into one ciphertext string, at rest locally and on the server; only base sync fields stay cleartext
 
 ## Design assumptions
 
@@ -15,7 +16,7 @@ Pact deliberately trades generality for simplicity. It assumes:
 
 - **A small, high-trust group.** One server per group (e.g. a household). Authentication is a single shared server password that's traded for per-client tokens — there's no per-document access control. Everyone who can connect can read and write everything.
 - **Last-write-wins is good enough.** Conflicts resolve by comparing `updatedAt` timestamps. There are no CRDTs, vector clocks, or merge UIs. For a small group editing mostly-disjoint data this is rarely felt; for high-contention concurrent edits to the same field it isn't the right tool.
-- **Schemas are owned by the consumer.** Pact stores documents as opaque `BaseDocument`-shaped bags. Validation (typically Zod), migrations, and the list of collections are injected by the consuming domain package. Pact never inspects your document bodies except to read the base fields.
+- **Schemas are required, and owned by the consumer.** Every collection is declared with a Zod schema (plus id prefix and migrations) via `defineCollection`, and the set of definitions handed to the Store *is* the set of collections that exist — undefined collections are rejected. Beyond validating writes against your schemas, Pact never inspects document bodies except to read the base fields.
 
 ## The two packages
 
@@ -41,7 +42,7 @@ Inside this workspace, package `exports` point at raw TypeScript source (`src/in
 
 ### Deploying a server
 
-You don't extend the server — you deploy it. Copy the ready-made project in [`template/`](template/), drop the packed `@a16n/pact-server` tarball into its `vendor/`, and follow its README: `wrangler d1 create` + `r2 bucket create`, apply the packaged `schema.sql`, `wrangler deploy`, then set the `APPS` tenant roster secret. Adding an app later is just editing that secret.
+You don't extend the server — you deploy it. Copy the ready-made project in [`template/`](template/), drop the packed `@a16n/pact-server` tarball into its `vendor/`, and follow its README: `wrangler d1 create` + `r2 bucket create`, apply the packaged `schema.sql`, `wrangler deploy`, then set a `PROVISION_KEY` secret. Adding an app is then one `POST /apps` call — no secret edits, no redeploy (a static `APPS` roster secret remains as an alternative).
 
 ## The document model
 
@@ -83,7 +84,7 @@ import { Store, InMemoryAdapter } from '@a16n/pact-client';
 const store = await Store.create(
   new InMemoryAdapter(),  // or a SQLite-backed adapter
   null,                   // optional BlobAdapter
-  domain,                 // StoreDomain: validate / migrator / collections / …
+  domain,                 // StoreDomain: your collection definitions + hooks
   { realtime: true }
 );
 
@@ -100,7 +101,7 @@ const live = await recipes.list();
 
 Mutations (`create`, `update`, `delete`, and their `*Many` variants) follow the same path:
 
-1. Validate + stamp `schemaVersion` (via the domain `validate` hook).
+1. Validate + stamp `schemaVersion` (a parse against the collection's schema).
 2. Write to the local adapter.
 3. Emit a `change` event so the UI can re-read.
 4. Fire-and-forget push to the server (failures are swallowed — the write is already durable locally and will be re-sent by `pushAll`).
@@ -111,22 +112,21 @@ This means writes never block on the network and always succeed offline.
 
 ```ts
 interface StoreDomain {
-  validate?: (collection: string, doc: unknown) => unknown;  // throw to reject; typically a Zod parse
-  migrator?: Migrator;                                        // defaults to a no-op
-  collections?: readonly string[];                            // collections iterated by pushAll / pull-all
-  isSeedDoc?: (doc: BaseDocument) => boolean;                 // which docs pushAll skips (see Seeds)
+  collections: readonly CollectionDefinition[];  // required — the schemas ARE the collections
   onSetAuthor?: (store: Store, authorId: string) => Promise<void>;  // materialize the author as a doc
+  blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>;  // blob refs for GC / pull
+  encryption?: { cipher: DocCipher };            // optional E2E encryption
 }
 ```
 
-All fields are optional; omit one and the Store skips that step.
+Each entry comes from `defineCollection({ name, idPrefix, schema, migrations?, synced? })`. The Store derives write validation, the migrator, id parsing, and the sync enumeration from this list, and rejects reads and writes against any collection not in it.
 
 ### Collection handle
 
-`store.collection<T>(name)` returns a thin typed wrapper so you don't repeat the collection name:
+`store.collection(name)` returns a thin typed wrapper so you don't repeat the collection name — the name is narrowed to your defined collections and the document type is inferred from that collection's schema:
 
 ```ts
-const recipes = store.collection<Recipe>('recipes');
+const recipes = store.collection('recipes');
 await recipes.get(id);
 await recipes.getMany(ids);
 await recipes.list();
@@ -258,7 +258,8 @@ export default createSyncApp({
 interface Env {
   DB: D1Database;                              // documents + clients + blobs registry (all app-scoped)
   BLOBS: R2Bucket;                             // blob bytes, keyed <appName>/<hash>
-  APPS?: string;                               // tenant roster secret: {"appName":"password",...}
+  APPS?: string;                               // static tenant roster secret: {"appName":"password",...}
+  PROVISION_KEY?: string;                      // master key enabling dynamic POST /apps provisioning
   API_KEY?: string;                            // deprecated single-tenant fallback password
   DEFAULT_APP_NAME?: string;                   // app name the API_KEY fallback serves (default "default")
   SERVER_NAME: string;                         // public name returned by GET /info
@@ -274,6 +275,7 @@ interface Env {
 | GET | `/status` | none | liveness — `{ status: "ok" }` |
 | GET | `/info` | none | `{ name, protocolVersion: 3, realtime, …info }` — clients read this during connect |
 | POST | `/auth/register` | Bearer **app password** | body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }` |
+| POST | `/apps` | Bearer **PROVISION_KEY** | body `{ appName, password }` — create an app or rotate its password (404 when `PROVISION_KEY` unset) |
 | GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
 | GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
 | POST | `/sync/push` | Bearer **token** | upsert documents (LWW) |
@@ -285,7 +287,7 @@ interface Env {
 
 (There is deliberately no remote-wipe route; the wipe functions are exported for operator use only.)
 
-**Auth model.** The server is **multi-tenant**: the `APPS` secret is a JSON roster of `{ "appName": "password" }`, and completely different apps (different schemas, different clients) share one deployment with zero data visibility between them. A client `POST`s its app's password once to `/auth/register` with an `appName`, a self-generated `clientId` and a display name, and gets back a long-lived token (`pact_<nanoid>`) bound server-side to that app. Every other request carries just the token as `Authorization: Bearer …` — the app is resolved from the client row it was registered under, never from anything the client sends later. Re-registering the same `clientId` rotates the token while keeping the client's identity. `last_seen_at` is bumped (fire-and-forget) on each authenticated request.
+**Auth model.** The server is **multi-tenant**: completely different apps (different schemas, different clients) share one deployment with zero data visibility between them. Apps are provisioned either statically (the `APPS` secret, a JSON roster of `{ "appName": "password" }`) or dynamically (`POST /apps` guarded by a `PROVISION_KEY` master secret; passwords stored PBKDF2-hashed in the `apps` table — the env roster wins on name collisions). A client `POST`s its app's password once to `/auth/register` with an `appName`, a self-generated `clientId` and a display name, and gets back a long-lived token (`pact_<nanoid>`) bound server-side to that app. Every other request carries just the token as `Authorization: Bearer …` — the app is resolved from the client row it was registered under, never from anything the client sends later. Re-registering the same `clientId` rotates the token while keeping the client's identity. `last_seen_at` is bumped (fire-and-forget) on each authenticated request.
 
 **Tenant isolation.** Every D1 row carries an `app_name` (baked into every query and primary key, with a per-app `seq` counter), blob bytes are keyed `<appName>/<hash>` in R2, and each app gets its own realtime Durable Object (`idFromName(appName)`) — so documents, blobs, and broadcasts are all partitioned by construction. App names are validated (`[a-z0-9][a-z0-9_-]{0,63}`) at the only entry points that accept one. A legacy single-tenant deployment can keep using `API_KEY`; it behaves as one app named `DEFAULT_APP_NAME` (default `"default"`).
 
@@ -338,4 +340,4 @@ The server deliberately bundles **no agent surface**. An agent's MCP server is a
 
 ### Deploy notes
 
-A typical `wrangler.toml` binds D1 (`DB`), R2 (`BLOBS`), and the `RealtimeDO` durable object. `SERVER_NAME` and `ENABLE_REALTIME` are plain vars; the tenant roster is a secret (`wrangler secret put APPS`, value like `{"fond":"pw1","otherapp":"pw2"}`). Adding an app is editing that secret — no schema or binding changes. When realtime is gated off, the Durable Object stays deployed but idle, so it costs nothing.
+A typical `wrangler.toml` binds D1 (`DB`), R2 (`BLOBS`), and the `RealtimeDO` durable object. `SERVER_NAME` and `ENABLE_REALTIME` are plain vars; app provisioning is secret-based — either `wrangler secret put PROVISION_KEY` (then `POST /apps` per app) or a static `wrangler secret put APPS` roster. Adding an app never touches schema or bindings. When realtime is gated off, the Durable Object stays deployed but idle, so it costs nothing.

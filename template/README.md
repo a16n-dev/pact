@@ -32,7 +32,9 @@ pnpm exec wrangler d1 create pact-db
 pnpm exec wrangler r2 bucket create pact-blobs
 ```
 
-(Pick different names if you like — update `wrangler.jsonc` and the `schema` script to match.)
+Both commands print a config snippet and offer to add it for you — **decline**. Wrangler invents binding names from the resource names (`pact_db`, `pact_blobs`), but the `binding` values already in `wrangler.jsonc` (`DB`, `BLOBS`, `REALTIME`) are the server's `Env` contract and must stay as they are. The only value you need from the output is the D1 `database_id`; the R2 snippet needs nothing.
+
+(Pick different resource names if you like — update `database_name`/`bucket_name` in `wrangler.jsonc` and the `schema` script to match. The `binding` values stay fixed.)
 
 **5. Apply the schema.**
 
@@ -46,12 +48,21 @@ pnpm run schema
 pnpm run deploy
 ```
 
-**7. Set the tenant roster.** A JSON object of `appName → password`; app names must match `[a-z0-9][a-z0-9_-]{0,63}`:
+**7. Enable app provisioning.** Set one master key, then create apps over HTTP whenever you need them:
 
 ```bash
-pnpm exec wrangler secret put APPS
-# paste: {"myapp":"a-strong-password"}
+pnpm exec wrangler secret put PROVISION_KEY
+# paste one strong master key
+
+curl -X POST https://my-pact-server.<your-subdomain>.workers.dev/apps \
+  -H "Authorization: Bearer <PROVISION_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"appName":"myapp","password":"a-strong-password"}'
 ```
+
+App names must match `[a-z0-9][a-z0-9_-]{0,63}`. Passwords are stored hashed. Re-`POST`ing the same name rotates its password (already-registered clients keep working).
+
+*Static alternative:* skip `PROVISION_KEY` and define the roster upfront instead — `wrangler secret put APPS` with `{"myapp":"a-strong-password"}`. Both can coexist; the `APPS` secret wins on a name collision.
 
 **8. Verify.**
 
@@ -68,7 +79,7 @@ await store.registerClient(serverUrl, appPassword, 'myapp', "Alice's laptop");
 
 ## Day-2 operations
 
-- **Add an app**: edit the `APPS` secret (`wrangler secret put APPS` with the new roster). No schema or config changes, no redeploy.
+- **Add an app**: `POST /apps` with the `PROVISION_KEY` (or, if using the static roster, edit the `APPS` secret). No schema or config changes, no redeploy.
 - **Upgrade the server**: drop the new tarball over `vendor/a16n-pact-server.tgz`, then `pnpm install && pnpm run deploy`. If the release notes include schema changes, apply them with `wrangler d1 execute` first.
 - **Local dev**: `cp .dev.vars.example .dev.vars`, edit the roster, then `pnpm run dev`. Wrangler runs D1/R2/DO locally; apply the schema locally with `pnpm exec wrangler d1 execute pact-db --local --file node_modules/@a16n/pact-server/schema.sql`.
 - **Rename the worker / server**: `name` and `SERVER_NAME` in `wrangler.jsonc`.

@@ -1,8 +1,14 @@
 # D1 Schema
 
-The server stores everything in three D1 tables, all scoped by `app_name` — the tenant boundary on a [multi-tenant server](/server/auth). The canonical DDL ships as **`schema.sql` inside the `@a16n/pact-server` package** — apply it with `wrangler d1 execute <db> --remote --file node_modules/@a16n/pact-server/schema.sql` (see [Deployment](/server/deployment)). The listing below is a reference copy.
+The server stores everything in four D1 tables, all keyed by `app_name` — the tenant boundary on a [multi-tenant server](/server/auth). The canonical DDL ships as **`schema.sql` inside the `@a16n/pact-server` package** — apply it with `wrangler d1 execute <db> --remote --file node_modules/@a16n/pact-server/schema.sql` (see [Deployment](/server/deployment)). The listing below is a reference copy.
 
 ```sql
+CREATE TABLE apps (
+  app_name TEXT NOT NULL PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE documents (
   app_name TEXT NOT NULL,
   id TEXT NOT NULL, collection TEXT NOT NULL,
@@ -29,6 +35,16 @@ CREATE TABLE clients (
 );
 CREATE INDEX idx_clients_token ON clients (token);
 ```
+
+## `apps`
+
+The dynamically provisioned half of the tenant roster — one row per app created via [`POST /apps`](/server/auth#provisioning-apps). Apps defined in the `APPS` env secret don't get rows here, and the env secret wins on a name collision.
+
+| Column | Purpose |
+|--------|---------|
+| `app_name` | The app. Primary key. |
+| `password_hash` | PBKDF2 hash (`pbkdf2$<iterations>$<salt>$<hash>`) — table passwords are never stored plaintext. |
+| `created_at` | When the app was first claimed. |
 
 ## `documents`
 

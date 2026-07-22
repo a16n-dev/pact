@@ -12,7 +12,7 @@ import {
   timingSafeEqual,
   type ClientRow,
 } from './auth/auth';
-import { getAppPassword, isValidAppName, DUMMY_PASSWORD } from './apps';
+import { getApps, isValidAppName, resolveAppAuth, upsertApp } from './apps';
 
 export { RealtimeDO } from './realtime';
 export { createLandingApp, type LandingOptions } from './landing/landing';
@@ -36,7 +36,16 @@ export {
   registerClient,
   timingSafeEqual,
 } from './auth/auth';
-export { getApps, getAppPassword, isValidAppName, LEGACY_DEFAULT_APP } from './apps';
+export {
+  getApps,
+  getAppPassword,
+  isValidAppName,
+  resolveAppAuth,
+  upsertApp,
+  hashAppPassword,
+  verifyAppPassword,
+  LEGACY_DEFAULT_APP,
+} from './apps';
 
 type Variables = { client: ClientRow };
 
@@ -108,17 +117,47 @@ export function createSyncApp(
       return c.json({ error: 'appName must match [a-z0-9][a-z0-9_-]{0,63}' }, 400);
     }
 
-    // Unknown app and wrong password are indistinguishable: both compare
-    // against *something* (a dummy for unknown apps, so timing is uniform)
+    // Checks the env roster (APPS/API_KEY) then the apps table. Unknown app
+    // and wrong password are indistinguishable: both burn a full comparison
     // and both return the same 401 — no probing which app names exist.
-    const expected = getAppPassword(c.env, appName);
-    const matched = await timingSafeEqual(password, expected ?? DUMMY_PASSWORD);
-    if (expected === null || !matched) {
+    if (!(await resolveAppAuth(c.env, appName, password))) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
     const { token } = await registerClient(c.env.DB, appName, clientId, clientName);
     return c.json({ clientId, token });
+  });
+
+  // Dynamic app provisioning: create an app (or rotate its password) without
+  // touching the APPS secret or redeploying. Guarded by the PROVISION_KEY
+  // master secret; disabled entirely when that secret isn't set.
+  app.post('/apps', async (c) => {
+    if (!c.env.PROVISION_KEY) return c.json({ error: 'disabled' }, 404);
+    const key = extractBearerToken(c.req.header('authorization'));
+    if (key === null || !(await timingSafeEqual(key, c.env.PROVISION_KEY))) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const body = await c.req.json<{ appName?: unknown; password?: unknown }>().catch(() => null);
+    if (!body || typeof body.appName !== 'string' || typeof body.password !== 'string') {
+      return c.json({ error: 'appName and password are required' }, 400);
+    }
+    const appName = body.appName.trim();
+    if (!isValidAppName(appName)) {
+      return c.json({ error: 'appName must match [a-z0-9][a-z0-9_-]{0,63}' }, 400);
+    }
+    if (!body.password) {
+      return c.json({ error: 'password must be non-empty' }, 400);
+    }
+    // Env-roster apps are the operator's explicit config and always win at
+    // auth time, so "rotating" one here would silently do nothing — reject
+    // instead of letting the two sources drift.
+    if (Object.prototype.hasOwnProperty.call(getApps(c.env), appName)) {
+      return c.json({ error: 'app is defined in the APPS secret; edit the secret instead' }, 409);
+    }
+
+    const { created } = await upsertApp(c.env.DB, appName, body.password);
+    return c.json({ appName, created }, created ? 201 : 200);
   });
 
   // WS upgrade needs to authenticate before the standard middleware runs:

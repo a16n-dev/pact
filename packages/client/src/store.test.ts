@@ -1,16 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { Store, type SeedSet, type StoreDomain } from './store';
 import type { StoreSyncConfig } from './store/types';
 import { InMemoryAdapter } from './adapters/memoryAdapter';
-import { Migrator } from './migrator';
+import { defineCollection } from './collection';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
 import type { BaseDocument } from './types';
 import type { BlobAdapter } from './blobs/blobAdapter';
 import { blobFields } from './blobs/blobFields';
+import { createWebCryptoCipher } from './crypto/webCrypto';
+import { encryptDoc, isEncryptedDoc } from './crypto/docCrypto';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
 
 const SYNC = { syncUrl: 'https://sync.test', syncToken: 'tok' };
+
+// The tests' one domain collection. `id` is loosened from the prefix-dash
+// convention because fixtures use short literal ids ('w1', 'w-seed', …).
+const widgetsDef = defineCollection({
+  name: 'widgets',
+  idPrefix: 'w',
+  schema: (base) =>
+    base.extend({
+      id: z.string(),
+      name: z.string(),
+      upgraded: z.boolean().optional(),
+      note: z.string().nullable().optional(),
+    }),
+});
 
 function mkDoc(id: string, name: string, updatedAt: string, by = 'us/1'): Widget {
   return {
@@ -26,9 +43,9 @@ function mkDoc(id: string, name: string, updatedAt: string, by = 'us/1'): Widget
   };
 }
 
-function setup(domain: StoreDomain = {}, options?: StoreSyncConfig) {
+function setup(domain: Partial<StoreDomain> = {}, options?: StoreSyncConfig) {
   const adapter = new InMemoryAdapter();
-  const store = new Store(adapter, null, domain, options);
+  const store = new Store(adapter, null, { collections: [widgetsDef], ...domain }, options);
   return { adapter, store };
 }
 
@@ -90,15 +107,59 @@ describe('Store CRUD + tombstones', () => {
   });
 });
 
+describe('Store collection registry (schemas define collections)', () => {
+  it('rejects reads and writes against collections with no definition', async () => {
+    const { store } = setup();
+    await store.setAuthor('us/1');
+    await expect(store.create<Widget>('gadgets', 'g1', { name: 'X' })).rejects.toThrow(
+      /Unknown collection/
+    );
+    await expect(store.list('gadgets')).rejects.toThrow(/Unknown collection/);
+    await expect(store.get('gadgets', 'g1')).rejects.toThrow(/Unknown collection/);
+    await expect(store.delete('gadgets', 'g1')).rejects.toThrow(/Unknown collection/);
+    expect(() => store.pull('gadgets')).toThrow(/Unknown collection/);
+    expect(() => store.collection('gadgets' as never)).toThrow(/Unknown collection/);
+  });
+
+  it('validates writes against the collection schema', async () => {
+    const { store } = setup();
+    await store.setAuthor('us/1');
+    await expect(
+      store.create<Widget>('widgets', 'w1', { name: 42 } as unknown as { name: string })
+    ).rejects.toThrow();
+  });
+
+  it('still allows internal _* bookkeeping collections without definitions', async () => {
+    const { adapter, store } = setup();
+    await store.setAuthor('us/1'); // writes _config/author
+    expect(await adapter.get('_config', 'author')).toMatchObject({ authorId: 'us/1' });
+  });
+
+  it('rejects reserved and duplicate collection names at construction', () => {
+    const internal = defineCollection({ name: '_secret', idPrefix: 'x', schema: (b) => b });
+    expect(() => new Store(new InMemoryAdapter(), null, { collections: [internal] })).toThrow(
+      /reserved/
+    );
+    const dupe = defineCollection({ name: 'widgets', idPrefix: 'q', schema: (b) => b });
+    expect(
+      () => new Store(new InMemoryAdapter(), null, { collections: [widgetsDef, dupe] })
+    ).toThrow(/Duplicate/);
+  });
+});
+
 describe('Store migrate-on-read', () => {
   it('upgrades a stale doc on read and lazily writes it back', async () => {
-    const registry = {
-      widgets: {
+    const migratingWidgets = defineCollection({
+      name: 'widgets',
+      idPrefix: 'w',
+      migrations: {
         current: 2,
         migrations: [{ from: 1, to: 2, up: (d: Widget) => ({ ...d, upgraded: true }) }],
       },
-    };
-    const { adapter, store } = setup({ migrator: new Migrator(registry) });
+      schema: (base) =>
+        base.extend({ id: z.string(), name: z.string(), upgraded: z.boolean().optional() }),
+    });
+    const { adapter, store } = setup({ collections: [migratingWidgets] });
     await adapter.put('widgets', mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'));
 
     const got = await store.get<Widget>('widgets', 'w1');
@@ -352,7 +413,9 @@ describe('Store realtime enablement', () => {
       })
     );
 
-    const store = await Store.create(new InMemoryAdapter(), null, {});
+    const store = await Store.create(new InMemoryAdapter(), null, {
+      collections: [widgetsDef],
+    });
     const res = await store.registerClient('https://sync.test', 'pw', 'my-app', 'My Device');
     expect(res.ok).toBe(true);
 
@@ -619,7 +682,7 @@ describe('Store resyncFromScratch', () => {
   }
 
   it('drops all local synced data and re-pulls from a fresh cursor, keeping _config', async () => {
-    const { adapter, store } = setup({ collections: ['widgets'] }, SYNC);
+    const { adapter, store } = setup({}, SYNC);
     // Stale local world + sync bookkeeping that the reset must clear.
     await adapter.put('widgets', mkDoc('w1', 'stale', '2026-01-01T00:00:00.000Z'));
     await adapter.put('widgets', mkDoc('w2', 'gone-on-server', '2026-01-01T00:00:00.000Z'));
@@ -666,7 +729,7 @@ describe('Store resyncFromScratch', () => {
   });
 
   it('clears cursors even when the immediate re-pull fails, so a later sync backfills', async () => {
-    const { adapter, store } = setup({ collections: ['widgets'] }, SYNC);
+    const { adapter, store } = setup({}, SYNC);
     await adapter.put('widgets', mkDoc('w1', 'stale', '2026-01-01T00:00:00.000Z'));
     await adapter.put('_sync_meta', {
       ...mkDoc('widgets', '', '2026-01-01T00:00:00.000Z'),
@@ -741,10 +804,10 @@ class InMemoryBlobAdapter implements BlobAdapter {
 }
 
 describe('Store backup/restore', () => {
-  function setupWithBlobs(domain: StoreDomain = {}) {
+  function setupWithBlobs(domain: Partial<StoreDomain> = {}) {
     const adapter = new InMemoryAdapter();
     const blobs = new InMemoryBlobAdapter();
-    const store = new Store(adapter, blobs, domain);
+    const store = new Store(adapter, blobs, { collections: [widgetsDef], ...domain });
     return { adapter, blobs, store };
   }
 
@@ -870,12 +933,17 @@ describe('Store backup/restore', () => {
 
 describe('Store blob GC', () => {
   type Photo = BaseDocument & { imageHash?: string };
+  const photosDef = defineCollection({
+    name: 'photos',
+    idPrefix: 'p',
+    schema: (base) => base.extend({ id: z.string(), imageHash: z.string().optional() }),
+  });
   const blobDomain: StoreDomain = {
-    collections: ['photos'],
+    collections: [photosDef],
     blobHashes: blobFields({ photos: ['imageHash'] }),
   };
 
-  function setupWithBlobs(domain: StoreDomain = {}) {
+  function setupWithBlobs(domain: StoreDomain) {
     const adapter = new InMemoryAdapter();
     const blobs = new InMemoryBlobAdapter();
     const store = new Store(adapter, blobs, domain);
@@ -910,7 +978,7 @@ describe('Store blob GC', () => {
   });
 
   it('refuses to prune when the domain declares no blobHashes extractor', async () => {
-    const { blobs, store } = setupWithBlobs({ collections: ['photos'] });
+    const { blobs, store } = setupWithBlobs({ collections: [photosDef] });
     await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
 
     await expect(store.pruneBlobs()).rejects.toThrow(/blobHashes extractor/);
@@ -933,5 +1001,119 @@ describe('Store blob GC', () => {
   it('pruneBlobs is a no-op without a blob adapter', async () => {
     const store = new Store(new InMemoryAdapter(), null, blobDomain);
     await expect(store.pruneBlobs()).resolves.toEqual({ deleted: [] });
+  });
+});
+
+describe('Store encryption (optional E2E)', () => {
+  const cipher = createWebCryptoCipher(new Uint8Array(32).fill(9));
+  const otherCipher = createWebCryptoCipher(new Uint8Array(32).fill(10));
+
+  function setupEncrypted(options?: StoreSyncConfig) {
+    const inner = new InMemoryAdapter();
+    const store = new Store(
+      inner,
+      null,
+      { collections: [widgetsDef], encryption: { cipher } },
+      options
+    );
+    return { inner, store };
+  }
+
+  it('round-trips through the Store while persisting only ciphertext', async () => {
+    const { inner, store } = setupEncrypted();
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
+
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Secret Soup');
+    expect((await store.list<Widget>('widgets'))[0]!.name).toBe('Secret Soup');
+
+    const stored = await inner.get<BaseDocument>('widgets', 'w1');
+    expect(isEncryptedDoc(stored)).toBe(true);
+    expect(JSON.stringify(stored)).not.toContain('Secret Soup');
+  });
+
+  it('sends ciphertext on the wire and decrypts pulled envelopes', async () => {
+    const { store } = setupEncrypted(SYNC);
+    await store.setAuthor('us/1');
+
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1, skipped: 0 });
+      return jsonResponse({ documents: [], cursor: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
+    await store.drainOutbox();
+
+    const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
+    const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
+      documents: { id: string; updatedAt: string; data: Record<string, unknown> }[];
+    };
+    expect(body.documents[0]!.id).toBe('w1');
+    expect(isEncryptedDoc(body.documents[0]!.data)).toBe(true);
+    expect((pushCall[1] as RequestInit).body as string).not.toContain('Secret Soup');
+
+    // Pull: server returns an envelope; the store lands the decrypted doc.
+    const remote = await encryptDoc(
+      cipher,
+      'widgets',
+      mkDoc('w2', 'From Server', '2026-06-06T00:00:00.000Z')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            { id: 'w2', collection: 'widgets', updatedAt: remote.updatedAt, data: remote },
+          ],
+          cursor: 1,
+        })
+      )
+    );
+    const applied = await store.pull<Widget>('widgets');
+    expect(applied).toHaveLength(1);
+    expect((await store.get<Widget>('widgets', 'w2'))?.name).toBe('From Server');
+  });
+
+  it('Store.create fails fast when the key does not match existing data', async () => {
+    const inner = new InMemoryAdapter();
+    const domain: StoreDomain = { collections: [widgetsDef], encryption: { cipher } };
+    await Store.create(inner, null, domain); // writes the key check
+    await expect(
+      Store.create(inner, null, { collections: [widgetsDef], encryption: { cipher: otherCipher } })
+    ).rejects.toThrow(/key does not match/);
+    // The right key keeps opening fine.
+    await expect(Store.create(inner, null, domain)).resolves.toBeInstanceOf(Store);
+  });
+
+  it('encryptLocalData converts pre-existing plaintext rows', async () => {
+    const inner = new InMemoryAdapter();
+    await inner.put('widgets', mkDoc('legacy', 'Plain Old Doc', '2026-01-01T00:00:00.000Z'));
+    const store = new Store(inner, null, { collections: [widgetsDef], encryption: { cipher } });
+
+    // Readable before conversion (plaintext pass-through)…
+    expect((await store.get<Widget>('widgets', 'legacy'))?.name).toBe('Plain Old Doc');
+
+    const { rewritten } = await store.encryptLocalData();
+    expect(rewritten).toBe(1);
+    expect(isEncryptedDoc(await inner.get<BaseDocument>('widgets', 'legacy'))).toBe(true);
+    expect((await store.get<Widget>('widgets', 'legacy'))?.name).toBe('Plain Old Doc');
+  });
+
+  it('pushAll filters _local-authored docs (server can no longer see authors)', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('mine', 'ok', '2026-01-01T00:00:00.000Z', 'us/1'));
+    await adapter.put('widgets', mkDoc('stray', 'no', '2026-01-01T00:00:00.000Z', LOCAL_AUTHOR_ID));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ accepted: 1, skipped: 0 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.pushAll();
+
+    const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
+    const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
+      documents: { id: string }[];
+    };
+    expect(body.documents.map((d) => d.id)).toEqual(['mine']);
   });
 });
