@@ -1,0 +1,4 @@
+# Copy to .dev.vars (gitignored) for local development with `pnpm run dev`.
+# Same shape as the APPS production secret: a JSON object of appName → password.
+# App names must match [a-z0-9][a-z0-9_-]{0,63}.
+APPS={"myapp":"change-me"}

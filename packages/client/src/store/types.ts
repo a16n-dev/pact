@@ -69,6 +69,9 @@ export type ClientConfigDoc = BaseDocument & {
   clientName: string;
   url: string;
   token: string;
+  // App this client registered under on a multi-tenant server. Absent on
+  // config docs written before multi-tenancy; re-registration backfills it.
+  appName?: string;
 };
 export type AuthorConfigDoc = BaseDocument & { authorId: string };
 
@@ -76,6 +79,8 @@ export interface ClientRegistration {
   id: string;
   name: string;
   url: string;
+  /** null when the persisted config predates multi-tenancy. */
+  appName: string | null;
 }
 
 export type ChangeHandler = (collection: string) => void;

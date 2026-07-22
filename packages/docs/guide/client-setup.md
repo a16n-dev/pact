@@ -36,7 +36,7 @@ The arguments:
 
 ## The storage adapter
 
-The adapter is the pluggable persistence layer. Pact ships an in-memory one; apps supply a SQLite-backed adapter; in-Worker code uses [`D1Adapter`](/server/mcp).
+The adapter is the pluggable persistence layer. Pact ships an in-memory one; apps supply a SQLite-backed adapter.
 
 ```ts
 interface DatabaseAdapter {
@@ -49,7 +49,6 @@ interface DatabaseAdapter {
 |---------|----------------|------------|
 | `InMemoryAdapter` | `@a16n/pact-client` | Tests, CLIs, ephemeral scratch stores. |
 | SQLite-backed | Your app | Real persistence on device (mobile / desktop). |
-| `D1Adapter` | `@a16n/pact-server` | Code running *inside* the Worker (agents, MCP tools). |
 
 ## The domain
 
@@ -135,13 +134,14 @@ store.on('change', () => {
 
 This is **step 2** — additive, and entirely optional until you need it. Everything above works without it; nothing above changes when you add it.
 
-A fresh client has no credentials and writes under the `_local` author. To sync, it must register with a server (trading the shared password for a token) and claim an identity:
+A fresh client has no credentials and writes under the `_local` author. To sync, it must register with a server (trading its app's password for a token) and claim an identity. The server is [multi-tenant](/server/auth) — `appName` says which app on it this client belongs to:
 
 ```ts
-// 1. trade the server password for a per-client token (persisted in _config/client)
+// 1. trade the app password for a per-client token (persisted in _config/client)
 await store.registerClient(
   'https://sync.example.com', // server url
-  serverPassword, // the shared server password
+  appPassword, // this app's password on the server
+  'myapp', // which app on the server this client belongs to
   "Alice's laptop" // display name for this client
 );
 

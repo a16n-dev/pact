@@ -6,7 +6,7 @@ Pact is an intentionally simple client/server architecture for building local-fi
 
 - [x] **Offline first** — clients function fully offline; sync is optional and additive
 - [x] **Realtime** — clients are notified of changes as they land on the server, enabling real-time collaboration
-- [x] **Agents as first-class users** — build MCP tools directly into the server so agents read and write the same data clients do, in real time
+- [x] **Agents as first-class users** — an agent (e.g. an MCP server built on `@a16n/pact-client`) registers as an ordinary sync client and reads and writes the same data other clients do, in real time
 - [x] **JSON document + blob storage** — store and sync structured documents alongside images and other files
 
 ## Design assumptions
@@ -24,7 +24,7 @@ Pact deliberately trades generality for simplicity. It assumes:
 | `@a16n/pact-client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, sync, realtime, migrations. Pluggable storage via adapters. |
 | `@a16n/pact-server` | Cloudflare Workers | The sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
 
-`@a16n/pact-server` depends on `@a16n/pact-client` for shared types (`BaseDocument`, `DatabaseAdapter`), so the same Store can run *inside* the Worker on top of D1 (see [`D1Adapter`](#in-worker-store-d1adapter)) — letting agent/tool code and client code share repositories built on one Store API.
+The two packages are independent — the server has no dependency on the client. Anything that wants to act on the data (an app, a CLI, an agent's MCP server) builds on `@a16n/pact-client` and connects as a sync client.
 
 ## Building & consuming
 
@@ -35,25 +35,13 @@ pnpm build     # tsup-bundles each package to dist/ (ESM + .d.ts + sourcemaps)
 pnpm pack:all  # packs both packages into artifacts/*.tgz (runs the build via prepack)
 ```
 
-Inside this workspace, package `exports` point at raw TypeScript source (`src/index.ts`) so dev, tests, and typechecking need no build step. At pack time, `publishConfig` redirects `exports`/`types` to `dist/`, and pnpm rewrites `catalog:`/`workspace:` versions to concrete ones — so the tarballs are self-contained and installable anywhere.
+Inside this workspace, package `exports` point at raw TypeScript source (`src/index.ts`) so dev, tests, and typechecking need no build step. At pack time, `publishConfig` redirects `exports`/`types` to `dist/`, and pnpm rewrites `catalog:` versions to concrete ones — so the tarballs are self-contained and installable anywhere. The two packages are independent: apps vendor the client tarball, server deployments vendor the server tarball.
 
-One caveat for consumers: the packed `@a16n/pact-server` depends on `@a16n/pact-client@0.0.1`, which doesn't exist on any registry. The consuming project must install **both** tarballs and add a pnpm override so the server's dependency resolves to the client tarball:
+(`@a16n/pact-server` imports `cloudflare:workers`, so it only runs under wrangler/workerd — plain Node can typecheck against it but not import it.)
 
-```json
-{
-  "dependencies": {
-    "@a16n/pact-client": "file:./vendor/a16n-pact-client-0.0.1.tgz",
-    "@a16n/pact-server": "file:./vendor/a16n-pact-server-0.0.1.tgz"
-  },
-  "pnpm": {
-    "overrides": {
-      "@a16n/pact-client": "file:./vendor/a16n-pact-client-0.0.1.tgz"
-    }
-  }
-}
-```
+### Deploying a server
 
-(`@a16n/pact-server` also imports `cloudflare:workers`, so it only runs under wrangler/workerd — plain Node can typecheck against it but not import it.)
+You don't extend the server — you deploy it. Copy the ready-made project in [`template/`](template/), drop the packed `@a16n/pact-server` tarball into its `vendor/`, and follow its README: `wrangler d1 create` + `r2 bucket create`, apply the packaged `schema.sql`, `wrangler deploy`, then set the `APPS` tenant roster secret. Adding an app later is just editing that secret.
 
 ## The document model
 
@@ -243,7 +231,7 @@ On the server, bytes live in R2 keyed by hash, with a `blobs` registry table rec
 
 A deployment can ship reference data (units, a recipe catalog, …) that every client seeds locally and identically. Syncing it would just duplicate bytes, so `pushAll` filters out untouched seed docs. The default seed marker is `createdBy === updatedBy === '_system'`; override via `isSeedDoc`. The moment a real author edits a seeded doc it stops matching and syncs normally.
 
-On the server side, seed-only collections that never reach D1 can still be read in-Worker via a [`SeedOverlay`](#in-worker-store-d1adapter).
+Seed-only collections never reach the server at all — every consumer that needs them (apps, CLIs, an agent's MCP Worker) seeds its own store from the same `SeedSet`.
 
 ---
 
@@ -268,9 +256,11 @@ export default createSyncApp({
 
 ```ts
 interface Env {
-  DB: D1Database;                              // documents + clients + blobs registry
-  BLOBS: R2Bucket;                             // blob bytes
-  API_KEY: string;                             // shared server password (wrangler secret)
+  DB: D1Database;                              // documents + clients + blobs registry (all app-scoped)
+  BLOBS: R2Bucket;                             // blob bytes, keyed <appName>/<hash>
+  APPS?: string;                               // tenant roster secret: {"appName":"password",...}
+  API_KEY?: string;                            // deprecated single-tenant fallback password
+  DEFAULT_APP_NAME?: string;                   // app name the API_KEY fallback serves (default "default")
   SERVER_NAME: string;                         // public name returned by GET /info
   ENABLE_REALTIME: string;                     // "true" to enable /realtime + broadcast
   REALTIME: DurableObjectNamespace<RealtimeDO>;
@@ -282,8 +272,8 @@ interface Env {
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/status` | none | liveness — `{ status: "ok" }` |
-| GET | `/info` | none | `{ name, protocolVersion: 1, realtime, …info }` — clients read this during connect |
-| POST | `/auth/register` | Bearer **API_KEY** | trade the server password for a per-client token → `{ clientId, token }` |
+| GET | `/info` | none | `{ name, protocolVersion: 3, realtime, …info }` — clients read this during connect |
+| POST | `/auth/register` | Bearer **app password** | body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }` |
 | GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
 | GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
 | POST | `/sync/push` | Bearer **token** | upsert documents (LWW) |
@@ -292,29 +282,41 @@ interface Env {
 | GET | `/sync/blobs` | Bearer **token** | authoritative set of stored blob hashes |
 | PUT | `/sync/blobs/:hash` | Bearer **token** | upload blob bytes (hash = SHA-256 of body) |
 | GET | `/sync/blobs/:hash` | Bearer **token** | download blob bytes |
-| DELETE | `/admin/wipe` | Bearer **token** | wipe all documents + blobs |
 
-**Auth model.** The server holds one shared password (`API_KEY`). A client `POST`s it once to `/auth/register` with a self-generated `clientId` and a display name, and gets back a long-lived token (`pact_<nanoid>`). Every other request carries that token as `Authorization: Bearer …`. Re-registering the same `clientId` rotates the token while keeping the client's identity. `last_seen_at` is bumped (fire-and-forget) on each authenticated request.
+(There is deliberately no remote-wipe route; the wipe functions are exported for operator use only.)
+
+**Auth model.** The server is **multi-tenant**: the `APPS` secret is a JSON roster of `{ "appName": "password" }`, and completely different apps (different schemas, different clients) share one deployment with zero data visibility between them. A client `POST`s its app's password once to `/auth/register` with an `appName`, a self-generated `clientId` and a display name, and gets back a long-lived token (`pact_<nanoid>`) bound server-side to that app. Every other request carries just the token as `Authorization: Bearer …` — the app is resolved from the client row it was registered under, never from anything the client sends later. Re-registering the same `clientId` rotates the token while keeping the client's identity. `last_seen_at` is bumped (fire-and-forget) on each authenticated request.
+
+**Tenant isolation.** Every D1 row carries an `app_name` (baked into every query and primary key, with a per-app `seq` counter), blob bytes are keyed `<appName>/<hash>` in R2, and each app gets its own realtime Durable Object (`idFromName(appName)`) — so documents, blobs, and broadcasts are all partitioned by construction. App names are validated (`[a-z0-9][a-z0-9_-]{0,63}`) at the only entry points that accept one. A legacy single-tenant deployment can keep using `API_KEY`; it behaves as one app named `DEFAULT_APP_NAME` (default `"default"`).
 
 ### D1 schema
 
 ```sql
 CREATE TABLE documents (
+  app_name TEXT NOT NULL,
   id TEXT NOT NULL, collection TEXT NOT NULL,
   updated_at TEXT NOT NULL, data TEXT NOT NULL,
-  PRIMARY KEY (id, collection)
+  seq INTEGER NOT NULL,
+  PRIMARY KEY (app_name, collection, id)
 );
-CREATE INDEX idx_documents_pull ON documents (collection, updated_at);
+-- Unique: any per-app seq-counter bug fails loudly instead of corrupting pull cursors.
+CREATE UNIQUE INDEX idx_documents_app_seq ON documents (app_name, seq);
+-- The pull hot path: WHERE app_name = ? AND collection = ? AND seq > ? ORDER BY seq.
+CREATE INDEX idx_documents_pull ON documents (app_name, collection, seq);
 
 CREATE TABLE blobs (
-  hash TEXT PRIMARY KEY, mime_type TEXT NOT NULL,
-  size INTEGER NOT NULL, created_at TEXT NOT NULL
+  app_name TEXT NOT NULL,
+  hash TEXT NOT NULL, mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (app_name, hash)
 );
 
 CREATE TABLE clients (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL,
-  token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+  app_name TEXT NOT NULL,
+  id TEXT NOT NULL, name TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,   -- globally unique: the token alone resolves the app
+  created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (app_name, id)
 );
 CREATE INDEX idx_clients_token ON clients (token);
 ```
@@ -325,20 +327,15 @@ Every route's logic is callable directly — for in-Worker consumers that want t
 
 `pushDocuments` · `pullDocument` · `pullDocumentsSince` · `wipeAllDocumentsViaApi` · `wipeAllBlobsViaApi` · `getBlob` · `putBlob` · `listBlobs` · `registerClient` · `lookupClientByToken` · `bumpClientLastSeen` · `extractBearerToken`.
 
-### In-Worker Store (`D1Adapter`)
+### Agents (MCP)
 
-`D1Adapter` is a `DatabaseAdapter` that reads/writes the deployed Worker's D1 documents table via the programmatic API. It lets code running *inside* the Worker — notably an MCP agent's tools — build the **same** `@a16n/pact-client` `Store` other clients use, sharing one source of truth with the HTTP sync surface (no loopback fetch, no schema divergence). Tool and client code can then share repositories.
-
-- Internal `_` collections are inert (reads empty, writes dropped) — local sync bookkeeping has no meaning when the adapter *is* the source of truth.
-- A `SeedOverlay` augments D1 reads with seed-only reference collections that never get persisted server-side. Real D1 rows win on id conflicts.
-- Hard delete is unsupported (the Store only ever writes tombstones via `put`).
+The server deliberately bundles **no agent surface**. An agent's MCP server is a separate, per-app Worker built on `@a16n/pact-client`: it registers via `POST /auth/register` with its app's password like any other client, holds only that app's token (so tenant isolation applies to the agent itself), and its writes broadcast realtime invalidations for free by going through `/sync/push`.
 
 ### Optional server building blocks
 
 - **`createLandingApp`** — a `GET /` connection page rendering a QR code that encodes a `<scheme>://<path>?url=<origin>` deep link, plus the raw origin to paste manually. Mount it where you want (typically `/`).
-- **`createOAuthAuthApp`** — an OAuth authorize surface (`GET`/`POST /authorize`) for connecting agents. It renders a "connect this agent" password form, validates against `API_KEY`, registers a sync-client row, and completes the OAuth grant. `buildIdentity` lets the deploy package own its id conventions and the props its agent later sees. Used with `@cloudflare/workers-oauth-provider`.
 - **`RealtimeDO`** — the Durable Object backing `/realtime`. Export it from your Worker entry and declare it in `wrangler.toml`.
 
 ### Deploy notes
 
-A typical `wrangler.toml` binds D1 (`DB`), R2 (`BLOBS`), the `RealtimeDO` durable object, and — if running an MCP agent — an OAuth KV namespace. `SERVER_NAME` and `ENABLE_REALTIME` are plain vars; `API_KEY` is a secret (`wrangler secret put API_KEY`). When realtime is gated off, the Durable Object stays deployed but idle, so it costs nothing.
+A typical `wrangler.toml` binds D1 (`DB`), R2 (`BLOBS`), and the `RealtimeDO` durable object. `SERVER_NAME` and `ENABLE_REALTIME` are plain vars; the tenant roster is a secret (`wrangler secret put APPS`, value like `{"fond":"pw1","otherapp":"pw2"}`). Adding an app is editing that secret — no schema or binding changes. When realtime is gated off, the Durable Object stays deployed but idle, so it costs nothing.

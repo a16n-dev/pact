@@ -31,7 +31,7 @@ Multi-tenant SaaS, untrusted users, per-row permissions, or workflows where two 
 | Term | Meaning |
 |------|---------|
 | **Store** | The single client-side entry point. Wraps an adapter + optional blob adapter + your domain and gives you optimistic CRUD that transparently syncs. |
-| **Adapter** | Pluggable storage backend (`DatabaseAdapter`). In-memory for tests/CLIs, SQLite for apps, `D1Adapter` in-Worker. |
+| **Adapter** | Pluggable storage backend (`DatabaseAdapter`). In-memory for tests/CLIs, SQLite for apps. |
 | **Domain** | The consumer's injection point (`StoreDomain`): validation, migrator, collection list, seed rules, author materialization. |
 | **Collection** | A named bucket of documents (`recipes`, `users`). Names starting with `_` are reserved for Pact's bookkeeping and never sync. |
 | **Author** | An id recording who created/updated a document. `_system` and `_local` are reserved (see [Authors & Identity](/guide/authors-identity)). |

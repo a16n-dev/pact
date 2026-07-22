@@ -14,14 +14,14 @@ You don't pick an architecture up front. You start local and add the server the 
 | `@a16n/pact-client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, blobs, migrations, backups. Sync and realtime activate once a server is configured. |
 | `@a16n/pact-server` | Cloudflare Workers | The **optional** sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
 
-`@a16n/pact-server` depends on `@a16n/pact-client` for shared types (`BaseDocument`, `DatabaseAdapter`), so the same `Store` can run *inside* the Worker on top of D1 — letting agent/tool code and client code share repositories built on one Store API.
+The two packages are independent — the server has no dependency on the client. Anything that wants to act on the data (an app, a CLI, an agent's MCP server) builds on `@a16n/pact-client` and connects as a sync client.
 
 ## What you get
 
 - **Local-first, standalone** — a complete app runs on `@a16n/pact-client` alone; the server is something you add later, not a prerequisite.
 - **Offline first** — clients function fully offline even after you add a server; sync is additive and never on the critical path.
 - **Realtime** — once a server is in place, clients are notified of changes as they land, enabling realtime collaboration.
-- **Agents as first-class users** — build MCP tools directly into the server so agents read and write the same data clients do, in realtime.
+- **Agents as first-class users** — an agent (e.g. an MCP server built on `@a16n/pact-client`) registers as an ordinary sync client and reads and writes the same data other clients do, in realtime.
 - **JSON document + blob storage** — store (and, with a server, sync) structured documents alongside images and other files.
 
 ## How the pieces fit
@@ -35,9 +35,9 @@ You don't pick an architecture up front. You start local and add the server the 
 │   ├ blobAdapter │                                  │   ├ R2   (blobs)     │
 │   └ domain      │                                  │   └ RealtimeDO (WS)  │
 └─────────────────┘                                  └──────────────────────┘
-        │                                                       ▲
-        │  same Store API, backed by D1Adapter                  │
-        └───────────────  in-Worker agent / MCP tools ──────────┘
+        ▲
+        │  same Store API, same sync protocol
+   agent / MCP Worker (also @a16n/pact-client)
 ```
 
 Every mutation is written locally first and pushed in the background. The server reconciles with last-write-wins and (optionally) broadcasts a lightweight invalidation so other clients pull what changed.

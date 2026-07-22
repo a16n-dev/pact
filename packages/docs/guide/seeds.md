@@ -45,6 +45,6 @@ const domain: StoreDomain = {
 
 `pushAll` consults this predicate to decide what to skip.
 
-## Seeds on the server
+## Seeds never reach the server
 
-Some seed-only collections never reach D1 at all — they exist purely as client-side reference data. In-Worker code (like an [MCP agent](/server/mcp)) can still read them through a **`SeedOverlay`** that augments D1 reads with these never-persisted collections. Real D1 rows win on id conflicts. See [Agents & MCP](/server/mcp#seed-overlay).
+Some seed-only collections never reach D1 at all — they exist purely as client-side reference data. Every consumer that needs them (including an [agent's MCP Worker](/server/mcp), which is just another client) seeds its own store from the same `SeedSet`.

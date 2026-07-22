@@ -1,51 +1,62 @@
 # D1 Schema
 
-The server stores everything in three D1 tables. Keep this as a `schema.sql` and apply it with `wrangler d1 execute <db> --file=./schema.sql` (see [Deployment](/server/deployment#provision-and-deploy)).
+The server stores everything in three D1 tables, all scoped by `app_name` — the tenant boundary on a [multi-tenant server](/server/auth). The canonical DDL ships as **`schema.sql` inside the `@a16n/pact-server` package** — apply it with `wrangler d1 execute <db> --remote --file node_modules/@a16n/pact-server/schema.sql` (see [Deployment](/server/deployment)). The listing below is a reference copy.
 
 ```sql
 CREATE TABLE documents (
+  app_name TEXT NOT NULL,
   id TEXT NOT NULL, collection TEXT NOT NULL,
   updated_at TEXT NOT NULL, data TEXT NOT NULL,
-  PRIMARY KEY (id, collection)
+  seq INTEGER NOT NULL,
+  PRIMARY KEY (app_name, collection, id)
 );
-CREATE INDEX idx_documents_pull ON documents (collection, updated_at);
+CREATE UNIQUE INDEX idx_documents_app_seq ON documents (app_name, seq);
+CREATE INDEX idx_documents_pull ON documents (app_name, collection, seq);
 
 CREATE TABLE blobs (
-  hash TEXT PRIMARY KEY, mime_type TEXT NOT NULL,
-  size INTEGER NOT NULL, created_at TEXT NOT NULL
+  app_name TEXT NOT NULL,
+  hash TEXT NOT NULL, mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (app_name, hash)
 );
 
 CREATE TABLE clients (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  app_name TEXT NOT NULL,
+  id TEXT NOT NULL, name TEXT NOT NULL,
   token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+  created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (app_name, id)
 );
 CREATE INDEX idx_clients_token ON clients (token);
 ```
 
 ## `documents`
 
-The whole document store. The full JSON body lives in `data` as text; only the fields the server reconciles on are promoted to columns.
+The whole document store, for every app. The full JSON body lives in `data` as text; only the fields the server reconciles on are promoted to columns.
 
 | Column | Purpose |
 |--------|---------|
+| `app_name` | The tenant. Every query the server issues filters on it. |
 | `id` | Document id. Part of the composite primary key. |
 | `collection` | Collection name. Part of the composite primary key. |
 | `updated_at` | The [last-write-wins clock](/guide/sync#last-write-wins-both-directions). Compared on every upsert. |
 | `data` | The full document JSON (including the base fields and your domain fields). |
+| `seq` | Server-assigned monotonic write sequence, **per app** — the pull cursor. |
 
-- **Primary key `(id, collection)`** — the same id can exist in different collections; the pair is what's unique.
-- **`idx_documents_pull (collection, updated_at)`** — the index that makes `GET /sync/pull?collection=&since=` a range scan rather than a table scan. Pull is the hot path; this is the index that keeps it cheap.
+- **Primary key `(app_name, collection, id)`** — the same id can exist in different collections, and different apps can use identical ids and collection names without ever colliding.
+- **`idx_documents_app_seq (app_name, seq)` — UNIQUE** — `seq` is assigned as `MAX(seq)+1` within the app; the unique index makes any counter bug a hard failure instead of a silently corrupted pull cursor.
+- **`idx_documents_pull (app_name, collection, seq)`** — the index that makes `GET /sync/pull?collection=&cursor=` a range scan rather than a table scan. Pull is the hot path; this is the index that keeps it cheap.
 
-The server treats `data` as opaque — it never parses your domain fields. Only the promoted columns matter to sync. This is the SQL embodiment of [schemas being owned by the consumer](/guide/concepts#schemas-are-owned-by-the-consumer).
+The server treats `data` as opaque — it never parses your domain fields. Different apps can (and do) store completely different schemas in the same table. This is the SQL embodiment of [schemas being owned by the consumer](/guide/concepts#schemas-are-owned-by-the-consumer).
 
 ## `blobs`
 
-A **registry**, not the bytes. The actual blob bytes live in R2 keyed by hash; this table records existence and metadata so the server can answer "do we have this blob, and how big is it?" without touching R2.
+A **registry**, not the bytes. The actual blob bytes live in R2 keyed by `<app_name>/<hash>`; this table records existence and metadata so the server can answer "do we have this blob, and how big is it?" without touching R2.
 
 | Column | Purpose |
 |--------|---------|
-| `hash` | SHA-256 hex digest — the content address and primary key. |
+| `app_name` | The tenant. Blob bytes are namespaced per app in R2 too — identical bytes uploaded by two apps are stored twice, on purpose (sharing the key would let one app existence-probe another's blobs). |
+| `hash` | SHA-256 hex digest — the content address within the app. |
 | `mime_type` | Content type, for serving the bytes back correctly. |
 | `size` | Byte length, queryable without fetching the object. |
 | `created_at` | When the blob was first registered. |
@@ -54,13 +65,14 @@ See [Blobs](/guide/blobs) for the content-addressing model.
 
 ## `clients`
 
-One row per registered client (or agent — agents are just clients). Created on `POST /auth/register` and on the agent [OAuth flow](/server/mcp).
+One row per registered client (or agent — [agents are just clients](/server/mcp)). Created on `POST /auth/register`.
 
 | Column | Purpose |
 |--------|---------|
-| `id` | Client id (self-generated by the client). |
+| `app_name` | The app the client registered under. This — never anything the client sends later — is what scopes every authenticated request. |
+| `id` | Client id (self-generated by the client). Unique per app. |
 | `name` | Display name. |
-| `token` | The per-client bearer token (`pact_<nanoid>`). `UNIQUE`. |
+| `token` | The per-client bearer token (`pact_<nanoid>`, stored hashed). Globally `UNIQUE`, so the token alone resolves the app. |
 | `created_at` | When the client first registered. |
 | `last_seen_at` | Bumped (fire-and-forget) on each authenticated request. |
 

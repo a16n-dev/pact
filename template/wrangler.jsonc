@@ -1,0 +1,51 @@
+{
+  // Your Worker's name — becomes the workers.dev subdomain.
+  "name": "my-pact-server",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+
+  // Plain (non-secret) config. The tenant roster lives in the APPS secret,
+  // set with `wrangler secret put APPS` after the first deploy.
+  "vars": {
+    // Public name returned by GET /info.
+    "SERVER_NAME": "My Pact Server",
+    // "true" enables the /realtime WebSocket + write broadcasts.
+    "ENABLE_REALTIME": "true"
+  },
+
+  // D1 — documents, clients, blob registry.
+  // Create with `wrangler d1 create pact-db`, then paste the id it prints:
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pact-db",
+      "database_id": "<REPLACE_ME>"
+    }
+  ],
+
+  // R2 — blob bytes. Create with `wrangler r2 bucket create pact-blobs`.
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "pact-blobs"
+    }
+  ],
+
+  // Durable Object — realtime fan-out (one instance per app).
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REALTIME",
+        "class_name": "RealtimeDO"
+      }
+    ]
+  },
+  // Cloudflare platform migration: required the first time a Durable Object
+  // class is introduced. RealtimeDO uses SQLite-backed storage.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RealtimeDO"]
+    }
+  ]
+}

@@ -28,14 +28,17 @@ export type RegisterResult =
   | { ok: false; reason: 'url' | 'auth' | 'server' };
 
 /**
- * One-time exchange: trade the server password for a long-lived per-client
- * access token. The clientId is supplied by the caller (persisted locally so
- * it survives retries and reinstalls). Re-registering the same clientId
- * replaces the previous token.
+ * One-time exchange: trade the app's password for a long-lived per-client
+ * access token. `appName` names which app on a (possibly multi-tenant)
+ * server this client belongs to; the returned token is bound to that app
+ * server-side, so no later request needs to carry it. The clientId is
+ * supplied by the caller (persisted locally so it survives retries and
+ * reinstalls). Re-registering the same clientId replaces the previous token.
  */
 export async function registerClient(
   url: string,
   password: string,
+  appName: string,
   clientId: string,
   clientName: string
 ): Promise<RegisterResult> {
@@ -48,7 +51,7 @@ export async function registerClient(
         Authorization: `Bearer ${password}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ clientId, clientName }),
+      body: JSON.stringify({ appName, clientId, clientName }),
     });
   } catch (err) {
     console.warn(`Client register failed for ${endpoint}:`, err);

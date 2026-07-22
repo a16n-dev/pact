@@ -353,13 +353,40 @@ describe('Store realtime enablement', () => {
     );
 
     const store = await Store.create(new InMemoryAdapter(), null, {});
-    const res = await store.registerClient('https://sync.test', 'pw', 'My Device');
+    const res = await store.registerClient('https://sync.test', 'pw', 'my-app', 'My Device');
     expect(res.ok).toBe(true);
 
     await vi.waitFor(() => {
       expect(FakeWebSocket.instances).toHaveLength(1);
     });
     expect(FakeWebSocket.instances[0].url).toContain('wss://sync.test/realtime?token=tok');
+  });
+});
+
+describe('Store registerClient (multi-tenant)', () => {
+  it('sends appName to the server and persists it in the registration', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/auth/register')) return jsonResponse({ clientId: 'cl-x', token: 'tok' });
+      if (u.includes('/info')) return jsonResponse({ realtime: false });
+      return jsonResponse({ documents: [], cursor: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { store } = setup();
+    const res = await store.registerClient('https://sync.test', 'pw', 'my-app', 'My Device');
+    expect(res.ok).toBe(true);
+
+    const registerCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes('/auth/register')
+    );
+    const body = JSON.parse(
+      ((registerCall![1] as RequestInit | undefined)?.body ?? '{}') as string
+    ) as Record<string, unknown>;
+    expect(body.appName).toBe('my-app');
+
+    const registration = await store.getClientRegistration();
+    expect(registration).toMatchObject({ appName: 'my-app', url: 'https://sync.test' });
   });
 });
 

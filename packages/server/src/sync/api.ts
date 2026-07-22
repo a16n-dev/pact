@@ -10,6 +10,16 @@ import {
 } from './db';
 import type { Env, SyncDocument } from '../types';
 
+/**
+ * The tenant a call operates on behalf of. Every programmatic sync API takes
+ * one, so app scoping is a compile-time obligation rather than a convention.
+ * HTTP handlers build it from the authenticated client row; in-Worker callers
+ * pass the app they act for.
+ */
+export interface AppContext {
+  appName: string;
+}
+
 export interface SyncHooks {
   /**
    * Transform a stored doc to the server's current schemaVersion before
@@ -49,11 +59,12 @@ export interface PushOptions {
 
 /**
  * Programmatic equivalent of `POST /sync/push`. The HTTP handler is a thin
- * shell over this; in-Worker callers (notably the MCP D1Adapter) can write
- * the same way without an HTTP round trip.
+ * shell over this; in-Worker callers can write the same way without an HTTP
+ * round trip.
  */
 export async function pushDocuments(
   env: Env,
+  app: AppContext,
   docs: SyncDocument[],
   opts: PushOptions = {}
 ): Promise<PushOutcome> {
@@ -108,11 +119,13 @@ export async function pushDocuments(
     };
   }
 
-  const result = await upsertDocuments(env.DB, upgraded);
+  const result = await upsertDocuments(env.DB, app.appName, upgraded);
 
   if (env.ENABLE_REALTIME === 'true' && result.accepted > 0 && opts.waitUntil) {
     const collections = [...new Set(upgraded.map((d) => d.collection))];
-    const stub = env.REALTIME.get(env.REALTIME.idFromName('singleton'));
+    // One Durable Object per app: the DO's socket set only ever contains this
+    // app's clients, so cross-tenant broadcast is impossible by construction.
+    const stub = env.REALTIME.get(env.REALTIME.idFromName(app.appName));
     opts.waitUntil(Promise.resolve(stub.broadcast(collections)));
   }
 
@@ -121,47 +134,63 @@ export async function pushDocuments(
 
 export async function pullDocument(
   env: Env,
+  app: AppContext,
   collection: string,
   id: string
 ): Promise<SyncDocument | null> {
-  return getDocumentById(env.DB, collection, id);
+  return getDocumentById(env.DB, app.appName, collection, id);
 }
 
 export async function pullDocumentsSince(
   env: Env,
+  app: AppContext,
   collection: string,
   cursor: number
 ): Promise<{ documents: SyncDocument[]; cursor: number; hasMore: boolean }> {
-  return getDocumentsSince(env.DB, collection, cursor);
+  return getDocumentsSince(env.DB, app.appName, collection, cursor);
 }
 
-export async function wipeAllDocumentsViaApi(env: Env): Promise<void> {
-  await wipeAllDocuments(env.DB);
+export async function wipeAllDocumentsViaApi(env: Env, app: AppContext): Promise<void> {
+  await wipeAllDocuments(env.DB, app.appName);
 }
 
 /**
- * Delete every blob: both the R2 bytes and the registry rows. Scans the
- * bucket directly (not the table) so drift — objects R2 holds but the table
- * never recorded — gets cleared too. Bytes go first; a partial failure
- * leaves orphan rows that self-heal as 404s on the next pull.
+ * R2 object key for a blob. Bytes are namespaced per app: content-addressing
+ * would happily dedupe identical bytes across tenants, but a shared key would
+ * let one app read (or existence-probe) another's blobs — so each app pays
+ * for its own copy. App names are charset-validated at registration, so the
+ * prefix can't collide with or escape into another app's keyspace.
  */
-export async function wipeAllBlobsViaApi(env: Env): Promise<void> {
+function blobKey(app: AppContext, hash: string): string {
+  return `${app.appName}/${hash}`;
+}
+
+/**
+ * Delete every blob owned by `app`: both the R2 bytes and the registry rows.
+ * Scans the bucket directly (not the table) so drift — objects R2 holds but
+ * the table never recorded — gets cleared too. Bytes go first; a partial
+ * failure leaves orphan rows that self-heal as 404s on the next pull. The
+ * prefix confines both the listing and the deletes to this app's keyspace.
+ */
+export async function wipeAllBlobsViaApi(env: Env, app: AppContext): Promise<void> {
+  const prefix = `${app.appName}/`;
   let cursor: string | undefined;
   do {
-    const page = await env.BLOBS.list({ cursor });
+    const page = await env.BLOBS.list({ prefix, cursor });
     if (page.objects.length > 0) {
       await env.BLOBS.delete(page.objects.map((o) => o.key));
     }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
-  await wipeAllBlobRecords(env.DB);
+  await wipeAllBlobRecords(env.DB, app.appName);
 }
 
 export async function getBlob(
   env: Env,
+  app: AppContext,
   hash: string
 ): Promise<{ body: ReadableStream; contentType: string } | null> {
-  const obj = await env.BLOBS.get(hash);
+  const obj = await env.BLOBS.get(blobKey(app, hash));
   if (!obj) return null;
   return {
     body: obj.body,
@@ -171,18 +200,19 @@ export async function getBlob(
 
 export async function putBlob(
   env: Env,
+  app: AppContext,
   hash: string,
   body: ArrayBuffer | ReadableStream,
   contentType: string
 ): Promise<void> {
-  const obj = await env.BLOBS.put(hash, body, { httpMetadata: { contentType } });
+  const obj = await env.BLOBS.put(blobKey(app, hash), body, { httpMetadata: { contentType } });
   // R2 reports the stored size/time authoritatively; fall back only for the
   // null-result edge (conditional puts) which this unconditional path won't hit.
   const size = obj?.size ?? (body instanceof ArrayBuffer ? body.byteLength : 0);
   const createdAt = obj?.uploaded?.toISOString() ?? dayjs().toISOString();
-  await upsertBlob(env.DB, { hash, mimeType: contentType, size, createdAt });
+  await upsertBlob(env.DB, app.appName, { hash, mimeType: contentType, size, createdAt });
 }
 
-export async function listBlobs(env: Env): Promise<string[]> {
-  return listBlobHashes(env.DB);
+export async function listBlobs(env: Env, app: AppContext): Promise<string[]> {
+  return listBlobHashes(env.DB, app.appName);
 }

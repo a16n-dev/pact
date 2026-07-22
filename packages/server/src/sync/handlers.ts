@@ -1,13 +1,21 @@
 import type { Context } from 'hono';
 import { pushDocuments, pullDocument, pullDocumentsSince, type SyncHooks } from './api';
 import type { Env, PushRequest, PullResponse } from '../types';
+import type { ClientRow } from '../auth/auth';
 
-type HonoEnv = { Bindings: Env };
+// These handlers run behind `requireAuth`, which stores the authenticated
+// client row; its `appName` (recorded at registration, never client-supplied)
+// is the tenant scope for every operation here.
+type HonoEnv = { Bindings: Env; Variables: { client: ClientRow } };
+
+function appOf(c: Context<HonoEnv>): { appName: string } {
+  return { appName: c.get('client').appName };
+}
 
 export function makePushHandler(hooks?: SyncHooks) {
   return async (c: Context<HonoEnv>) => {
     const body = await c.req.json<PushRequest>();
-    const outcome = await pushDocuments(c.env, body.documents, {
+    const outcome = await pushDocuments(c.env, appOf(c), body.documents, {
       hooks,
       waitUntil: (p) => c.executionCtx.waitUntil(p),
     });
@@ -26,7 +34,7 @@ export async function handlePull(c: Context<HonoEnv>) {
   if (!collection) return c.json({ error: 'collection is required' }, 400);
 
   if (id) {
-    const doc = await pullDocument(c.env, collection, id);
+    const doc = await pullDocument(c.env, appOf(c), collection, id);
     return c.json({
       documents: doc ? [doc] : [],
       cursor: 0,
@@ -44,6 +52,6 @@ export async function handlePull(c: Context<HonoEnv>) {
     documents,
     cursor: nextCursor,
     hasMore,
-  } = await pullDocumentsSince(c.env, collection, cursor);
+  } = await pullDocumentsSince(c.env, appOf(c), collection, cursor);
   return c.json({ documents, cursor: nextCursor, hasMore } satisfies PullResponse);
 }

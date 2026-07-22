@@ -6,9 +6,6 @@ settings:
 
 catalogs:
   default:
-    '@cloudflare/workers-oauth-provider':
-      specifier: ^0.7.0
-      version: 0.7.0
     '@cloudflare/workers-types':
       specifier: ^4
       version: 4.20260602.1
@@ -108,12 +105,6 @@ importers:
 
   packages/server:
     dependencies:
-      '@a16n/pact-client':
-        specifier: workspace:*
-        version: link:../client
-      '@cloudflare/workers-oauth-provider':
-        specifier: 'catalog:'
-        version: 0.7.0
       dayjs:
         specifier: 'catalog:'
         version: 1.11.21
@@ -237,9 +228,6 @@ packages:
   '@babel/types@7.29.7':
     resolution: {integrity: sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==}
     engines: {node: '>=6.9.0'}
-
-  '@cloudflare/workers-oauth-provider@0.7.0':
-    resolution: {integrity: sha512-w0s740/aV76mOkCgTcAQ31Lcju38Bt2BN3gbWPfhF9TvN6ED8nv08TSkNPARJa7X2AZzWhxqRlMrbWzEDPcY+Q==}
 
   '@cloudflare/workers-types@4.20260602.1':
     resolution: {integrity: sha512-0VssYYXHUn4VR1BaV+GXfhFpI53P2f6AIi17qyA9lQFyTs/u5ZF6IDPda2enDTIPFz/02872RM8CYVlXvRKtUA==}
@@ -2317,8 +2305,6 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
-
-  '@cloudflare/workers-oauth-provider@0.7.0': {}
 
   '@cloudflare/workers-types@4.20260602.1': {}
 

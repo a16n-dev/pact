@@ -8,7 +8,7 @@ The complete route table exposed by `createSyncApp`. Every route's logic is also
 |--------|------|------|---------|
 | `GET` | `/status` | none | Liveness — `{ "status": "ok" }`. |
 | `GET` | `/info` | none | `{ name, protocolVersion, realtime, …info }` — clients read this during connect. |
-| `POST` | `/auth/register` | Bearer **API_KEY** | Trade the server password for a per-client token → `{ clientId, token }`. |
+| `POST` | `/auth/register` | Bearer **app password** | Body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }`. |
 | `GET` | `/auth/check` | Bearer **token** | Validate a token → `{ ok, client }`. |
 | `GET` | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes. |
 | `POST` | `/sync/push` | Bearer **token** | Upsert documents (last-write-wins). |
@@ -19,8 +19,10 @@ The complete route table exposed by `createSyncApp`. Every route's logic is also
 | `GET` | `/sync/blobs/:hash` | Bearer **token** | Download blob bytes. |
 
 ::: warning No remote-wipe route
-There is intentionally **no** HTTP route to wipe the database — it would let any single client credential erase the whole group's data. Wiping is operator-only, via the exported [`wipeAllDocumentsViaApi` / `wipeAllBlobsViaApi`](/reference/programmatic-api) functions.
+There is intentionally **no** HTTP route to wipe the database — it would let any single client credential erase the whole group's data. Wiping is operator-only and per-app, via the exported [`wipeAllDocumentsViaApi` / `wipeAllBlobsViaApi`](/reference/programmatic-api) functions.
 :::
+
+All authenticated routes are **tenant-scoped**: the token resolves to the client row created at registration, and that row's `appName` bounds every read, write, blob, and realtime room. Two apps on the same server can never see each other's data. See [Authentication](/server/auth).
 
 ## `GET /info`
 
@@ -29,7 +31,7 @@ Read by clients during connect, and by the realtime layer to decide whether to o
 ```json
 {
   "name": "Our Household",
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "realtime": true,
   "mcp": true
 }
@@ -39,10 +41,10 @@ Read by clients during connect, and by the realtime layer to decide whether to o
 
 ## `POST /auth/register`
 
-Authenticated with the **server password** as a Bearer token. Body:
+Authenticated with the **app's password** as a Bearer token. Body:
 
 ```json
-{ "clientId": "cl-abc123", "clientName": "Alice's laptop" }
+{ "appName": "myapp", "clientId": "cl-abc123", "clientName": "Alice's laptop" }
 ```
 
 Returns:
@@ -51,7 +53,7 @@ Returns:
 { "clientId": "cl-abc123", "token": "pact_V1StGXR8…" }
 ```
 
-Re-registering the same `clientId` rotates the token but keeps the client's identity. See [Authentication](/server/auth).
+`appName` must match `[a-z0-9][a-z0-9_-]{0,63}` and name an app in the server's roster; the returned token is bound to that app, so no later request carries the app name. An unknown app returns the same `401` as a wrong password. Re-registering the same `clientId` rotates the token but keeps the client's identity. See [Authentication](/server/auth).
 
 ## `GET /sync/pull`
 
@@ -67,7 +69,7 @@ Incoming documents are reconciled client-side with [last-write-wins](/guide/sync
 Upserts a batch of documents into D1. The server applies last-write-wins per document:
 
 ```sql
-ON CONFLICT (id, collection)
+ON CONFLICT (app_name, collection, id)
   DO UPDATE SET ... WHERE excluded.updated_at >= documents.updated_at
 ```
 

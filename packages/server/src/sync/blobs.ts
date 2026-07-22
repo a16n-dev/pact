@@ -1,14 +1,21 @@
 import type { Context } from 'hono';
 import { getBlob, listBlobs, putBlob } from './api';
 import type { Env } from '../types';
+import type { ClientRow } from '../auth/auth';
 
-type HonoEnv = { Bindings: Env };
+// Runs behind `requireAuth`; the client row's appName scopes every blob op.
+type HonoEnv = { Bindings: Env; Variables: { client: ClientRow } };
+
+function appOf(c: Context<HonoEnv>): { appName: string } {
+  return { appName: c.get('client').appName };
+}
 
 /**
- * Content-addressed blob storage. Bytes are keyed by their SHA-256 hex
- * digest, so the bucket is effectively a CAS — duplicate puts collapse,
- * and `GET /sync/blobs` returns the authoritative set of stored hashes
- * for clients to diff against their local cache.
+ * Content-addressed blob storage, namespaced per app. Bytes are keyed by
+ * `<appName>/<sha-256 hex>`, so within an app the bucket is effectively a
+ * CAS — duplicate puts collapse, and `GET /sync/blobs` returns the
+ * authoritative set of stored hashes for clients to diff against their
+ * local cache.
  */
 
 export async function handleBlobPut(c: Context<HonoEnv>) {
@@ -23,7 +30,7 @@ export async function handleBlobPut(c: Context<HonoEnv>) {
   if (actual !== hash) {
     return c.json({ error: 'blob hash does not match content', code: 'hash_mismatch' }, 400);
   }
-  await putBlob(c.env, hash, body, contentType);
+  await putBlob(c.env, appOf(c), hash, body, contentType);
   return c.body(null, 204);
 }
 
@@ -34,12 +41,12 @@ async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
 
 export async function handleBlobGet(c: Context<HonoEnv>) {
   const hash = c.req.param('hash')!;
-  const blob = await getBlob(c.env, hash);
+  const blob = await getBlob(c.env, appOf(c), hash);
   if (!blob) return c.body(null, 404);
   return c.body(blob.body, 200, { 'content-type': blob.contentType });
 }
 
 export async function handleBlobList(c: Context<HonoEnv>) {
-  const hashes = await listBlobs(c.env);
+  const hashes = await listBlobs(c.env, appOf(c));
   return c.json({ hashes });
 }

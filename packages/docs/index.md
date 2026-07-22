@@ -114,7 +114,7 @@ When a single device stops being enough — a second user, another device, an ag
 ```ts
 const store = await Store.create(adapter, blobAdapter, domain);
 
-await store.registerClient(serverUrl, password, "Alice's laptop");
+await store.registerClient(serverUrl, password, 'myapp', "Alice's laptop");
 await store.setAuthor('us-alice');
 // ...everything you already wrote keeps working, now synced in realtime.
 ```
@@ -126,4 +126,4 @@ The two packages:
 | [`@a16n/pact-client`](/guide/client-setup) | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, blobs, migrations, backups. Sync and realtime when a server is configured. |
 | [`@a16n/pact-server`](/server/deployment) | Cloudflare Workers | The optional sync layer as a Hono app, backed by D1 + R2, with a Durable Object for realtime fan-out. |
 
-Because `@a16n/pact-server` depends on `@a16n/pact-client` for shared types, the **same `Store` can even run inside the Worker** on top of D1 — letting agent tools and client code share repositories built on one API.
+Agents get no special-case plumbing: an agent's MCP server is **just another `@a16n/pact-client` consumer** that registers as a sync client — the same Store, the same repositories, the same realtime.

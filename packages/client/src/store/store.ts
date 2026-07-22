@@ -267,17 +267,30 @@ export class Store {
   // Client registration / sync config
 
   /**
-   * Trade the server password for a long-lived access token bound to this
-   * client. The clientId is generated once on first call and reused on every
-   * subsequent call (persisted in `_config/client`), so re-registering — to
-   * rotate the token, rename the client, or point at a different URL — keeps
-   * the same identity on the server side.
+   * Trade the app's password for a long-lived access token bound to this
+   * client. `appName` identifies which app on the (possibly multi-tenant)
+   * server this client belongs to; the token comes back bound to it, so only
+   * registration ever names the app. The clientId is generated once on first
+   * call and reused on every subsequent call (persisted in `_config/client`),
+   * so re-registering — to rotate the token, rename the client, or point at a
+   * different URL — keeps the same identity on the server side.
    */
-  async registerClient(url: string, password: string, clientName: string): Promise<RegisterResult> {
+  async registerClient(
+    url: string,
+    password: string,
+    appName: string,
+    clientName: string
+  ): Promise<RegisterResult> {
     const normalisedUrl = url.replace(/\/+$/, '');
     const existing = await this.adapter.get<ClientConfigDoc>('_config', 'client');
     const clientId = existing?.clientId ?? `cl-${randomId(10)}`;
-    const result = await registerClientFetch(normalisedUrl, password, clientId, clientName);
+    const result = await registerClientFetch(
+      normalisedUrl,
+      password,
+      appName,
+      clientId,
+      clientName
+    );
     if (!result.ok) return result;
 
     const now = dayjs().toISOString();
@@ -295,6 +308,7 @@ export class Store {
       clientName,
       url: normalisedUrl,
       token: result.token,
+      appName,
     } as ClientConfigDoc);
     this.sync.setSyncClient(new SyncClient(normalisedUrl, result.token));
     this.openRealtime(normalisedUrl, result.token);
@@ -303,7 +317,9 @@ export class Store {
 
   async getClientRegistration(): Promise<ClientRegistration | null> {
     const doc = await this.adapter.get<ClientConfigDoc>('_config', 'client');
-    return doc ? { id: doc.clientId, name: doc.clientName, url: doc.url } : null;
+    return doc
+      ? { id: doc.clientId, name: doc.clientName, url: doc.url, appName: doc.appName ?? null }
+      : null;
   }
 
   /**

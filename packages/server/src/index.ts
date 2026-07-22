@@ -12,16 +12,10 @@ import {
   timingSafeEqual,
   type ClientRow,
 } from './auth/auth';
+import { getAppPassword, isValidAppName, DUMMY_PASSWORD } from './apps';
 
 export { RealtimeDO } from './realtime';
-export { D1Adapter, type D1AdapterOptions } from './d1Adapter';
 export { createLandingApp, type LandingOptions } from './landing/landing';
-export {
-  createOAuthAuthApp,
-  type OAuthAuthOptions,
-  type OAuthAuthBranding,
-  type AuthIdentity,
-} from './auth/oauthAuth';
 export type { Env, SyncDocument, PushRequest, PushResponse, PullResponse } from './types';
 export type { ClientRow } from './auth/auth';
 export {
@@ -34,7 +28,7 @@ export {
   putBlob,
   listBlobs,
 } from './sync/api';
-export type { SyncHooks, PushOptions, PushOutcome, PushResult } from './sync/api';
+export type { SyncHooks, PushOptions, PushOutcome, PushResult, AppContext } from './sync/api';
 export {
   bumpClientLastSeen,
   extractBearerToken,
@@ -42,6 +36,7 @@ export {
   registerClient,
   timingSafeEqual,
 } from './auth/auth';
+export { getApps, getAppPassword, isValidAppName, LEGACY_DEFAULT_APP } from './apps';
 
 type Variables = { client: ClientRow };
 
@@ -83,28 +78,46 @@ export function createSyncApp(
     c.json({
       ...options.info,
       name: c.env.SERVER_NAME,
-      protocolVersion: 2,
+      protocolVersion: 3,
       realtime: c.env.ENABLE_REALTIME === 'true',
     })
   );
 
   app.post('/auth/register', async (c) => {
     const password = extractBearerToken(c.req.header('authorization'));
-    if (password === null || !(await timingSafeEqual(password, c.env.API_KEY))) {
+    if (password === null) return c.json({ error: 'Unauthorized' }, 401);
+
+    const body = await c.req
+      .json<{ appName?: unknown; clientId?: unknown; clientName?: unknown }>()
+      .catch(() => null);
+    if (
+      !body ||
+      typeof body.appName !== 'string' ||
+      typeof body.clientId !== 'string' ||
+      typeof body.clientName !== 'string'
+    ) {
+      return c.json({ error: 'appName, clientId and clientName are required' }, 400);
+    }
+    const appName = body.appName.trim();
+    const clientId = body.clientId.trim();
+    const clientName = body.clientName.trim();
+    if (!appName || !clientId || !clientName) {
+      return c.json({ error: 'appName, clientId and clientName must be non-empty' }, 400);
+    }
+    if (!isValidAppName(appName)) {
+      return c.json({ error: 'appName must match [a-z0-9][a-z0-9_-]{0,63}' }, 400);
+    }
+
+    // Unknown app and wrong password are indistinguishable: both compare
+    // against *something* (a dummy for unknown apps, so timing is uniform)
+    // and both return the same 401 — no probing which app names exist.
+    const expected = getAppPassword(c.env, appName);
+    const matched = await timingSafeEqual(password, expected ?? DUMMY_PASSWORD);
+    if (expected === null || !matched) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    const body = await c.req.json<{ clientId?: unknown; clientName?: unknown }>().catch(() => null);
-    if (!body || typeof body.clientId !== 'string' || typeof body.clientName !== 'string') {
-      return c.json({ error: 'clientId and clientName are required' }, 400);
-    }
-    const clientId = body.clientId.trim();
-    const clientName = body.clientName.trim();
-    if (!clientId || !clientName) {
-      return c.json({ error: 'clientId and clientName must be non-empty' }, 400);
-    }
-
-    const { token } = await registerClient(c.env.DB, clientId, clientName);
+    const { token } = await registerClient(c.env.DB, appName, clientId, clientName);
     return c.json({ clientId, token });
   });
 
@@ -121,9 +134,11 @@ export function createSyncApp(
     if (!token) return c.json({ error: 'Unauthorized' }, 401);
     const client = await lookupClientByToken(c.env.DB, token);
     if (!client) return c.json({ error: 'Unauthorized' }, 401);
-    c.executionCtx.waitUntil(bumpClientLastSeen(c.env.DB, client.id));
+    c.executionCtx.waitUntil(bumpClientLastSeen(c.env.DB, client.appName, client.id));
 
-    const id = c.env.REALTIME.idFromName('singleton');
+    // One DO per app: this socket lands in a room that only ever holds its
+    // own app's clients, so broadcasts can't cross tenants.
+    const id = c.env.REALTIME.idFromName(client.appName);
     return c.env.REALTIME.get(id).fetch(c.req.raw);
   });
 
@@ -141,14 +156,19 @@ export function createSyncApp(
     if (!client) return c.json({ error: 'Unauthorized' }, 401);
     c.set('client', client);
     // Fire-and-forget — bumping last_seen_at must never block a real request.
-    c.executionCtx.waitUntil(bumpClientLastSeen(c.env.DB, client.id));
+    c.executionCtx.waitUntil(bumpClientLastSeen(c.env.DB, client.appName, client.id));
     await next();
   };
 
   app.use('/auth/check', requireAuth);
   app.use('/sync/*', requireAuth);
 
-  app.get('/auth/check', (c) => c.json({ ok: true, client: { id: c.get('client').id } }));
+  app.get('/auth/check', (c) =>
+    c.json({
+      ok: true,
+      client: { id: c.get('client').id, appName: c.get('client').appName },
+    })
+  );
 
   app.post('/sync/push', makePushHandler(options.hooks));
   app.get('/sync/pull', handlePull);

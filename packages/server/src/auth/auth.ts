@@ -2,6 +2,12 @@ import { nanoid } from 'nanoid';
 import dayjs from 'dayjs';
 
 export interface ClientRow {
+  /**
+   * Tenant the client registered under. Recorded once at registration and
+   * thereafter the sole source of a request's app scope — never a
+   * client-supplied header.
+   */
+  appName: string;
   id: string;
   name: string;
   createdAt: string;
@@ -48,6 +54,7 @@ export function extractBearerToken(header: string | undefined): string | null {
 
 export async function registerClient(
   db: D1Database,
+  appName: string,
   id: string,
   name: string
 ): Promise<{ token: string }> {
@@ -55,17 +62,19 @@ export async function registerClient(
   const tokenHash = await hashToken(token);
   const now = dayjs().toISOString();
   // Persist only the hash; the raw token is returned to the caller once and
-  // never stored server-side. (The `token` column holds the hash.)
+  // never stored server-side. (The `token` column holds the hash.) Client ids
+  // are only unique per app — the same id under a different app is a
+  // different client, never an overwrite.
   await db
     .prepare(
-      `INSERT INTO clients (id, name, token, created_at, last_seen_at)
-       VALUES (?1, ?2, ?3, ?4, ?4)
-       ON CONFLICT (id) DO UPDATE
+      `INSERT INTO clients (app_name, id, name, token, created_at, last_seen_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+       ON CONFLICT (app_name, id) DO UPDATE
          SET name = excluded.name,
              token = excluded.token,
              last_seen_at = excluded.last_seen_at`
     )
-    .bind(id, name, tokenHash, now)
+    .bind(appName, id, name, tokenHash, now)
     .run();
   return { token };
 }
@@ -75,9 +84,12 @@ export async function lookupClientByToken(
   token: string
 ): Promise<ClientRow | null> {
   const tokenHash = await hashToken(token);
+  // Tokens are globally unique (high-entropy random, UNIQUE column), so the
+  // token alone resolves both the client and its app — this lookup is where
+  // every authenticated request acquires its tenant scope.
   const row = await db
     .prepare(
-      `SELECT id, name, created_at, last_seen_at
+      `SELECT app_name, id, name, created_at, last_seen_at
        FROM clients
        WHERE token = ?1`
     )
@@ -85,6 +97,7 @@ export async function lookupClientByToken(
     .first();
   if (!row) return null;
   return {
+    appName: row.app_name as string,
     id: row.id as string,
     name: row.name as string,
     createdAt: row.created_at as string,
@@ -92,9 +105,13 @@ export async function lookupClientByToken(
   };
 }
 
-export async function bumpClientLastSeen(db: D1Database, id: string): Promise<void> {
+export async function bumpClientLastSeen(
+  db: D1Database,
+  appName: string,
+  id: string
+): Promise<void> {
   await db
-    .prepare(`UPDATE clients SET last_seen_at = ?2 WHERE id = ?1`)
-    .bind(id, dayjs().toISOString())
+    .prepare(`UPDATE clients SET last_seen_at = ?3 WHERE app_name = ?1 AND id = ?2`)
+    .bind(appName, id, dayjs().toISOString())
     .run();
 }
