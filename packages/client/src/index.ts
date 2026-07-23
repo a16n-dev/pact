@@ -2,6 +2,7 @@ export * from './ids';
 export * from './adapters/adapter';
 export * from './adapters/memoryAdapter';
 export * from './adapters/encryptedAdapter';
+export * from './adapters/aliasAdapter';
 export * from './crypto/types';
 export * from './crypto/webCrypto';
 export { encryptDoc, decryptDoc, isEncryptedDoc, type EncryptedDoc } from './crypto/docCrypto';

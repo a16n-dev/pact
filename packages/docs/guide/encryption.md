@@ -56,7 +56,7 @@ await store.pushAll(); // overwrite the server's plaintext copies
 
 **Hidden:** every domain field's content — from the sync server's operator, from Cloudflare storage at rest (D1 rows, backups), and from anything reading the device database file.
 
-**Still visible (by design, sync needs them):** collection names, document ids (an id prefix like `rcp-` reveals the type), timestamps, author ids, document count and sizes, write timing.
+**Still visible (by design, sync needs them):** collection names, document ids (an id prefix like `rcp-` reveals the type), timestamps, author ids, document count and sizes, write timing. Collection names and id prefixes can be made opaque by [aliasing the storage/wire key](/guide/client-setup#aliasing-the-storage-wire-key) (`key: 'c1'`, `idPrefix: 'p1'`) — a labels-only measure: the mapping ships in the app bundle, and counts, sizes, and write patterns still fingerprint collections.
 
 **Not covered:** blob bytes (images upload as-is; encrypting them while keeping content-addressed sync is a possible later addition), local backups from `createBackup` (they export plaintext — treat archive files like the data itself), and internal `_*` collections (never synced; the persisted sync token relies on device-level protection).
 

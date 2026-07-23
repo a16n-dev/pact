@@ -10,6 +10,7 @@ import {
   type SyncTransform,
 } from '../sync/sync';
 import { EncryptedAdapter } from '../adapters/encryptedAdapter';
+import { AliasAdapter } from '../adapters/aliasAdapter';
 import { encryptDoc, decryptDoc } from '../crypto/docCrypto';
 import type { DocCipher } from '../crypto/types';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../system';
@@ -51,9 +52,7 @@ import type {
 const KEYCHECK_SENTINEL = 'pact-keycheck';
 const KEYCHECK_AAD = '_config/encryption';
 
-export class Store<
-  Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[],
-> {
+export class Store<Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[]> {
   private realtime: RealtimeConnection | null = null;
   private changeHandlers = new Set<ChangeHandler>();
   private readonly cipher: DocCipher | null;
@@ -70,6 +69,12 @@ export class Store<
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
   // Names of `synced: true` collections — the pushAll / pull-all enumeration.
   private readonly syncedCollections: readonly string[];
+  // Collection aliasing (name → storage/wire key and its reverse), or null
+  // when no definition sets a `key`. Everything inside the Store speaks
+  // names; the AliasAdapter and SyncClient translate at the physical/wire
+  // boundary, and realtime invalidations translate back on the way in.
+  private readonly collectionKeys: ReadonlyMap<string, string> | null;
+  private readonly collectionNames: ReadonlyMap<string, string> | null;
   private readonly idParser: (id: string) => ParsedId | null;
   private readonly onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
   // Domain-supplied blob-reference extractor and whether one was configured.
@@ -93,17 +98,6 @@ export class Store<
     options?: StoreSyncConfig
   ) {
     this.cipher = domain.encryption?.cipher ?? null;
-    // With encryption on, wrap the adapter before anything else touches it:
-    // every layer above (migrations, LWW, sync engine, backups) then deals
-    // exclusively in plaintext while storage only ever holds ciphertext.
-    this.adapter = this.cipher ? new EncryptedAdapter(adapter, this.cipher) : adapter;
-    this.wireTransform = this.cipher
-      ? {
-          toWire: (collection, doc) => encryptDoc(this.cipher!, collection, doc),
-          fromWire: (collection, data) =>
-            decryptDoc(this.cipher!, collection, data as BaseDocument),
-        }
-      : null;
     this.blobs = blobs;
     const defs = domain.collections;
     this.definitions = new Map(defs.map((d) => [d.name, d]));
@@ -115,6 +109,30 @@ export class Store<
         throw new Error(`Collection name "${def.name}" is reserved (the _* namespace is internal)`);
       }
     }
+    if (new Set(defs.map((d) => d.key)).size !== defs.length) {
+      throw new Error('Duplicate collection key in StoreDomain.collections');
+    }
+    const aliased = defs.filter((d) => d.key !== d.name);
+    this.collectionKeys = aliased.length > 0 ? new Map(defs.map((d) => [d.name, d.key])) : null;
+    this.collectionNames =
+      this.collectionKeys !== null
+        ? new Map(Array.from(this.collectionKeys, ([name, key]) => [key, name]))
+        : null;
+    // With encryption on, wrap the adapter before anything else touches it:
+    // every layer above (migrations, LWW, sync engine, backups) then deals
+    // exclusively in plaintext while storage only ever holds ciphertext.
+    // The alias wrapper goes outermost, so the cipher sees physical keys —
+    // envelopes are AAD-bound to the same identity the wire seals against.
+    let stacked = this.cipher ? new EncryptedAdapter(adapter, this.cipher) : adapter;
+    if (this.collectionKeys) stacked = new AliasAdapter(stacked, this.collectionKeys);
+    this.adapter = stacked;
+    this.wireTransform = this.cipher
+      ? {
+          toWire: (collection, doc) => encryptDoc(this.cipher!, collection, doc),
+          fromWire: (collection, data) =>
+            decryptDoc(this.cipher!, collection, data as BaseDocument),
+        }
+      : null;
     this.migrator = new Migrator(buildMigrationRegistry(defs));
     this.syncedCollections = defs.filter((d) => d.synced).map((d) => d.name);
     this.idParser = createIdParser(defs);
@@ -139,7 +157,12 @@ export class Store<
     });
     this.sync.setSyncClient(
       options?.syncUrl && options.syncToken
-        ? new SyncClient(options.syncUrl, options.syncToken, this.wireTransform)
+        ? new SyncClient(
+            options.syncUrl,
+            options.syncToken,
+            this.wireTransform,
+            this.collectionKeys
+          )
         : null
     );
     if (options?.syncUrl && options?.syncToken) {
@@ -158,8 +181,11 @@ export class Store<
       token,
       // Internal `_`-prefixed collections are per-store bookkeeping (e.g. the
       // `_seeds` marker); pulling another party's copy would clobber ours.
+      // The server broadcasts physical keys (that's all it ever sees), so
+      // aliased domains translate back to the name the pull path speaks.
       onInvalidate: (collection) => {
-        if (!collection.startsWith('_')) void this.sync.pull(collection);
+        const name = this.collectionNames?.get(collection) ?? collection;
+        if (!name.startsWith('_')) void this.sync.pull(name);
       },
       onReconnect: () => {
         // Regained connectivity: pull others' changes and flush any writes
@@ -417,7 +443,9 @@ export class Store<
       token: result.token,
       appName,
     } as ClientConfigDoc);
-    this.sync.setSyncClient(new SyncClient(normalisedUrl, result.token, this.wireTransform));
+    this.sync.setSyncClient(
+      new SyncClient(normalisedUrl, result.token, this.wireTransform, this.collectionKeys)
+    );
     this.openRealtime(normalisedUrl, result.token);
     return result;
   }

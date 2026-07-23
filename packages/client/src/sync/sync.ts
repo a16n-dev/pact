@@ -78,15 +78,33 @@ export class SyncClient {
   private readonly endpoint: string;
   private readonly token: string;
   private readonly transform: SyncTransform | null;
+  private readonly collectionKeys: ReadonlyMap<string, string> | null;
 
-  constructor(endpoint: string, token: string, transform: SyncTransform | null = null) {
+  constructor(
+    endpoint: string,
+    token: string,
+    transform: SyncTransform | null = null,
+    collectionKeys: ReadonlyMap<string, string> | null = null
+  ) {
     this.endpoint = endpoint;
     this.token = token;
     this.transform = transform;
+    this.collectionKeys = collectionKeys;
   }
 
   private authHeaders(): Record<string, string> {
     return { Authorization: `Bearer ${this.token}` };
+  }
+
+  /**
+   * The wire identity of a collection: its `CollectionDefinition.key` when the
+   * domain aliases it, the name itself otherwise. Applied at each method's
+   * entry so the URL, the per-doc `collection` field, *and* the transform all
+   * see the key — with encryption on, that binds wire envelopes to the same
+   * identity local storage seals against (see `AliasAdapter`).
+   */
+  private toKey(collection: string): string {
+    return this.collectionKeys?.get(collection) ?? collection;
   }
 
   async ping(): Promise<PingResult> {
@@ -104,12 +122,13 @@ export class SyncClient {
   }
 
   async push(collection: string, docs: BaseDocument[]): Promise<PushResponse> {
+    const key = this.toKey(collection);
     const syncDocs: SyncDocument[] = await Promise.all(
       docs.map(async (doc) => ({
         id: doc.id,
-        collection,
+        collection: key,
         updatedAt: doc.updatedAt,
-        data: this.transform ? await this.transform.toWire(collection, doc) : doc,
+        data: this.transform ? await this.transform.toWire(key, doc) : doc,
       }))
     );
 
@@ -130,7 +149,8 @@ export class SyncClient {
     collection: string,
     cursor: number
   ): Promise<{ documents: T[]; cursor: number; hasMore: boolean }> {
-    const params = new URLSearchParams({ collection, cursor: String(cursor) });
+    const key = this.toKey(collection);
+    const params = new URLSearchParams({ collection: key, cursor: String(cursor) });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
       headers: this.authHeaders(),
     });
@@ -143,9 +163,7 @@ export class SyncClient {
     return {
       documents: await Promise.all(
         result.documents.map(async (d) =>
-          this.transform
-            ? ((await this.transform.fromWire(collection, d.data)) as T)
-            : (d.data as T)
+          this.transform ? ((await this.transform.fromWire(key, d.data)) as T) : (d.data as T)
         )
       ),
       cursor: result.cursor,
@@ -154,7 +172,8 @@ export class SyncClient {
   }
 
   async pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
-    const params = new URLSearchParams({ collection, id });
+    const key = this.toKey(collection);
+    const params = new URLSearchParams({ collection: key, id });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
       headers: this.authHeaders(),
     });
@@ -166,6 +185,6 @@ export class SyncClient {
     const result = (await res.json()) as PullResponse;
     if (!result.documents[0]) return null;
     const data = result.documents[0].data;
-    return (this.transform ? await this.transform.fromWire(collection, data) : data) as T;
+    return (this.transform ? await this.transform.fromWire(key, data) : data) as T;
   }
 }

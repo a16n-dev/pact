@@ -23,6 +23,15 @@ export interface CollectionDefinition<
   Schema extends z.ZodType = z.ZodType,
 > {
   name: Name;
+  /**
+   * The collection's physical identity: the storage/wire key documents are
+   * kept and synced under. Defaults to `name`. Setting it decouples the
+   * label code uses from what local storage and the sync server ever see —
+   * an opaque key (e.g. `c1`) keeps the domain vocabulary out of server
+   * rows. A rename-not-encryption measure: the mapping ships in the app
+   * bundle, and changing a key orphans data stored under the old one.
+   */
+  key: string;
   idPrefix: string;
   /**
    * Whether the collection is enumerated for sync (`pushAll` / pull-all).
@@ -46,6 +55,8 @@ const DEFAULT_ID_LENGTH = 10;
  */
 export function defineCollection<Name extends string, Schema extends z.ZodType>(def: {
   name: Name;
+  /** Storage/wire key; defaults to `name`. See `CollectionDefinition.key`. */
+  key?: string;
   idPrefix: string;
   /** Length of the random part of generated ids. */
   idLength?: number;
@@ -57,9 +68,20 @@ export function defineCollection<Name extends string, Schema extends z.ZodType>(
    */
   schema: (base: CollectionBaseSchema) => Schema;
 }): CollectionDefinition<Name, Schema> {
-  const { name, idPrefix, idLength = DEFAULT_ID_LENGTH, synced = true, migrations } = def;
+  const {
+    name,
+    key = name,
+    idPrefix,
+    idLength = DEFAULT_ID_LENGTH,
+    synced = true,
+    migrations,
+  } = def;
+  if (key.startsWith('_')) {
+    throw new Error(`Collection key "${key}" is reserved (the _* namespace is internal)`);
+  }
   return {
     name,
+    key,
     idPrefix,
     synced,
     migrations,

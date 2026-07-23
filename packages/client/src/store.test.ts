@@ -9,7 +9,7 @@ import type { BaseDocument } from './types';
 import type { BlobAdapter } from './blobs/blobAdapter';
 import { blobFields } from './blobs/blobFields';
 import { createWebCryptoCipher } from './crypto/webCrypto';
-import { encryptDoc, isEncryptedDoc } from './crypto/docCrypto';
+import { decryptDoc, encryptDoc, isEncryptedDoc } from './crypto/docCrypto';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
 
@@ -136,7 +136,12 @@ describe('Store collection registry (schemas define collections)', () => {
   });
 
   it('rejects reserved and duplicate collection names at construction', () => {
-    const internal = defineCollection({ name: '_secret', idPrefix: 'x', schema: (b) => b });
+    // A reserved name now fails at definition time (the key defaults to it) …
+    expect(() => defineCollection({ name: '_secret', idPrefix: 'x', schema: (b) => b })).toThrow(
+      /reserved/
+    );
+    // … and the Store still rejects a hand-built definition that sneaks one in.
+    const internal = { ...widgetsDef, name: '_secret', key: 'ok' };
     expect(() => new Store(new InMemoryAdapter(), null, { collections: [internal] })).toThrow(
       /reserved/
     );
@@ -144,6 +149,17 @@ describe('Store collection registry (schemas define collections)', () => {
     expect(
       () => new Store(new InMemoryAdapter(), null, { collections: [widgetsDef, dupe] })
     ).toThrow(/Duplicate/);
+  });
+
+  it('rejects reserved and duplicate collection keys', () => {
+    expect(() =>
+      defineCollection({ name: 'secret', key: '_secret', idPrefix: 'x', schema: (b) => b })
+    ).toThrow(/reserved/);
+    const a = defineCollection({ name: 'alpha', key: 'c1', idPrefix: 'a', schema: (b) => b });
+    const b = defineCollection({ name: 'beta', key: 'c1', idPrefix: 'b', schema: (b) => b });
+    expect(() => new Store(new InMemoryAdapter(), null, { collections: [a, b] })).toThrow(
+      /Duplicate collection key/
+    );
   });
 });
 
@@ -1099,6 +1115,26 @@ describe('Store encryption (optional E2E)', () => {
     expect((await store.get<Widget>('widgets', 'legacy'))?.name).toBe('Plain Old Doc');
   });
 
+  it('binds envelopes to the physical key when a collection is aliased', async () => {
+    const aliasedWidgets = { ...widgetsDef, key: 'c1' };
+    const inner = new InMemoryAdapter();
+    const store = new Store(inner, null, {
+      collections: [aliasedWidgets],
+      encryption: { cipher },
+    });
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
+
+    // Persisted under the key, sealed, and AAD-bound to `c1/w1` — opening it
+    // as `widgets/w1` must fail (proves local and wire identities agree).
+    const stored = (await inner.get<BaseDocument>('c1', 'w1'))!;
+    expect(isEncryptedDoc(stored)).toBe(true);
+    await expect(decryptDoc(cipher, 'c1', stored)).resolves.toMatchObject({ name: 'Secret Soup' });
+    await expect(decryptDoc(cipher, 'widgets', stored)).rejects.toThrow();
+
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Secret Soup');
+  });
+
   it('pushAll filters _local-authored docs (server can no longer see authors)', async () => {
     const { adapter, store } = setup({}, SYNC);
     await adapter.put('widgets', mkDoc('mine', 'ok', '2026-01-01T00:00:00.000Z', 'us/1'));
@@ -1115,5 +1151,126 @@ describe('Store encryption (optional E2E)', () => {
       documents: { id: string }[];
     };
     expect(body.documents.map((d) => d.id)).toEqual(['mine']);
+  });
+});
+
+describe('Store collection aliasing (name in code, key in storage/wire)', () => {
+  const aliasedWidgets = { ...widgetsDef, key: 'c1' };
+
+  function setupAliased(options?: StoreSyncConfig) {
+    const inner = new InMemoryAdapter();
+    const store = new Store(inner, null, { collections: [aliasedWidgets] }, options);
+    return { inner, store };
+  }
+
+  it('CRUD speaks the name while storage holds the key; events use the name', async () => {
+    const { inner, store } = setupAliased();
+    const onChange = vi.fn();
+    store.on('change', onChange);
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+
+    expect(await inner.get('c1', 'w1')).not.toBeNull();
+    expect(await inner.get('widgets', 'w1')).toBeNull();
+    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+    expect((await store.list<Widget>('widgets')).map((w) => w.id)).toEqual(['w1']);
+    expect(onChange).toHaveBeenCalledWith('widgets');
+    expect(onChange).not.toHaveBeenCalledWith('c1');
+  });
+
+  it('pushes and pulls under the key on the wire', async () => {
+    const { store } = setupAliased(SYNC);
+    await store.setAuthor('us/1');
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1, skipped: 0 });
+      return jsonResponse({ documents: [], cursor: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.drainOutbox();
+    const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
+    const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
+      documents: { collection: string }[];
+    };
+    expect(body.documents[0]!.collection).toBe('c1');
+
+    await store.pull('widgets');
+    const pullCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/pull'))!;
+    expect(String(pullCall[0])).toContain('collection=c1');
+    expect(String(pullCall[0])).not.toContain('widgets');
+  });
+
+  it('translates realtime invalidations (keys) back to names', async () => {
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      url: string;
+      onopen: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onmessage: ((e: { data: string }) => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        FakeWebSocket.instances.push(this);
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/info')) return jsonResponse({ realtime: true });
+      return jsonResponse({ documents: [], cursor: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { store } = setupAliased(SYNC);
+    const onChange = vi.fn();
+    store.on('change', onChange);
+    await store.setAuthor('us/1');
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    // Server broadcasts the physical key; the pull path (cursor doc, change
+    // event) must run under the code-facing name.
+    fetchMock.mockClear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w9',
+              collection: 'c1',
+              updatedAt: '2026-06-06T00:00:00.000Z',
+              data: mkDoc('w9', 'From Server', '2026-06-06T00:00:00.000Z'),
+            },
+          ],
+          cursor: 1,
+        })
+      )
+    );
+    FakeWebSocket.instances[0]!.onmessage!({
+      data: JSON.stringify({ type: 'invalidate', collections: ['c1'] }),
+    });
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('widgets'));
+    expect((await store.get<Widget>('widgets', 'w9'))?.name).toBe('From Server');
+  });
+
+  it('backups carry names, and restore lands docs back under the key', async () => {
+    const { store } = setupAliased();
+    await store.setAuthor('us/1');
+    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    const archive = await store.createBackup();
+
+    // Restore into a store with a *different* key for the same collection:
+    // the name is the portable identity, so the archive still applies.
+    const inner2 = new InMemoryAdapter();
+    const store2 = new Store(inner2, null, {
+      collections: [{ ...widgetsDef, key: 'k2' }],
+    });
+    const result = await store2.restoreBackup(archive);
+    expect(result.docsWritten).toBe(1);
+    expect(result.collections).toEqual(['widgets']);
+    expect(await inner2.get('k2', 'w1')).not.toBeNull();
+    expect((await store2.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
   });
 });

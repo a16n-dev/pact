@@ -94,6 +94,23 @@ const domain: StoreDomain = { collections: [recipes, drafts] };
 
 Declaring the schemas here also makes `store.collection('recipes')` fully typed: the name is narrowed to your defined collections and the document type is inferred from the schema.
 
+### Aliasing the storage/wire key
+
+A collection can optionally carry a `key` — the physical identity it's stored and synced under — separate from the `name` code uses:
+
+```ts
+const recipes = defineCollection({
+  name: 'recipes', // what code says: store.collection('recipes')
+  key: 'c1', // what local storage and the sync server see
+  idPrefix: 'rcp',
+  schema: (base) => base.extend({ title: z.string().min(1) }),
+});
+```
+
+Everything app-facing (the typed API, change events, backup archives) speaks the name; storage rows, sync requests, and realtime invalidations use the key. The server needs no configuration — it already treats collection identifiers as opaque strings.
+
+This keeps your domain vocabulary out of server rows and pairs naturally with [encryption](/guide/encryption), but it is renaming, not secrecy: the mapping ships in your app bundle, and id prefixes (`rcp-`) still reveal document types unless you make those opaque too. Choose keys before shipping — changing a key later orphans data stored under the old one, both locally and on the server (backup archives are immune: they're keyed by name, so a restore lands under whatever key the current domain declares).
+
 See [Migrations](/guide/migrations) for per-collection `migrations`, [Authors & Identity](/guide/authors-identity) for `onSetAuthor`, [Blobs](/guide/blobs#declaring-which-fields-hold-blob-hashes) for `blobHashes`, and [Encryption](/guide/encryption) for `encryption`.
 
 ## Reading and writing

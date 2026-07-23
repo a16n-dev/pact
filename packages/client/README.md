@@ -14,7 +14,7 @@ Pact deliberately trades generality for simplicity:
 
 - **A small, high-trust group.** One server per app group (e.g. a household). Auth is one shared app password traded for per-client tokens; there's no per-document access control.
 - **Last-write-wins is good enough.** Conflicts resolve by `updatedAt`. No CRDTs, no merge UIs.
-- **Schemas are required, and owned by you.** Every collection is declared with a Zod schema (plus id prefix and migrations) via `defineCollection` — the set of definitions you hand the Store *is* the set of collections that exist. Writes validate against them; undefined collections are rejected.
+- **Schemas are required, and owned by you.** Every collection is declared with a Zod schema (plus id prefix and migrations) via `defineCollection` — the set of definitions you hand the Store _is_ the set of collections that exist. Writes validate against them; undefined collections are rejected.
 
 ## Quick start (local-only)
 
