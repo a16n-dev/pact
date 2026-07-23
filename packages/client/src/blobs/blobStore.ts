@@ -17,11 +17,11 @@ export class BlobStore {
   private blobs: BlobAdapter;
 
   constructor(store: Store) {
-    if (!store.blobs) {
+    if (!store.blobs.adapter) {
       throw new Error('BlobStore requires a Store created with a BlobAdapter');
     }
     this.store = store;
-    this.blobs = store.blobs;
+    this.blobs = store.blobs.adapter;
   }
 
   /**
@@ -32,7 +32,7 @@ export class BlobStore {
   async write(bytes: Uint8Array, mimeType: string): Promise<string> {
     const hash = await sha256Hex(bytes);
     await this.blobs.write(hash, bytes, mimeType);
-    this.store.notifyBlobsChanged();
+    this.store.blobs.notifyChanged();
     void this.tryPush(hash, bytes, mimeType);
     return hash;
   }
@@ -52,7 +52,7 @@ export class BlobStore {
    * collapses since the key is the content hash.
    */
   async push(): Promise<void> {
-    const creds = await this.store.getSyncCredentials();
+    const creds = await this.store.sync.credentials();
     if (!creds) return;
     const local = await this.blobs.list();
     const remote = new Set(await this.fetchServerList(creds));
@@ -72,7 +72,7 @@ export class BlobStore {
    * sources that union from the Store for you.
    */
   async pull(referencedHashes: Iterable<string>): Promise<void> {
-    const creds = await this.store.getSyncCredentials();
+    const creds = await this.store.sync.credentials();
     if (!creds) return;
     let any = false;
     for (const hash of referencedHashes) {
@@ -83,7 +83,7 @@ export class BlobStore {
         any = true;
       }
     }
-    if (any) this.store.notifyBlobsChanged();
+    if (any) this.store.blobs.notifyChanged();
   }
 
   /**
@@ -92,7 +92,7 @@ export class BlobStore {
    * `StoreDomain.blobHashes` extractor; a no-op (downloads nothing) without one.
    */
   async pullReferenced(): Promise<void> {
-    await this.pull(await this.store.referencedBlobHashes());
+    await this.pull(await this.store.blobs.referencedHashes());
   }
 
   private async tryPush(
@@ -101,7 +101,7 @@ export class BlobStore {
     mimeType: string,
     creds?: { url: string; token: string }
   ): Promise<void> {
-    const c = creds ?? (await this.store.getSyncCredentials());
+    const c = creds ?? (await this.store.sync.credentials());
     if (!c) return;
     try {
       await fetch(`${c.url}/sync/blobs/${hash}`, {

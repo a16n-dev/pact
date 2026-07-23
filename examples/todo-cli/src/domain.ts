@@ -13,6 +13,16 @@ export const todos = defineCollection({
       done: z.boolean(),
       completedAt: z.iso.datetime().nullable(),
     }),
+    migrations: {
+        current: 1,
+        migrations: [{
+            from: 1,
+            to: 2,
+            up: (doc) => {
+                doc.completed = doc.done
+            }
+        }]
+    }
 });
 
 export const domain = { collections: [todos] } as const satisfies StoreDomain;

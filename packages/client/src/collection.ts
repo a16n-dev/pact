@@ -3,24 +3,34 @@ import { randomId } from './ids';
 import { BaseDocumentSchema, type BaseDocument } from './types';
 import type { CollectionMigrations, MigrationRegistry } from './migrator';
 
+/** A document id under `Prefix` — the compile-time face of `docId`. */
+export type DocId<Prefix extends string = string> = `${Prefix}-${string}`;
+
 /**
  * Zod field for a document id in the collection with this prefix. Used both
  * for a collection's own `id` (injected by `defineCollection`) and for
- * foreign-key fields referencing another collection's docs.
+ * foreign-key fields referencing another collection's docs. Generic over the
+ * prefix literal, so the parsed type is `` `${Prefix}-${string}` `` and a
+ * wrong-prefix literal is a compile error, not just a runtime one.
  */
-export const docId = (prefix: string) => z.string().startsWith(`${prefix}-`);
+export const docId = <Prefix extends string>(prefix: Prefix) =>
+  z.templateLiteral([prefix, '-', z.string()]);
 
-const baseSchemaFor = (idPrefix: string) => BaseDocumentSchema.extend({ id: docId(idPrefix) });
+const baseSchemaFor = <Prefix extends string>(idPrefix: Prefix) =>
+  BaseDocumentSchema.extend({ id: docId(idPrefix) });
 
 /**
  * `BaseDocumentSchema` with `id` narrowed to the collection's prefix — the
  * starting point handed to `defineCollection`'s schema builder.
  */
-export type CollectionBaseSchema = ReturnType<typeof baseSchemaFor>;
+export type CollectionBaseSchema<Prefix extends string = string> = ReturnType<
+  typeof baseSchemaFor<Prefix>
+>;
 
 export interface CollectionDefinition<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
+  IdPrefix extends string = string,
 > {
   name: Name;
   /**
@@ -32,7 +42,7 @@ export interface CollectionDefinition<
    * bundle, and changing a key orphans data stored under the old one.
    */
   key: string;
-  idPrefix: string;
+  idPrefix: IdPrefix;
   /**
    * Whether the collection is enumerated for sync (`pushAll` / pull-all).
    * Local-only collections set this false: their docs are still validated and
@@ -41,10 +51,36 @@ export interface CollectionDefinition<
   synced: boolean;
   schema: Schema;
   migrations?: CollectionMigrations;
-  generateId: () => string;
+  generateId: () => DocId<IdPrefix>;
 }
 
 const DEFAULT_ID_LENGTH = 10;
+
+/** What `defineCollection` takes: the hand-written half of a `CollectionDefinition`. */
+export interface CollectionConfig<
+  Name extends string = string,
+  Schema extends z.ZodType = z.ZodType,
+  IdPrefix extends string = string,
+> {
+  /** The name code refers to the collection by (`store.collection(name)`). */
+  name: Name;
+  /** Storage/wire key; defaults to `name`. See `CollectionDefinition.key`. */
+  key?: string;
+  /** Prefix for this collection's ids (`rcp` → `rcp-Ab3xY9kQz2`). Must be unique across the domain. */
+  idPrefix: IdPrefix;
+  /** Length of the random part of generated ids. Default 10. */
+  idLength?: number;
+  /** Whether docs sync. Default true; set false for local-only collections. */
+  synced?: boolean;
+  /** The collection's migration chain; see `CollectionMigrations`. */
+  migrations?: CollectionMigrations;
+  /**
+   * Builds the document schema from a base that already carries the audit
+   * fields and the prefix-checked `id`, so the prefix is declared once:
+   * `(base) => base.extend({ title: z.string() })`.
+   */
+  schema: (base: CollectionBaseSchema<IdPrefix>) => Schema;
+}
 
 /**
  * Single source of truth for a collection: its name, id prefix, document
@@ -53,21 +89,11 @@ const DEFAULT_ID_LENGTH = 10;
  * migrator, id parsing, and sync enumeration from it, and rejects reads
  * and writes against any collection not in the list.
  */
-export function defineCollection<Name extends string, Schema extends z.ZodType>(def: {
-  name: Name;
-  /** Storage/wire key; defaults to `name`. See `CollectionDefinition.key`. */
-  key?: string;
-  idPrefix: string;
-  /** Length of the random part of generated ids. */
-  idLength?: number;
-  synced?: boolean;
-  migrations?: CollectionMigrations;
-  /**
-   * Builds the document schema from a base that already carries the audit
-   * fields and the prefix-checked `id`, so the prefix is declared once.
-   */
-  schema: (base: CollectionBaseSchema) => Schema;
-}): CollectionDefinition<Name, Schema> {
+export function defineCollection<
+  Name extends string,
+  Schema extends z.ZodType,
+  IdPrefix extends string,
+>(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionDefinition<Name, Schema, IdPrefix> {
   const {
     name,
     key = name,

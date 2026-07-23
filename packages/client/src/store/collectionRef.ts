@@ -1,51 +1,58 @@
 import type { BaseDocument } from '../types';
-import type { Store } from './store';
 
 /**
- * A typed handle to one collection, bound to its parent `Store`. Every method
- * forwards to the Store with the collection name pre-applied — sugar over
- * calling `store.get('recipes', id)` directly. Obtain one via `store.collection`.
+ * A typed handle to one defined collection — the only way to read and write
+ * documents. Obtain one via `store.collection(name)`; the document type is
+ * inferred from that collection's schema.
  */
-export class Collection<T extends BaseDocument> {
-  private readonly store: Store;
-  private readonly name: string;
-
-  constructor(store: Store, name: string) {
-    this.store = store;
-    this.name = name;
-  }
-
-  get(id: string): Promise<T | null> {
-    return this.store.get<T>(this.name, id);
-  }
-  getMany(ids: string[]): Promise<T[]> {
-    return this.store.getMany<T>(this.name, ids);
-  }
-  list(): Promise<T[]> {
-    return this.store.list<T>(this.name);
-  }
-  create(id: string, input: Omit<T, keyof BaseDocument>): Promise<T> {
-    return this.store.create<T>(this.name, id, input);
-  }
-  update(id: string, input: Partial<Omit<T, keyof BaseDocument>>): Promise<T> {
-    return this.store.update<T>(this.name, id, input);
-  }
-  delete(id: string): Promise<void> {
-    return this.store.delete(this.name, id);
-  }
-  createMany(items: Array<{ id: string } & Omit<T, keyof BaseDocument>>): Promise<T[]> {
-    return this.store.createMany<T>(this.name, items);
-  }
-  updateMany(updates: Array<{ id: string } & Partial<Omit<T, keyof BaseDocument>>>): Promise<T[]> {
-    return this.store.updateMany<T>(this.name, updates);
-  }
-  deleteMany(ids: string[]): Promise<void> {
-    return this.store.deleteMany(this.name, ids);
-  }
-  pull(): Promise<T[]> {
-    return this.store.pull<T>(this.name);
-  }
-  pullDocument(id: string): Promise<T | null> {
-    return this.store.pullDocument<T>(this.name, id);
-  }
+export interface Collection<T extends BaseDocument> {
+  /**
+   * One doc by id, or null when missing. Soft-deleted docs read as null
+   * unless `includeDeleted` is set — with it, inspect `deletedAt` to tell a
+   * tombstone from a live doc.
+   */
+  get(id: string, opts?: { includeDeleted?: boolean }): Promise<T | null>;
+  /** The named docs, in input order, minus any missing or soft-deleted. */
+  getMany(ids: string[]): Promise<T[]>;
+  /**
+   * All live docs. Pass `includeDeleted` to keep tombstones in the result
+   * (inspect `deletedAt` to tell them apart) — for debug/admin surfaces.
+   */
+  list(opts?: { includeDeleted?: boolean }): Promise<T[]>;
+  /** Create a doc. The id is generated (prefix + random) unless supplied. */
+  create(input: Omit<T, keyof BaseDocument> & { id?: T['id'] }): Promise<T>;
+  /** Batch form of `create`. */
+  createMany(items: Array<Omit<T, keyof BaseDocument> & { id?: T['id'] }>): Promise<T[]>;
+  /**
+   * Like `create`, but attributed to the system author and never queued for
+   * push — for locally-materialized reference data (see `store.seed` for the
+   * versioned bulk form).
+   */
+  createAsSystem(input: Omit<T, keyof BaseDocument> & { id?: T['id'] }): Promise<T>;
+  /** Merge partial fields into the doc. Throws when the doc doesn't exist. */
+  update(id: string, input: Partial<Omit<T, keyof BaseDocument>>): Promise<T>;
+  /** Batch form of `update`. */
+  updateMany(updates: Array<{ id: string } & Partial<Omit<T, keyof BaseDocument>>>): Promise<T[]>;
+  /**
+   * Create the doc if absent, update it if present — `id` is required since
+   * it's the match key. A soft-deleted doc counts as absent: upserting its id
+   * revives it as a fresh doc.
+   */
+  upsert(input: Omit<T, keyof BaseDocument> & { id: T['id'] }): Promise<T>;
+  /** Soft-delete: the tombstone remains (and syncs) so other devices converge. */
+  delete(id: string): Promise<void>;
+  /** Batch form of `delete`. */
+  deleteMany(ids: string[]): Promise<void>;
+  /**
+   * Remove the doc from local storage outright — no tombstone, no sync push.
+   * Low-level/debug use; normal deletes should go through `delete` so the
+   * tombstone propagates. A doc still on the server re-pulls on next sync.
+   */
+  hardDelete(id: string): Promise<void>;
+  /** Batch form of `hardDelete`. */
+  hardDeleteMany(ids: string[]): Promise<void>;
+  /** Fetch one doc fresh from the server and merge it in (last-write-wins). */
+  pull(id: string): Promise<T | null>;
+  /** Fetch every remote change for the collection and merge it in. */
+  pullAll(): Promise<T[]>;
 }

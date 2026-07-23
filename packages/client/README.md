@@ -28,14 +28,15 @@ const recipesDef = defineCollection({
   schema: (base) => base.extend({ title: z.string(), servings: z.number() }),
 });
 
-const store = await Store.create(new InMemoryAdapter(), null, {
+const store = await Store.create({
+  adapter: new InMemoryAdapter(),
   collections: [recipesDef],
 });
-await store.setAuthor('us-alice');
+await store.author.set('us-alice');
 
 const recipes = store.collection('recipes'); // typed from the schema
-await recipes.create('rcp-1', { title: 'Garlic soup', servings: 2 });
-await recipes.update('rcp-1', { servings: 4 });
+const soup = await recipes.create({ title: 'Garlic soup', servings: 2 }); // id generated: 'rcp-…'
+await recipes.update(soup.id, { servings: 4 });
 const all = await recipes.list();
 
 store.on('change', (collection) => {
@@ -52,14 +53,14 @@ Every mutation validates, writes locally, emits `change`, and — when a server 
 Deploy a pact server (multi-tenant: many unrelated apps can share one), then register:
 
 ```ts
-await store.registerClient(
+await store.sync.register(
   'https://sync.example.com', // server url
   appPassword, // your app's password on that server
   'myapp', // which app on the server this client belongs to
   "Alice's laptop" // display name
 );
-await store.setAuthor('us-alice');
-await store.reassignLocalAuthor('us-alice'); // adopt any pre-sync writes
+await store.author.set('us-alice');
+await store.author.reassignLocal('us-alice'); // adopt any pre-sync writes
 ```
 
 The password is traded once for a long-lived token (persisted in local config); reconnection is automatic on future launches. Realtime is server-driven — when the server advertises it, the client opens a WebSocket and pulls collections as others change them. No app code changes.
@@ -72,7 +73,8 @@ Domain fields can be sealed into a single ciphertext string — at rest locally 
 import { createWebCryptoCipher, deriveEncryptionKey } from '@a16n/pact-client';
 
 const key = await deriveEncryptionKey(passphrase, 'myapp');
-const store = await Store.create(adapter, null, {
+const store = await Store.create({
+  adapter,
   collections: [recipesDef],
   encryption: { cipher: createWebCryptoCipher(key) },
 });
@@ -82,10 +84,10 @@ Only the base sync fields (ids, timestamps, authors) stay cleartext. Wrong keys 
 
 ## Also in the box
 
-- **Blobs** — content-addressed binary storage (images etc.) with sync, reference-driven pull, and garbage collection (`pruneBlobs`).
+- **Blobs** — content-addressed binary storage (images etc.) with sync, reference-driven pull, and garbage collection (`store.blobs.prune`).
 - **Migrations** — per-collection `schemaVersion` chains declared on each `defineCollection`; old docs upgrade on read.
 - **Seeds** — versioned reference data every client loads identically without syncing it.
-- **Backups** — self-contained archive export/restore (`createBackup` / `restoreBackup`), merge or replace.
+- **Backups** — self-contained archive export/restore (`store.backup.create` / `store.backup.restore`), merge or replace.
 - **Outbox** — durable push queue: writes made offline drain automatically when connectivity returns.
 
 ## License

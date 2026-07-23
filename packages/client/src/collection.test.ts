@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import { z } from 'zod';
-import { buildMigrationRegistry, createIdParser, defineCollection } from './collection';
+import {
+  buildMigrationRegistry,
+  createIdParser,
+  defineCollection,
+  type DocId,
+  type DocumentOf,
+} from './collection';
 import { Migrator } from './migrator';
 
 const widgets = defineCollection({
@@ -42,6 +48,14 @@ describe('defineCollection', () => {
     const doc = { ...baseFields, id: 'wg-abc', label: 'a' };
     expect(() => widgets.schema.parse(doc)).not.toThrow();
     expect(() => widgets.schema.parse({ ...doc, id: 'ln-abc' })).toThrow();
+  });
+
+  it('types ids to the prefix at compile time', () => {
+    expectTypeOf(widgets.generateId()).toEqualTypeOf<`wg-${string}`>();
+    expectTypeOf<DocumentOf<[typeof widgets], 'widgets'>['id']>().toEqualTypeOf<`wg-${string}`>();
+    expectTypeOf<DocId<'wg'>>().toEqualTypeOf<`wg-${string}`>();
+    // @ts-expect-error — wrong prefix is a compile error
+    expectTypeOf<DocumentOf<[typeof widgets], 'widgets'>['id']>().toEqualTypeOf<`ln-${string}`>();
   });
 });
 

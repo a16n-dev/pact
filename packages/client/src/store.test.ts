@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Store, type SeedSet, type StoreDomain } from './store';
-import type { StoreSyncConfig } from './store/types';
+import type { StoreSyncConfig } from './store/options';
 import { InMemoryAdapter } from './adapters/memoryAdapter';
 import { defineCollection } from './collection';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
@@ -45,7 +45,7 @@ function mkDoc(id: string, name: string, updatedAt: string, by = 'us/1'): Widget
 
 function setup(domain: Partial<StoreDomain> = {}, options?: StoreSyncConfig) {
   const adapter = new InMemoryAdapter();
-  const store = new Store(adapter, null, { collections: [widgetsDef], ...domain }, options);
+  const store = new Store({ adapter, collections: [widgetsDef], ...domain, sync: options });
   return { adapter, store };
 }
 
@@ -65,8 +65,8 @@ describe('Store CRUD + tombstones', () => {
     const { store } = setup();
     const onChange = vi.fn();
     store.on('change', onChange);
-    await store.setAuthor('us/1');
-    const w = await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.author.set('us/1');
+    const w = await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     expect(w).toMatchObject({
       id: 'w1',
       name: 'Alpha',
@@ -74,64 +74,91 @@ describe('Store CRUD + tombstones', () => {
       updatedBy: 'us/1',
       deletedAt: null,
     });
-    expect(await store.get<Widget>('widgets', 'w1')).toMatchObject({ id: 'w1', name: 'Alpha' });
+    expect(await store.collection<Widget>('widgets').get('w1')).toMatchObject({ id: 'w1', name: 'Alpha' });
     expect(onChange).toHaveBeenCalledWith('widgets');
+  });
+
+  it('create generates a prefixed id when none is supplied', async () => {
+    const { store } = setup();
+    await store.author.set('us/1');
+    const w = await store.collection<Widget>('widgets').create({ name: 'NoId' });
+    expect(w.id).toMatch(/^w-[A-Za-z0-9]{10}$/);
+    expect(await store.collection<Widget>('widgets').get(w.id)).toMatchObject({ name: 'NoId' });
+    const many = await store.collection<Widget>('widgets').createMany([{ name: 'A' }, { id: 'w9', name: 'B' }]);
+    expect(many[0].id).toMatch(/^w-/);
+    expect(many[1].id).toBe('w9');
   });
 
   it('update preserves createdAt/createdBy and bumps the editor', async () => {
     const { store } = setup();
-    await store.setAuthor('us/1');
-    const created = await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    await store.setAuthor('us/2');
-    const updated = await store.update<Widget>('widgets', 'w1', { name: 'Beta' });
+    await store.author.set('us/1');
+    const created = await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await store.author.set('us/2');
+    const updated = await store.collection<Widget>('widgets').update('w1', { name: 'Beta' });
     expect(updated.name).toBe('Beta');
     expect(updated.createdBy).toBe('us/1');
     expect(updated.createdAt).toBe(created.createdAt);
     expect(updated.updatedBy).toBe('us/2');
   });
 
+  it('upsert creates when absent, updates when present, revives tombstones', async () => {
+    const { store } = setup();
+    await store.author.set('us/1');
+    // Absent → create.
+    const created = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Alpha' });
+    expect(created).toMatchObject({ id: 'w1', name: 'Alpha', createdBy: 'us/1' });
+    // Present → update: createdAt/createdBy survive, editor bumps.
+    await store.author.set('us/2');
+    const updated = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Beta' });
+    expect(updated.name).toBe('Beta');
+    expect(updated.createdAt).toBe(created.createdAt);
+    expect(updated.createdBy).toBe('us/1');
+    expect(updated.updatedBy).toBe('us/2');
+    // Soft-deleted → revived as a fresh doc.
+    await store.collection('widgets').delete('w1');
+    const revived = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Gamma' });
+    expect(revived.deletedAt).toBeNull();
+    expect(revived.createdBy).toBe('us/2');
+    expect(await store.collection<Widget>('widgets').get('w1')).toMatchObject({ name: 'Gamma' });
+  });
+
   it('delete soft-deletes; get/list hide it but getIncludingDeleted returns it', async () => {
     const { store } = setup();
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    await store.create<Widget>('widgets', 'w2', { name: 'Beta' });
-    await store.delete('widgets', 'w2');
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await store.collection<Widget>('widgets').create({ id: 'w2', name: 'Beta' });
+    await store.collection('widgets').delete('w2');
 
-    expect(await store.get<Widget>('widgets', 'w2')).toBeNull();
-    expect((await store.list<Widget>('widgets')).map((w) => w.id)).toEqual(['w1']);
-    expect((await store.getMany<Widget>('widgets', ['w1', 'w2'])).map((w) => w.id)).toEqual(['w1']);
+    expect(await store.collection<Widget>('widgets').get('w2')).toBeNull();
+    expect((await store.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['w1']);
+    expect((await store.collection<Widget>('widgets').getMany(['w1', 'w2'])).map((w) => w.id)).toEqual(['w1']);
 
-    const tomb = await store.getIncludingDeleted<Widget>('widgets', 'w2');
+    const tomb = await store.collection<Widget>('widgets').get('w2', { includeDeleted: true });
     expect(tomb?.deletedAt).not.toBeNull();
     expect(tomb?.deletedBy).toBe('us/1');
   });
 });
 
 describe('Store collection registry (schemas define collections)', () => {
-  it('rejects reads and writes against collections with no definition', async () => {
+  it('rejects access to collections with no definition', async () => {
     const { store } = setup();
-    await store.setAuthor('us/1');
-    await expect(store.create<Widget>('gadgets', 'g1', { name: 'X' })).rejects.toThrow(
-      /Unknown collection/
-    );
-    await expect(store.list('gadgets')).rejects.toThrow(/Unknown collection/);
-    await expect(store.get('gadgets', 'g1')).rejects.toThrow(/Unknown collection/);
-    await expect(store.delete('gadgets', 'g1')).rejects.toThrow(/Unknown collection/);
-    expect(() => store.pull('gadgets')).toThrow(/Unknown collection/);
+    await store.author.set('us/1');
+    // The handle is the only doc entry point, and it throws at creation.
     expect(() => store.collection('gadgets' as never)).toThrow(/Unknown collection/);
+    expect(() => store.collection<Widget>('gadgets')).toThrow(/Unknown collection/);
   });
 
   it('validates writes against the collection schema', async () => {
     const { store } = setup();
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     await expect(
-      store.create<Widget>('widgets', 'w1', { name: 42 } as unknown as { name: string })
+      store.collection<Widget>('widgets').create({ id: 'w1', name: 42 } as unknown as { name: string })
     ).rejects.toThrow();
   });
 
   it('still allows internal _* bookkeeping collections without definitions', async () => {
     const { adapter, store } = setup();
-    await store.setAuthor('us/1'); // writes _config/author
+    await store.author.set('us/1'); // writes _config/author
     expect(await adapter.get('_config', 'author')).toMatchObject({ authorId: 'us/1' });
   });
 
@@ -142,12 +169,12 @@ describe('Store collection registry (schemas define collections)', () => {
     );
     // … and the Store still rejects a hand-built definition that sneaks one in.
     const internal = { ...widgetsDef, name: '_secret', key: 'ok' };
-    expect(() => new Store(new InMemoryAdapter(), null, { collections: [internal] })).toThrow(
+    expect(() => new Store({ adapter: new InMemoryAdapter(), collections: [internal] })).toThrow(
       /reserved/
     );
     const dupe = defineCollection({ name: 'widgets', idPrefix: 'q', schema: (b) => b });
     expect(
-      () => new Store(new InMemoryAdapter(), null, { collections: [widgetsDef, dupe] })
+      () => new Store({ adapter: new InMemoryAdapter(), collections: [widgetsDef, dupe] })
     ).toThrow(/Duplicate/);
   });
 
@@ -157,7 +184,7 @@ describe('Store collection registry (schemas define collections)', () => {
     ).toThrow(/reserved/);
     const a = defineCollection({ name: 'alpha', key: 'c1', idPrefix: 'a', schema: (b) => b });
     const b = defineCollection({ name: 'beta', key: 'c1', idPrefix: 'b', schema: (b) => b });
-    expect(() => new Store(new InMemoryAdapter(), null, { collections: [a, b] })).toThrow(
+    expect(() => new Store({ adapter: new InMemoryAdapter(), collections: [a, b] })).toThrow(
       /Duplicate collection key/
     );
   });
@@ -178,7 +205,7 @@ describe('Store migrate-on-read', () => {
     const { adapter, store } = setup({ collections: [migratingWidgets] });
     await adapter.put('widgets', mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'));
 
-    const got = await store.get<Widget>('widgets', 'w1');
+    const got = await store.collection<Widget>('widgets').get('w1');
     expect(got?.schemaVersion).toBe(2);
     expect(got?.upgraded).toBe(true);
 
@@ -193,27 +220,27 @@ describe('Store author flow', () => {
   it('setAuthor records the id, writes _config/author, and runs the domain hook', async () => {
     const hook = vi.fn(async () => {});
     const { adapter, store } = setup({ onSetAuthor: hook });
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
 
-    expect(await store.getCurrentAuthor()).toBe('us/1');
+    expect(await store.author.get()).toBe('us/1');
     expect(hook).toHaveBeenCalledWith(store, 'us/1');
     expect(await adapter.get('_config', 'author')).toMatchObject({ authorId: 'us/1' });
   });
 
   it('setAuthor rejects the system and local sentinel ids', async () => {
     const { store } = setup();
-    await expect(store.setAuthor(SYSTEM_AUTHOR_ID)).rejects.toThrow();
-    await expect(store.setAuthor(LOCAL_AUTHOR_ID)).rejects.toThrow();
+    await expect(store.author.set(SYSTEM_AUTHOR_ID)).rejects.toThrow();
+    await expect(store.author.set(LOCAL_AUTHOR_ID)).rejects.toThrow();
   });
 
   it('reassignLocalAuthor moves local-authored docs (incl. tombstone deletedBy) to a real id', async () => {
     const { adapter, store } = setup();
-    const w = await store.create<Widget>('widgets', 'w1', { name: 'X' });
+    const w = await store.collection<Widget>('widgets').create({ id: 'w1', name: 'X' });
     expect(w.createdBy).toBe(LOCAL_AUTHOR_ID);
-    await store.create<Widget>('widgets', 'w2', { name: 'Y' });
-    await store.delete('widgets', 'w2'); // soft-deleted while local: deletedBy === _local
+    await store.collection<Widget>('widgets').create({ id: 'w2', name: 'Y' });
+    await store.collection('widgets').delete('w2'); // soft-deleted while local: deletedBy === _local
 
-    await store.reassignLocalAuthor('us/9');
+    await store.author.reassignLocal('us/9');
 
     const after = await adapter.get<Widget>('widgets', 'w1');
     expect(after?.createdBy).toBe('us/9');
@@ -248,9 +275,9 @@ describe('Store pull (last-write-wins)', () => {
       )
     );
 
-    const applied = await store.pull<Widget>('widgets');
+    const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied).toHaveLength(1);
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('new');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('new');
     expect(onChange).toHaveBeenCalledWith('widgets');
   });
 
@@ -276,9 +303,9 @@ describe('Store pull (last-write-wins)', () => {
       )
     );
 
-    const applied = await store.pull<Widget>('widgets');
+    const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied).toHaveLength(0);
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('local-new');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('local-new');
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -302,9 +329,9 @@ describe('Store pull (last-write-wins)', () => {
       )
     );
 
-    const applied = await store.pull<Widget>('widgets');
+    const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied).toHaveLength(1);
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('server');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('server');
   });
 
   it('drains every page, advancing the cursor until hasMore is false', async () => {
@@ -347,7 +374,7 @@ describe('Store pull (last-write-wins)', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const applied = await store.pull<Widget>('widgets');
+    const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied.map((w) => w.id)).toEqual(['w1', 'w2']);
     // One request per page; the loop stopped once hasMore was false.
     const pullCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'));
@@ -377,14 +404,14 @@ describe('Store pull-on-read', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     // The read resolves immediately against local state...
-    expect((await store.list<Widget>('widgets'))[0].name).toBe('old');
+    expect((await store.collection<Widget>('widgets').list())[0].name).toBe('old');
     // ...while the background pull lands the newer server copy.
     await vi.waitFor(async () => {
       expect((await adapter.get<Widget>('widgets', 'w1'))?.name).toBe('new');
     });
 
     // A second read inside the throttle window must not pull again.
-    await store.list<Widget>('widgets');
+    await store.collection<Widget>('widgets').list();
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'))).toHaveLength(1);
   });
 
@@ -394,7 +421,7 @@ describe('Store pull-on-read', () => {
     const fetchMock = vi.fn(async () => jsonResponse({ documents: [], cursor: 0 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.list<Widget>('widgets');
+    await store.collection<Widget>('widgets').list();
     await new Promise((r) => setTimeout(r, 10));
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -429,10 +456,10 @@ describe('Store realtime enablement', () => {
       })
     );
 
-    const store = await Store.create(new InMemoryAdapter(), null, {
+    const store = await Store.create({ adapter: new InMemoryAdapter(),
       collections: [widgetsDef],
     });
-    const res = await store.registerClient('https://sync.test', 'pw', 'my-app', 'My Device');
+    const res = await store.sync.register('https://sync.test', 'pw', 'my-app', 'My Device');
     expect(res.ok).toBe(true);
 
     await vi.waitFor(() => {
@@ -453,7 +480,7 @@ describe('Store registerClient (multi-tenant)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const { store } = setup();
-    const res = await store.registerClient('https://sync.test', 'pw', 'my-app', 'My Device');
+    const res = await store.sync.register('https://sync.test', 'pw', 'my-app', 'My Device');
     expect(res.ok).toBe(true);
 
     const registerCall = fetchMock.mock.calls.find(([url]) =>
@@ -464,7 +491,7 @@ describe('Store registerClient (multi-tenant)', () => {
     ) as Record<string, unknown>;
     expect(body.appName).toBe('my-app');
 
-    const registration = await store.getClientRegistration();
+    const registration = await store.sync.registration();
     expect(registration).toMatchObject({ appName: 'my-app', url: 'https://sync.test' });
   });
 });
@@ -479,7 +506,7 @@ describe('Store pushAll', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.pushAll();
+    await store.sync.push();
 
     const pushCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/sync/push'));
     expect(pushCall).toBeDefined();
@@ -500,7 +527,7 @@ describe('Store.seed', () => {
     const { store } = setup();
     const { written } = await store.seed(seedSet('v1'));
     expect(written).toBe(1);
-    expect(await store.get<Widget>('widgets', 'w-seed')).toMatchObject({
+    expect(await store.collection<Widget>('widgets').get('w-seed')).toMatchObject({
       name: 'Garlic',
       createdBy: SYSTEM_AUTHOR_ID,
       updatedBy: SYSTEM_AUTHOR_ID,
@@ -532,24 +559,24 @@ describe('Store.seed', () => {
     await store.seed(seedSet('v1'));
     const { written } = await store.seed(seedSet('v2', 'Roasted garlic'));
     expect(written).toBe(1);
-    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Roasted garlic');
+    expect((await store.collection<Widget>('widgets').get('w-seed'))?.name).toBe('Roasted garlic');
   });
 
   it('never clobbers user-edited docs', async () => {
     const { store } = setup();
     await store.seed(seedSet('v1'));
-    await store.setAuthor('us/1');
-    await store.update<Widget>('widgets', 'w-seed', { name: 'Mine' });
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').update('w-seed', { name: 'Mine' });
     await store.seed(seedSet('v2', 'Roasted garlic'));
-    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Mine');
+    expect((await store.collection<Widget>('widgets').get('w-seed'))?.name).toBe('Mine');
   });
 
   it('fills undefined fields on user-edited docs without touching their values', async () => {
     type Enriched = Widget & { note?: string | null };
     const { store } = setup();
     await store.seed(seedSet('v1'));
-    await store.setAuthor('us/1');
-    await store.update<Widget>('widgets', 'w-seed', { name: 'Mine' });
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').update('w-seed', { name: 'Mine' });
 
     const { written } = await store.seed({
       version: 'v2',
@@ -557,7 +584,7 @@ describe('Store.seed', () => {
     });
 
     expect(written).toBe(1);
-    const doc = await store.get<Enriched>('widgets', 'w-seed');
+    const doc = await store.collection<Enriched>('widgets').get('w-seed');
     expect(doc?.name).toBe('Mine'); // user's value kept
     expect(doc?.note).toBe('Allium'); // previously-undefined field filled
     expect(doc?.updatedBy).toBe('us/1'); // still author-touched for future seeds
@@ -567,31 +594,31 @@ describe('Store.seed', () => {
     type Enriched = Widget & { note?: string | null };
     const { store } = setup();
     await store.seed(seedSet('v1'));
-    await store.setAuthor('us/1');
-    await store.update<Enriched>('widgets', 'w-seed', { note: null });
+    await store.author.set('us/1');
+    await store.collection<Enriched>('widgets').update('w-seed', { note: null });
 
     await store.seed({
       version: 'v2',
       docs: new Map([['widgets', [{ id: 'w-seed', name: 'Garlic', note: 'Allium' }]]]),
     });
 
-    expect((await store.get<Enriched>('widgets', 'w-seed'))?.note).toBeNull();
+    expect((await store.collection<Enriched>('widgets').get('w-seed'))?.note).toBeNull();
   });
 
   it('never resurrects user-deleted docs', async () => {
     const { store } = setup();
     await store.seed(seedSet('v1'));
-    await store.setAuthor('us/1');
-    await store.delete('widgets', 'w-seed');
+    await store.author.set('us/1');
+    await store.collection('widgets').delete('w-seed');
     await store.seed(seedSet('v2'));
-    expect(await store.get<Widget>('widgets', 'w-seed')).toBeNull();
+    expect(await store.collection<Widget>('widgets').get('w-seed')).toBeNull();
   });
 
   it('force re-applies even when the version matches', async () => {
     const { store } = setup();
     await store.seed(seedSet('v1'));
     await store.seed(seedSet('v1', 'Changed'), { force: true });
-    expect((await store.get<Widget>('widgets', 'w-seed'))?.name).toBe('Changed');
+    expect((await store.collection<Widget>('widgets').get('w-seed'))?.name).toBe('Changed');
   });
 });
 
@@ -614,50 +641,50 @@ describe('Store outbox (durable push retry)', () => {
 
   it('keeps a write that failed to push and retries it on the next drain', async () => {
     const { store } = setup({}, SYNC);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     const state = { online: false };
     const { fetchMock } = syncMock(state);
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     // The local write survives and is queued even though the push failed.
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
-    expect(await store.pendingPushCount()).toBe(1);
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
+    expect(await store.sync.pending()).toBe(1);
 
     // Back online: a drain flushes the queue and clears it.
     state.online = true;
-    await store.drainOutbox();
-    expect(await store.pendingPushCount()).toBe(0);
+    await store.sync.push();
+    expect(await store.sync.pending()).toBe(0);
     const pushCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'));
     expect(pushCalls.length).toBeGreaterThanOrEqual(2); // initial failure + drain success
   });
 
   it('clears the queue immediately when the push succeeds online', async () => {
     const { store } = setup({}, SYNC);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     const { fetchMock } = syncMock({ online: true });
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     // The mutation's own drain is fire-and-forget; wait for it to settle.
-    await vi.waitFor(async () => expect(await store.pendingPushCount()).toBe(0));
+    await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
   });
 
   it('coalesces repeated edits of one doc into a single push of the latest version', async () => {
     const { store } = setup({}, SYNC);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     const state = { online: false };
     const { fetchMock, pushedBatches } = syncMock(state);
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.create<Widget>('widgets', 'w1', { name: 'v1' });
-    await store.update<Widget>('widgets', 'w1', { name: 'v2' });
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'v1' });
+    await store.collection<Widget>('widgets').update('w1', { name: 'v2' });
     // One entry for the doc, not one per edit.
-    expect(await store.pendingPushCount()).toBe(1);
+    expect(await store.sync.pending()).toBe(1);
 
     state.online = true;
-    await store.drainOutbox();
-    expect(await store.pendingPushCount()).toBe(0);
+    await store.sync.push();
+    expect(await store.sync.pending()).toBe(0);
     // The drained push carried the latest version.
     const lastBatch = pushedBatches[pushedBatches.length - 1];
     expect(lastBatch.documents[0].data.name).toBe('v2');
@@ -669,18 +696,18 @@ describe('Store outbox (durable push retry)', () => {
     const { fetchMock } = syncMock({ online: true });
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    await store.drainOutbox();
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await store.sync.push();
     // Drain is a no-op pre-claim; the write stays queued and no push is attempted.
-    expect(await store.pendingPushCount()).toBe(1);
+    expect(await store.sync.pending()).toBe(1);
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'))).toHaveLength(0);
   });
 
   it('does not queue anything without a sync client', async () => {
     const { store } = setup(); // no sync configured
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    expect(await store.pendingPushCount()).toBe(0);
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    expect(await store.sync.pending()).toBe(0);
   });
 });
 
@@ -729,7 +756,7 @@ describe('Store resyncFromScratch', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.resyncFromScratch();
+    await store.sync.resync();
 
     // Local world is now exactly what the server returned — the stale local
     // docs are gone, not merged.
@@ -762,7 +789,7 @@ describe('Store resyncFromScratch', () => {
         throw new Error('offline');
       })
     );
-    await expect(store.resyncFromScratch()).resolves.toBeUndefined();
+    await expect(store.sync.resync()).resolves.toBeUndefined();
 
     // Local data was dropped and the stale cursor cleared; _config kept.
     expect(await adapter.getAll('widgets')).toHaveLength(0);
@@ -785,8 +812,8 @@ describe('Store resyncFromScratch', () => {
       })
     );
     vi.stubGlobal('fetch', fetchMock);
-    await store.pull<Widget>('widgets');
-    expect((await store.get<Widget>('widgets', 'w9'))?.name).toBe('backfilled');
+    await store.collection<Widget>('widgets').pullAll();
+    expect((await store.collection<Widget>('widgets').get('w9'))?.name).toBe('backfilled');
     expect(String(fetchMock.mock.calls[0][0])).toContain('cursor=0');
   });
 });
@@ -823,16 +850,16 @@ describe('Store backup/restore', () => {
   function setupWithBlobs(domain: Partial<StoreDomain> = {}) {
     const adapter = new InMemoryAdapter();
     const blobs = new InMemoryBlobAdapter();
-    const store = new Store(adapter, blobs, { collections: [widgetsDef], ...domain });
+    const store = new Store({ adapter, blobs, collections: [widgetsDef], ...domain });
     return { adapter, blobs, store };
   }
 
   it('round-trips documents and tombstones, excluding internal _* collections', async () => {
     const { adapter: srcAdapter, store: source } = setup();
-    await source.setAuthor('us/1');
-    await source.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    await source.create<Widget>('widgets', 'w2', { name: 'Beta' });
-    await source.delete('widgets', 'w2'); // tombstone — must travel
+    await source.author.set('us/1');
+    await source.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await source.collection<Widget>('widgets').create({ id: 'w2', name: 'Beta' });
+    await source.collection('widgets').delete('w2'); // tombstone — must travel
     // Device-specific bookkeeping that must NOT end up in a portable backup.
     await srcAdapter.put('_config', { ...mkDoc('client', '', '2026-01-01T00:00:00.000Z') });
     await srcAdapter.put('_sync_meta', {
@@ -841,15 +868,15 @@ describe('Store backup/restore', () => {
       syncedAt: '2026-01-01T00:00:00.000Z',
     });
 
-    const archive = await source.createBackup();
+    const archive = await source.backup.create();
 
     const { adapter, store } = setup();
-    const result = await store.restoreBackup(archive);
+    const result = await store.backup.restore(archive);
 
     expect(result).toMatchObject({ mode: 'merge', collections: ['widgets'], docsWritten: 2 });
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
-    expect(await store.get<Widget>('widgets', 'w2')).toBeNull(); // hidden (deleted)...
-    expect((await store.getIncludingDeleted<Widget>('widgets', 'w2'))?.deletedAt).not.toBeNull();
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
+    expect(await store.collection<Widget>('widgets').get('w2')).toBeNull(); // hidden (deleted)...
+    expect((await store.collection<Widget>('widgets').get('w2', { includeDeleted: true }))?.deletedAt).not.toBeNull();
     // Internal collections never crossed over.
     expect(await adapter.get('_config', 'client')).toBeNull();
     expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
@@ -860,62 +887,62 @@ describe('Store backup/restore', () => {
     const { adapter: sa, store: src } = setup();
     await sa.put('widgets', mkDoc('w1', 'backup-1', '2026-01-01T00:00:00.000Z'));
     await sa.put('widgets', mkDoc('w2', 'backup-2', '2026-06-01T00:00:00.000Z'));
-    const archive = await src.createBackup({ blobs: false });
+    const archive = await src.backup.create({ blobs: false });
 
     const { adapter, store } = setup();
     await adapter.put('widgets', mkDoc('w1', 'local-1', '2026-03-01T00:00:00.000Z')); // newer
     await adapter.put('widgets', mkDoc('w2', 'local-2', '2026-01-01T00:00:00.000Z')); // older
 
-    const result = await store.restoreBackup(archive, { mode: 'merge' });
+    const result = await store.backup.restore(archive, { mode: 'merge' });
 
     expect(result).toMatchObject({ docsWritten: 1, docsSkipped: 1 });
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('local-1'); // kept
-    expect((await store.get<Widget>('widgets', 'w2'))?.name).toBe('backup-2'); // overwritten
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('local-1'); // kept
+    expect((await store.collection<Widget>('widgets').get('w2'))?.name).toBe('backup-2'); // overwritten
   });
 
   it('replace clears the carried collections then loads the backup verbatim', async () => {
     const { adapter: sa, store: src } = setup();
     await sa.put('widgets', mkDoc('w1', 'backup-1', '2026-01-01T00:00:00.000Z'));
-    const archive = await src.createBackup({ blobs: false });
+    const archive = await src.backup.create({ blobs: false });
 
     const { adapter, store } = setup();
     await adapter.put('widgets', mkDoc('w1', 'local-old', '2026-09-01T00:00:00.000Z'));
     await adapter.put('widgets', mkDoc('w2', 'local-extra', '2026-09-01T00:00:00.000Z'));
 
-    const result = await store.restoreBackup(archive, { mode: 'replace' });
+    const result = await store.backup.restore(archive, { mode: 'replace' });
 
     expect(result).toMatchObject({ mode: 'replace', docsWritten: 1, docsSkipped: 0 });
     // Even though local w1 was newer, replace ignores LWW and loads verbatim;
     // w2 (absent from the backup) is dropped.
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('backup-1');
-    expect(await store.get<Widget>('widgets', 'w2')).toBeNull();
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('backup-1');
+    expect(await store.collection<Widget>('widgets').get('w2')).toBeNull();
   });
 
   it('round-trips blob bytes; merge skips a hash already present', async () => {
     const { blobs: srcBlobs, store: source } = setupWithBlobs();
     const bytes = Uint8Array.from([1, 2, 3, 250, 0, 99]);
     await srcBlobs.write('hash-a', bytes, 'image/png');
-    const archive = await source.createBackup();
+    const archive = await source.backup.create();
 
     const { blobs, store } = setupWithBlobs();
-    const result = await store.restoreBackup(archive);
+    const result = await store.backup.restore(archive);
     expect(result.blobsWritten).toBe(1);
     expect(Array.from((await blobs.read('hash-a'))!)).toEqual(Array.from(bytes));
     expect(await blobs.mimeType('hash-a')).toBe('image/png');
 
     // Re-restoring is idempotent: the hash is content-addressed, so it's skipped.
-    const again = await store.restoreBackup(archive);
+    const again = await store.backup.restore(archive);
     expect(again.blobsWritten).toBe(0);
   });
 
   it('replace wipes local blobs before loading the backup set', async () => {
     const { blobs: srcBlobs, store: source } = setupWithBlobs();
     await srcBlobs.write('hash-keep', Uint8Array.from([1]), 'image/png');
-    const archive = await source.createBackup();
+    const archive = await source.backup.create();
 
     const { blobs, store } = setupWithBlobs();
     await blobs.write('hash-stale', Uint8Array.from([9]), 'image/png');
-    await store.restoreBackup(archive, { mode: 'replace' });
+    await store.backup.restore(archive, { mode: 'replace' });
 
     expect(await blobs.has('hash-stale')).toBe(false);
     expect(await blobs.has('hash-keep')).toBe(true);
@@ -924,24 +951,24 @@ describe('Store backup/restore', () => {
   it('reports blobs as skipped when the target store has no blob adapter', async () => {
     const { blobs: srcBlobs, store: source } = setupWithBlobs();
     await srcBlobs.write('hash-a', Uint8Array.from([1, 2]), 'image/png');
-    await source.setAuthor('us/1');
-    await source.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    const archive = await source.createBackup();
+    await source.author.set('us/1');
+    await source.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    const archive = await source.backup.create();
 
     const { store } = setup(); // no blob adapter
-    const result = await store.restoreBackup(archive);
+    const result = await store.backup.restore(archive);
 
     expect(result).toMatchObject({ docsWritten: 1, blobsWritten: 0, blobsSkipped: 1 });
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
   });
 
   it('omits blobs from a documents-only archive', async () => {
     const { blobs: srcBlobs, store: source } = setupWithBlobs();
     await srcBlobs.write('hash-a', Uint8Array.from([1]), 'image/png');
-    const archive = await source.createBackup({ blobs: false });
+    const archive = await source.backup.create({ blobs: false });
 
     const { blobs, store } = setupWithBlobs();
-    const result = await store.restoreBackup(archive);
+    const result = await store.backup.restore(archive);
     expect(result.blobsWritten).toBe(0);
     expect(await blobs.has('hash-a')).toBe(false);
   });
@@ -962,18 +989,18 @@ describe('Store blob GC', () => {
   function setupWithBlobs(domain: StoreDomain) {
     const adapter = new InMemoryAdapter();
     const blobs = new InMemoryBlobAdapter();
-    const store = new Store(adapter, blobs, domain);
+    const store = new Store({ adapter, blobs, ...domain });
     return { adapter, blobs, store };
   }
 
   it('collects only blobs no live document references', async () => {
     const { blobs, store } = setupWithBlobs(blobDomain);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     await blobs.write('h-used', Uint8Array.from([1]), 'image/png');
     await blobs.write('h-orphan', Uint8Array.from([2]), 'image/png');
-    await store.create<Photo>('photos', 'p1', { imageHash: 'h-used' });
+    await store.collection<Photo>('photos').create({ id: 'p1', imageHash: 'h-used' });
 
-    const { deleted } = await store.pruneBlobs();
+    const { deleted } = await store.blobs.prune();
 
     expect(deleted).toEqual(['h-orphan']);
     expect(await blobs.has('h-used')).toBe(true);
@@ -982,12 +1009,12 @@ describe('Store blob GC', () => {
 
   it('treats a blob referenced only by a tombstone as collectable', async () => {
     const { blobs, store } = setupWithBlobs(blobDomain);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
-    await store.create<Photo>('photos', 'p1', { imageHash: 'h-x' });
-    await store.delete('photos', 'p1'); // soft delete — doc stays as a tombstone
+    await store.collection<Photo>('photos').create({ id: 'p1', imageHash: 'h-x' });
+    await store.collection('photos').delete('p1'); // soft delete — doc stays as a tombstone
 
-    const { deleted } = await store.pruneBlobs();
+    const { deleted } = await store.blobs.prune();
 
     expect(deleted).toEqual(['h-x']);
     expect(await blobs.has('h-x')).toBe(false);
@@ -997,26 +1024,26 @@ describe('Store blob GC', () => {
     const { blobs, store } = setupWithBlobs({ collections: [photosDef] });
     await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
 
-    await expect(store.pruneBlobs()).rejects.toThrow(/blobHashes extractor/);
+    await expect(store.blobs.prune()).rejects.toThrow(/blobHashes extractor/);
     // The guard must not have deleted anything.
     expect(await blobs.has('h-x')).toBe(true);
   });
 
   it('referencedBlobHashes unions across live docs and skips not-yet-set fields', async () => {
     const { store } = setupWithBlobs(blobDomain);
-    await store.setAuthor('us/1');
-    await store.create<Photo>('photos', 'p1', { imageHash: 'h-a' });
-    await store.create<Photo>('photos', 'p2', { imageHash: 'h-b' });
-    await store.create<Photo>('photos', 'p3', {}); // no hash field set
+    await store.author.set('us/1');
+    await store.collection<Photo>('photos').create({ id: 'p1', imageHash: 'h-a' });
+    await store.collection<Photo>('photos').create({ id: 'p2', imageHash: 'h-b' });
+    await store.collection<Photo>('photos').create({ id: 'p3' }); // no hash field set
 
-    const refs = await store.referencedBlobHashes();
+    const refs = await store.blobs.referencedHashes();
 
     expect(refs).toEqual(new Set(['h-a', 'h-b']));
   });
 
   it('pruneBlobs is a no-op without a blob adapter', async () => {
-    const store = new Store(new InMemoryAdapter(), null, blobDomain);
-    await expect(store.pruneBlobs()).resolves.toEqual({ deleted: [] });
+    const store = new Store({ adapter: new InMemoryAdapter(), ...blobDomain });
+    await expect(store.blobs.prune()).resolves.toEqual({ deleted: [] });
   });
 });
 
@@ -1026,22 +1053,22 @@ describe('Store encryption (optional E2E)', () => {
 
   function setupEncrypted(options?: StoreSyncConfig) {
     const inner = new InMemoryAdapter();
-    const store = new Store(
-      inner,
-      null,
-      { collections: [widgetsDef], encryption: { cipher } },
-      options
-    );
+    const store = new Store({
+      adapter: inner,
+      collections: [widgetsDef],
+      encryption: { cipher },
+      sync: options,
+    });
     return { inner, store };
   }
 
   it('round-trips through the Store while persisting only ciphertext', async () => {
     const { inner, store } = setupEncrypted();
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Secret Soup' });
 
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Secret Soup');
-    expect((await store.list<Widget>('widgets'))[0]!.name).toBe('Secret Soup');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Secret Soup');
+    expect((await store.collection<Widget>('widgets').list())[0]!.name).toBe('Secret Soup');
 
     const stored = await inner.get<BaseDocument>('widgets', 'w1');
     expect(isEncryptedDoc(stored)).toBe(true);
@@ -1050,15 +1077,15 @@ describe('Store encryption (optional E2E)', () => {
 
   it('sends ciphertext on the wire and decrypts pulled envelopes', async () => {
     const { store } = setupEncrypted(SYNC);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
 
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1, skipped: 0 });
       return jsonResponse({ documents: [], cursor: 0 });
     });
     vi.stubGlobal('fetch', fetchMock);
-    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
-    await store.drainOutbox();
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Secret Soup' });
+    await store.sync.push();
 
     const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
     const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
@@ -1085,45 +1112,46 @@ describe('Store encryption (optional E2E)', () => {
         })
       )
     );
-    const applied = await store.pull<Widget>('widgets');
+    const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied).toHaveLength(1);
-    expect((await store.get<Widget>('widgets', 'w2'))?.name).toBe('From Server');
+    expect((await store.collection<Widget>('widgets').get('w2'))?.name).toBe('From Server');
   });
 
   it('Store.create fails fast when the key does not match existing data', async () => {
     const inner = new InMemoryAdapter();
     const domain: StoreDomain = { collections: [widgetsDef], encryption: { cipher } };
-    await Store.create(inner, null, domain); // writes the key check
+    await Store.create({ adapter: inner, ...domain }); // writes the key check
     await expect(
-      Store.create(inner, null, { collections: [widgetsDef], encryption: { cipher: otherCipher } })
+      Store.create({ adapter: inner, collections: [widgetsDef], encryption: { cipher: otherCipher } })
     ).rejects.toThrow(/key does not match/);
     // The right key keeps opening fine.
-    await expect(Store.create(inner, null, domain)).resolves.toBeInstanceOf(Store);
+    await expect(Store.create({ adapter: inner, ...domain })).resolves.toBeInstanceOf(Store);
   });
 
   it('encryptLocalData converts pre-existing plaintext rows', async () => {
     const inner = new InMemoryAdapter();
     await inner.put('widgets', mkDoc('legacy', 'Plain Old Doc', '2026-01-01T00:00:00.000Z'));
-    const store = new Store(inner, null, { collections: [widgetsDef], encryption: { cipher } });
+    const store = new Store({ adapter: inner, collections: [widgetsDef], encryption: { cipher } });
 
     // Readable before conversion (plaintext pass-through)…
-    expect((await store.get<Widget>('widgets', 'legacy'))?.name).toBe('Plain Old Doc');
+    expect((await store.collection<Widget>('widgets').get('legacy'))?.name).toBe('Plain Old Doc');
 
-    const { rewritten } = await store.encryptLocalData();
+    const { rewritten } = await store.encryption.encryptLocal();
     expect(rewritten).toBe(1);
     expect(isEncryptedDoc(await inner.get<BaseDocument>('widgets', 'legacy'))).toBe(true);
-    expect((await store.get<Widget>('widgets', 'legacy'))?.name).toBe('Plain Old Doc');
+    expect((await store.collection<Widget>('widgets').get('legacy'))?.name).toBe('Plain Old Doc');
   });
 
   it('binds envelopes to the physical key when a collection is aliased', async () => {
     const aliasedWidgets = { ...widgetsDef, key: 'c1' };
     const inner = new InMemoryAdapter();
-    const store = new Store(inner, null, {
+    const store = new Store({
+      adapter: inner,
       collections: [aliasedWidgets],
       encryption: { cipher },
     });
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Secret Soup' });
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Secret Soup' });
 
     // Persisted under the key, sealed, and AAD-bound to `c1/w1` — opening it
     // as `widgets/w1` must fail (proves local and wire identities agree).
@@ -1132,7 +1160,7 @@ describe('Store encryption (optional E2E)', () => {
     await expect(decryptDoc(cipher, 'c1', stored)).resolves.toMatchObject({ name: 'Secret Soup' });
     await expect(decryptDoc(cipher, 'widgets', stored)).rejects.toThrow();
 
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Secret Soup');
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Secret Soup');
   });
 
   it('pushAll filters _local-authored docs (server can no longer see authors)', async () => {
@@ -1144,7 +1172,7 @@ describe('Store encryption (optional E2E)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.pushAll();
+    await store.sync.push();
 
     const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
     const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
@@ -1159,7 +1187,7 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
 
   function setupAliased(options?: StoreSyncConfig) {
     const inner = new InMemoryAdapter();
-    const store = new Store(inner, null, { collections: [aliasedWidgets] }, options);
+    const store = new Store({ adapter: inner, collections: [aliasedWidgets], sync: options });
     return { inner, store };
   }
 
@@ -1167,35 +1195,35 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
     const { inner, store } = setupAliased();
     const onChange = vi.fn();
     store.on('change', onChange);
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
 
     expect(await inner.get('c1', 'w1')).not.toBeNull();
     expect(await inner.get('widgets', 'w1')).toBeNull();
-    expect((await store.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
-    expect((await store.list<Widget>('widgets')).map((w) => w.id)).toEqual(['w1']);
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
+    expect((await store.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['w1']);
     expect(onChange).toHaveBeenCalledWith('widgets');
     expect(onChange).not.toHaveBeenCalledWith('c1');
   });
 
   it('pushes and pulls under the key on the wire', async () => {
     const { store } = setupAliased(SYNC);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1, skipped: 0 });
       return jsonResponse({ documents: [], cursor: 0 });
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    await store.drainOutbox();
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await store.sync.push();
     const pushCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/push'))!;
     const body = JSON.parse((pushCall[1] as RequestInit).body as string) as {
       documents: { collection: string }[];
     };
     expect(body.documents[0]!.collection).toBe('c1');
 
-    await store.pull('widgets');
+    await store.collection('widgets').pullAll();
     const pullCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/pull'))!;
     expect(String(pullCall[0])).toContain('collection=c1');
     expect(String(pullCall[0])).not.toContain('widgets');
@@ -1226,7 +1254,7 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
     const { store } = setupAliased(SYNC);
     const onChange = vi.fn();
     store.on('change', onChange);
-    await store.setAuthor('us/1');
+    await store.author.set('us/1');
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
     // Server broadcasts the physical key; the pull path (cursor doc, change
@@ -1252,25 +1280,26 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
       data: JSON.stringify({ type: 'invalidate', collections: ['c1'] }),
     });
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith('widgets'));
-    expect((await store.get<Widget>('widgets', 'w9'))?.name).toBe('From Server');
+    expect((await store.collection<Widget>('widgets').get('w9'))?.name).toBe('From Server');
   });
 
   it('backups carry names, and restore lands docs back under the key', async () => {
     const { store } = setupAliased();
-    await store.setAuthor('us/1');
-    await store.create<Widget>('widgets', 'w1', { name: 'Alpha' });
-    const archive = await store.createBackup();
+    await store.author.set('us/1');
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    const archive = await store.backup.create();
 
     // Restore into a store with a *different* key for the same collection:
     // the name is the portable identity, so the archive still applies.
     const inner2 = new InMemoryAdapter();
-    const store2 = new Store(inner2, null, {
+    const store2 = new Store({
+      adapter: inner2,
       collections: [{ ...widgetsDef, key: 'k2' }],
     });
-    const result = await store2.restoreBackup(archive);
+    const result = await store2.backup.restore(archive);
     expect(result.docsWritten).toBe(1);
     expect(result.collections).toEqual(['widgets']);
     expect(await inner2.get('k2', 'w1')).not.toBeNull();
-    expect((await store2.get<Widget>('widgets', 'w1'))?.name).toBe('Alpha');
+    expect((await store2.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
   });
 });

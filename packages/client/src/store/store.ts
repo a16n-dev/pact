@@ -31,19 +31,23 @@ import {
   type BackupBlob,
 } from '../backup/archive';
 import { SyncEngine } from './syncEngine';
-import { Collection } from './collectionRef';
+import type { Collection } from './collectionRef';
 import { seedContentEqual } from './helpers';
+import type { StoreSyncConfig, StoreOptions, ChangeHandler, SeedSet } from './options';
 import type {
-  StoreSyncConfig,
-  StoreDomain,
-  ClientConfigDoc,
-  AuthorConfigDoc,
+  StoreSync,
+  StoreAuthor,
+  StoreBackup,
+  StoreBlobs,
+  StoreEncryption,
   ClientRegistration,
-  ChangeHandler,
-  SeedSet,
-  SeedMarkerDoc,
   RestoreMode,
   RestoreResult,
+} from './namespaces';
+import type {
+  ClientConfigDoc,
+  AuthorConfigDoc,
+  SeedMarkerDoc,
   EncryptionCheckDoc,
 } from './types';
 
@@ -84,21 +88,27 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   // Owns the push outbox, pulls, and cursors. Fed live views of this Store's
   // author id + change emitter; its SyncClient is swapped in/out by the
   // client-registration methods below.
-  private readonly sync: SyncEngine;
-  /**
-   * Sidecar for opaque byte blobs. Null on consumers that only deal in
-   * JSON docs (e.g. CLI tools). A BlobStore requires a non-null blobs.
-   */
-  readonly blobs: BlobAdapter | null;
+  private readonly syncEngine: SyncEngine;
+  // Sidecar for opaque byte blobs (surfaced as `blobs.adapter`). Null on
+  // consumers that only deal in JSON docs (e.g. CLI tools).
+  private readonly blobAdapter: BlobAdapter | null;
 
-  constructor(
-    adapter: DatabaseAdapter,
-    blobs: BlobAdapter | null,
-    domain: StoreDomain<Defs>,
-    options?: StoreSyncConfig
-  ) {
+  // The namespaced surface — everything beyond core doc access lives here.
+  /** Server-facing operations: pushing, pulling, registration. */
+  readonly sync: StoreSync;
+  /** Who writes are attributed to. */
+  readonly author: StoreAuthor;
+  /** Portable snapshots of the document (and blob) set. */
+  readonly backup: StoreBackup;
+  /** Blob bookkeeping: references, garbage collection, change signals. */
+  readonly blobs: StoreBlobs;
+  /** At-rest/on-wire encryption management. */
+  readonly encryption: StoreEncryption;
+
+  constructor(options: StoreOptions<Defs>) {
+    const domain = options;
     this.cipher = domain.encryption?.cipher ?? null;
-    this.blobs = blobs;
+    this.blobAdapter = options.blobs ?? null;
     const defs = domain.collections;
     this.definitions = new Map(defs.map((d) => [d.name, d]));
     if (this.definitions.size !== defs.length) {
@@ -123,7 +133,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     // exclusively in plaintext while storage only ever holds ciphertext.
     // The alias wrapper goes outermost, so the cipher sees physical keys —
     // envelopes are AAD-bound to the same identity the wire seals against.
-    let stacked = this.cipher ? new EncryptedAdapter(adapter, this.cipher) : adapter;
+    let stacked = this.cipher ? new EncryptedAdapter(options.adapter, this.cipher) : options.adapter;
     if (this.collectionKeys) stacked = new AliasAdapter(stacked, this.collectionKeys);
     this.adapter = stacked;
     this.wireTransform = this.cipher
@@ -148,26 +158,59 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const def = this.definitions.get(collection);
       return def ? def.schema.parse(stamped) : stamped;
     };
-    this.sync = new SyncEngine({
+    this.syncEngine = new SyncEngine({
       adapter: this.adapter,
       migrator: this.migrator,
       collections: this.syncedCollections,
       getAuthorId: () => this.cachedAuthorId,
       emit: (collection) => this.emit(collection),
     });
-    this.sync.setSyncClient(
-      options?.syncUrl && options.syncToken
-        ? new SyncClient(
-            options.syncUrl,
-            options.syncToken,
-            this.wireTransform,
-            this.collectionKeys
-          )
+    const creds = options.sync;
+    this.syncEngine.setSyncClient(
+      creds?.syncUrl && creds.syncToken
+        ? new SyncClient(creds.syncUrl, creds.syncToken, this.wireTransform, this.collectionKeys)
         : null
     );
-    if (options?.syncUrl && options?.syncToken) {
-      this.openRealtime(options.syncUrl, options.syncToken);
+    if (creds?.syncUrl && creds?.syncToken) {
+      this.openRealtime(creds.syncUrl, creds.syncToken);
     }
+
+    // The namespaces: thin closures over the private implementations,
+    // grouped so the top-level surface stays close to just doc access.
+    this.sync = {
+      push: async () => {
+        await this.syncEngine.drainOutbox();
+        await this.syncEngine.pushAll();
+      },
+      pending: () => this.syncEngine.pendingPushCount(),
+      resync: () => this.resyncFromScratch(),
+      lastSyncedAt: (collections) => this.syncEngine.getLastSyncedAt(collections),
+      register: (url, password, appName, clientName) =>
+        this.registerClient(url, password, appName, clientName),
+      registration: () => this.getClientRegistration(),
+      credentials: () => this.getSyncCredentials(),
+      unregister: () => this.clearClientRegistration(),
+    };
+    this.author = {
+      get: async () => this.cachedAuthorId,
+      set: (authorId) => this.setAuthor(authorId),
+      reassignLocal: (newAuthorId) => this.reassignLocalAuthor(newAuthorId),
+      wipe: (authorId) => this.wipeAuthor(authorId),
+    };
+    this.backup = {
+      create: (opts) => this.createBackup(opts),
+      restore: (archive, opts) => this.restoreBackup(archive, opts),
+    };
+    this.blobs = {
+      adapter: this.blobAdapter,
+      referencedHashes: () => this.referencedBlobHashes(),
+      prune: () => this.pruneBlobs(),
+      notifyChanged: () => this.notifyBlobsChanged(),
+    };
+    this.encryption = {
+      verifyKey: () => this.verifyEncryptionKey(),
+      encryptLocal: () => this.encryptLocalData(),
+    };
   }
 
   // Realtime is server-driven: RealtimeConnection.start() probes `GET /info`
@@ -185,13 +228,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       // aliased domains translate back to the name the pull path speaks.
       onInvalidate: (collection) => {
         const name = this.collectionNames?.get(collection) ?? collection;
-        if (!name.startsWith('_')) void this.sync.pull(name);
+        if (!name.startsWith('_')) void this.syncEngine.pull(name);
       },
       onReconnect: () => {
         // Regained connectivity: pull others' changes and flush any writes
         // whose push failed while we were offline.
-        void this.sync.pullRegisteredCollections();
-        void this.sync.drainOutbox().catch(() => {});
+        void this.syncEngine.pullRegisteredCollections();
+        void this.syncEngine.drainOutbox().catch(() => {});
       },
     });
     void this.realtime.start();
@@ -220,7 +263,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * Routed through the same `change` channel as document collections so
    * UI invalidation can hang off a single subscription.
    */
-  notifyBlobsChanged(): void {
+  private notifyBlobsChanged(): void {
     this.emit('_blobs');
   }
 
@@ -237,7 +280,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * names — running it against a stale shape could miss a reference and
    * wrongly mark a live blob as an orphan.
    */
-  async referencedBlobHashes(): Promise<Set<string>> {
+  private async referencedBlobHashes(): Promise<Set<string>> {
     const refs = new Set<string>();
     if (!this.hasBlobRefs) return refs;
     for (const collection of this.definitions.keys()) {
@@ -267,8 +310,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * what's referenced, every blob would look like an orphan. No-op (empty
    * result) on a store without a blob adapter.
    */
-  async pruneBlobs(): Promise<{ deleted: string[] }> {
-    if (!this.blobs) return { deleted: [] };
+  private async pruneBlobs(): Promise<{ deleted: string[] }> {
+    if (!this.blobAdapter) return { deleted: [] };
     if (!this.hasBlobRefs) {
       throw new Error(
         'pruneBlobs requires a StoreDomain.blobHashes extractor; refusing to treat every blob as an orphan'
@@ -276,9 +319,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
     const referenced = await this.referencedBlobHashes();
     const deleted: string[] = [];
-    for (const hash of await this.blobs.list()) {
+    for (const hash of await this.blobAdapter.list()) {
       if (referenced.has(hash)) continue;
-      await this.blobs.delete(hash);
+      await this.blobAdapter.delete(hash);
       deleted.push(hash);
     }
     if (deleted.length > 0) this.notifyBlobsChanged();
@@ -286,19 +329,16 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   static async create<Defs extends readonly CollectionDefinition[]>(
-    adapter: DatabaseAdapter,
-    blobs: BlobAdapter | null,
-    domain: StoreDomain<Defs>
+    options: StoreOptions<Defs>
   ): Promise<Store<Defs>> {
-    const clientDoc = await adapter.get<ClientConfigDoc>('_config', 'client');
-    const syncConfig: StoreSyncConfig = clientDoc
-      ? { syncUrl: clientDoc.url, syncToken: clientDoc.token }
-      : {};
-    const store = new Store(adapter, blobs, domain, syncConfig);
+    const clientDoc = await options.adapter.get<ClientConfigDoc>('_config', 'client');
+    const sync: StoreSyncConfig | undefined =
+      options.sync ?? (clientDoc ? { syncUrl: clientDoc.url, syncToken: clientDoc.token } : undefined);
+    const store = new Store({ ...options, sync });
     // Pre-sync, the author is implicitly LOCAL_AUTHOR_ID. If a real identity
     // was previously claimed (via a sync server), restore it from the author
     // config doc.
-    const authorDoc = await adapter.get<AuthorConfigDoc>('_config', 'author');
+    const authorDoc = await options.adapter.get<AuthorConfigDoc>('_config', 'author');
     if (authorDoc) store.cachedAuthorId = authorDoc.authorId;
     await store.verifyEncryptionKey();
     return store;
@@ -310,7 +350,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * encryption. `Store.create` calls this automatically; call it yourself
    * only when constructing a Store directly.
    */
-  async verifyEncryptionKey(): Promise<void> {
+  private async verifyEncryptionKey(): Promise<void> {
     if (!this.cipher) return;
     const existing = await this.adapter.get<EncryptionCheckDoc>('_config', 'encryption');
     if (!existing) {
@@ -347,7 +387,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * up there is overwritten by its encrypted twin. Idempotent: already
    * encrypted docs pass through unchanged.
    */
-  async encryptLocalData(): Promise<{ rewritten: number }> {
+  private async encryptLocalData(): Promise<{ rewritten: number }> {
     if (!this.cipher) throw new Error('encryptLocalData requires the encryption option');
     let rewritten = 0;
     for (const collection of this.definitions.keys()) {
@@ -364,7 +404,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
   // Current author
 
-  async setAuthor(authorId: string): Promise<void> {
+  private async setAuthor(authorId: string): Promise<void> {
     if (authorId === SYSTEM_AUTHOR_ID) throw new Error('Cannot set author to the system author');
     if (authorId === LOCAL_AUTHOR_ID) {
       throw new Error('Cannot set author to the local author placeholder');
@@ -385,7 +425,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.onSetAuthor?.(this, authorId);
   }
 
-  async getCurrentAuthor(): Promise<string> {
+  private async getCurrentAuthor(): Promise<string> {
     return this.cachedAuthorId;
   }
 
@@ -408,7 +448,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * so re-registering — to rotate the token, rename the client, or point at a
    * different URL — keeps the same identity on the server side.
    */
-  async registerClient(
+  private async registerClient(
     url: string,
     password: string,
     appName: string,
@@ -443,14 +483,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       token: result.token,
       appName,
     } as ClientConfigDoc);
-    this.sync.setSyncClient(
+    this.syncEngine.setSyncClient(
       new SyncClient(normalisedUrl, result.token, this.wireTransform, this.collectionKeys)
     );
     this.openRealtime(normalisedUrl, result.token);
     return result;
   }
 
-  async getClientRegistration(): Promise<ClientRegistration | null> {
+  private async getClientRegistration(): Promise<ClientRegistration | null> {
     const doc = await this.adapter.get<ClientConfigDoc>('_config', 'client');
     return doc
       ? { id: doc.clientId, name: doc.clientName, url: doc.url, appName: doc.appName ?? null }
@@ -463,14 +503,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * strips the token. Exposed so the repo layer can hand the token to
    * helpers that issue HTTP calls directly.
    */
-  async getSyncCredentials(): Promise<{ url: string; token: string } | null> {
+  private async getSyncCredentials(): Promise<{ url: string; token: string } | null> {
     const doc = await this.adapter.get<ClientConfigDoc>('_config', 'client');
     return doc ? { url: doc.url, token: doc.token } : null;
   }
 
-  async clearClientRegistration(): Promise<void> {
+  private async clearClientRegistration(): Promise<void> {
     await this.adapter.delete('_config', 'client');
-    this.sync.setSyncClient(null);
+    this.syncEngine.setSyncClient(null);
     this.realtime?.stop();
     this.realtime = null;
   }
@@ -486,7 +526,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.cachedAuthorId = LOCAL_AUTHOR_ID;
   }
 
-  async wipeAuthor(authorId: string): Promise<void> {
+  private async wipeAuthor(authorId: string): Promise<void> {
     await Promise.all(
       Array.from(this.definitions.keys()).map(async (collection) => {
         const all = await this.adapter.getAll<BaseDocument>(collection);
@@ -544,7 +584,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * doc soft-deleted before identity was claimed doesn't sync a tombstone
    * still tagged with the local sentinel. Skips internal `_*` collections.
    */
-  async reassignLocalAuthor(newAuthorId: string): Promise<void> {
+  private async reassignLocalAuthor(newAuthorId: string): Promise<void> {
     if (newAuthorId === LOCAL_AUTHOR_ID || newAuthorId === SYSTEM_AUTHOR_ID) {
       throw new Error('Cannot reassign local docs to a system or local author id');
     }
@@ -575,59 +615,58 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
   }
 
-  async get<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
-    this.assertDefined(collection);
-    this.sync.triggerReadPull(collection);
-    const doc = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
-    return doc?.deletedAt ? null : doc;
-  }
-
-  /** Like `get`, but returns soft-deleted docs too. Seeding uses this so it can
-   *  tell "author deleted this seed" apart from "doc never existed". */
-  async getIncludingDeleted<T extends BaseDocument>(
+  /**
+   * One doc by id, or null when missing. Soft-deleted docs read as null
+   * unless `includeDeleted` is set — with it, inspect `deletedAt` to tell a
+   * tombstone from a live doc (e.g. "author deleted this seed" vs "doc never
+   * existed").
+   */
+  private async get<T extends BaseDocument>(
     collection: string,
-    id: string
+    id: string,
+    opts?: { includeDeleted?: boolean }
   ): Promise<T | null> {
     this.assertDefined(collection);
-    return this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
+    this.syncEngine.triggerReadPull(collection);
+    const doc = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
+    if (!doc) return null;
+    return doc.deletedAt && !opts?.includeDeleted ? null : doc;
   }
 
-  async getMany<T extends BaseDocument>(collection: string, ids: string[]): Promise<T[]> {
+  private async getMany<T extends BaseDocument>(collection: string, ids: string[]): Promise<T[]> {
     this.assertDefined(collection);
-    this.sync.triggerReadPull(collection);
+    this.syncEngine.triggerReadPull(collection);
     const docs = await this.adapter.getMany<T>(collection, ids);
     return docs
       .map((doc) => this.migrateRead<T>(collection, doc) as T)
       .filter((doc) => !doc.deletedAt);
   }
 
-  async list<T extends BaseDocument>(collection: string): Promise<T[]> {
-    this.assertDefined(collection);
-    this.sync.triggerReadPull(collection);
-    const all = await this.adapter.getAll<T>(collection);
-    return all
-      .map((doc) => this.migrateRead<T>(collection, doc) as T)
-      .filter((doc) => !doc.deletedAt);
-  }
-
-  /** Like `list`, but includes soft-deleted docs (tombstones). Inspect
-   *  `deletedAt` on each result to tell them apart. For debug/admin surfaces. */
-  async listIncludingDeleted<T extends BaseDocument>(collection: string): Promise<T[]> {
-    this.assertDefined(collection);
-    this.sync.triggerReadPull(collection);
-    const all = await this.adapter.getAll<T>(collection);
-    return all.map((doc) => this.migrateRead<T>(collection, doc) as T);
-  }
-
-  async createAsSystem<T extends BaseDocument>(
+  /**
+   * All live docs in the collection. Pass `includeDeleted` to keep tombstones
+   * in the result (inspect `deletedAt` to tell them apart) — for debug/admin
+   * surfaces.
+   */
+  private async list<T extends BaseDocument>(
     collection: string,
-    id: string,
-    input: Omit<T, keyof BaseDocument>
+    opts?: { includeDeleted?: boolean }
+  ): Promise<T[]> {
+    this.assertDefined(collection);
+    this.syncEngine.triggerReadPull(collection);
+    const all = await this.adapter.getAll<T>(collection);
+    const docs = all.map((doc) => this.migrateRead<T>(collection, doc) as T);
+    return opts?.includeDeleted ? docs : docs.filter((doc) => !doc.deletedAt);
+  }
+
+  private async createAsSystem<T extends BaseDocument>(
+    collection: string,
+    input: Omit<T, keyof BaseDocument> & { id?: T['id'] }
   ): Promise<T> {
+    const { id, ...rest } = input;
     const now = dayjs().toISOString();
     const doc = {
-      ...input,
-      id,
+      ...rest,
+      id: id ?? this.newId(collection),
       createdAt: now,
       updatedAt: now,
       createdBy: SYSTEM_AUTHOR_ID,
@@ -727,16 +766,27 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { written };
   }
 
-  async create<T extends BaseDocument>(
+  /**
+   * Generated id for a new doc in the collection, via its definition's
+   * `generateId`. Internal (`_*`) collections have no definition, so callers
+   * writing to those must always supply an explicit id.
+   */
+  private newId(collection: string): string {
+    const def = this.definitions.get(collection);
+    if (!def) throw new Error(`Cannot generate an id for collection: ${collection}`);
+    return def.generateId();
+  }
+
+  private async create<T extends BaseDocument>(
     collection: string,
-    id: string,
-    input: Omit<T, keyof BaseDocument>
+    input: Omit<T, keyof BaseDocument> & { id?: T['id'] }
   ): Promise<T> {
     const authorId = await this.requireAuthor();
+    const { id, ...rest } = input;
     const now = dayjs().toISOString();
     const doc = {
-      ...input,
-      id,
+      ...rest,
+      id: id ?? this.newId(collection),
       createdAt: now,
       updatedAt: now,
       createdBy: authorId,
@@ -746,12 +796,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     } as unknown as T;
     const validated = this.validateDoc(collection, doc);
     await this.adapter.put(collection, validated);
-    await this.sync.queuePush(collection, [validated.id]);
+    await this.syncEngine.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
   }
 
-  async update<T extends BaseDocument>(
+  private async update<T extends BaseDocument>(
     collection: string,
     id: string,
     input: Partial<Omit<T, keyof BaseDocument>>
@@ -770,12 +820,52 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     } as T;
     const validated = this.validateDoc(collection, updated);
     await this.adapter.put(collection, validated);
-    await this.sync.queuePush(collection, [validated.id]);
+    await this.syncEngine.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
   }
 
-  async delete(collection: string, id: string): Promise<void> {
+  /**
+   * Create the doc if absent, update it if present — `id` is required since
+   * it's the match key. A soft-deleted doc counts as absent: upserting its id
+   * revives it as a fresh doc (new `createdAt`, tombstone cleared).
+   */
+  private async upsert<T extends BaseDocument>(
+    collection: string,
+    input: Omit<T, keyof BaseDocument> & { id: T['id'] }
+  ): Promise<T> {
+    const authorId = await this.requireAuthor();
+    const { id, ...rest } = input;
+    const existing = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
+    const now = dayjs().toISOString();
+    const doc = (
+      existing && !existing.deletedAt
+        ? {
+            ...existing,
+            ...rest,
+            id,
+            updatedAt: now,
+            updatedBy: authorId,
+          }
+        : {
+            ...rest,
+            id,
+            createdAt: now,
+            updatedAt: now,
+            createdBy: authorId,
+            updatedBy: authorId,
+            deletedAt: null,
+            deletedBy: null,
+          }
+    ) as unknown as T;
+    const validated = this.validateDoc(collection, doc);
+    await this.adapter.put(collection, validated);
+    await this.syncEngine.queuePush(collection, [validated.id]);
+    this.emit(collection);
+    return validated;
+  }
+
+  private async delete(collection: string, id: string): Promise<void> {
     this.assertDefined(collection);
     const authorId = await this.requireAuthor();
     const existing = this.migrateRead<BaseDocument>(
@@ -792,20 +882,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       deletedBy: authorId,
     };
     await this.adapter.put(collection, deleted);
-    await this.sync.queuePush(collection, [deleted.id]);
+    await this.syncEngine.queuePush(collection, [deleted.id]);
     this.emit(collection);
   }
 
-  async createMany<T extends BaseDocument>(
+  private async createMany<T extends BaseDocument>(
     collection: string,
-    items: Array<{ id: string } & Omit<T, keyof BaseDocument>>
+    items: Array<Omit<T, keyof BaseDocument> & { id?: T['id'] }>
   ): Promise<T[]> {
     const authorId = await this.requireAuthor();
     const now = dayjs().toISOString();
     const docs = items.map(({ id, ...input }) => {
       const doc = {
         ...input,
-        id,
+        id: id ?? this.newId(collection),
         createdAt: now,
         updatedAt: now,
         createdBy: authorId,
@@ -816,7 +906,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       return this.validateDoc(collection, doc);
     });
     await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
-    await this.sync.queuePush(
+    await this.syncEngine.queuePush(
       collection,
       docs.map((doc) => doc.id)
     );
@@ -824,7 +914,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return docs;
   }
 
-  async updateMany<T extends BaseDocument>(
+  private async updateMany<T extends BaseDocument>(
     collection: string,
     updates: Array<{ id: string } & Partial<Omit<T, keyof BaseDocument>>>
   ): Promise<T[]> {
@@ -846,7 +936,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       docs.push(updated);
     }
     await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
-    await this.sync.queuePush(
+    await this.syncEngine.queuePush(
       collection,
       docs.map((doc) => doc.id)
     );
@@ -854,7 +944,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return docs;
   }
 
-  async deleteMany(collection: string, ids: string[]): Promise<void> {
+  private async deleteMany(collection: string, ids: string[]): Promise<void> {
     this.assertDefined(collection);
     const authorId = await this.requireAuthor();
     const now = dayjs().toISOString();
@@ -874,7 +964,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       });
     }
     await Promise.all(deleted.map((doc) => this.adapter.put(collection, doc)));
-    await this.sync.queuePush(
+    await this.syncEngine.queuePush(
       collection,
       deleted.map((doc) => doc.id)
     );
@@ -889,37 +979,23 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * `delete`/`deleteMany` so the tombstone propagates to other devices. A doc
    * that still exists on the server will re-pull on the next sync.
    */
-  async hardDelete(collection: string, id: string): Promise<void> {
+  private async hardDelete(collection: string, id: string): Promise<void> {
     this.assertDefined(collection);
     await this.adapter.delete(collection, id);
     this.emit(collection);
   }
 
   /** Batch form of `hardDelete`. */
-  async hardDeleteMany(collection: string, ids: string[]): Promise<void> {
+  private async hardDeleteMany(collection: string, ids: string[]): Promise<void> {
     this.assertDefined(collection);
     await Promise.all(ids.map((id) => this.adapter.delete(collection, id)));
     this.emit(collection);
   }
 
-  // Sync — thin delegations to the SyncEngine, preserving the public surface.
-
-  pushAll(): Promise<void> {
-    return this.sync.pushAll();
-  }
-
-  drainOutbox(): Promise<void> {
-    return this.sync.drainOutbox();
-  }
-
-  /** Count of documents written locally but not yet accepted by the server. */
-  pendingPushCount(): Promise<number> {
-    return this.sync.pendingPushCount();
-  }
-
-  pull<T extends BaseDocument>(collection: string): Promise<T[]> {
+  /** Fetch every remote change for the collection (cursor-paged) and merge it in. */
+  private pullAll<T extends BaseDocument>(collection: string): Promise<T[]> {
     this.assertDefined(collection);
-    return this.sync.pull<T>(collection);
+    return this.syncEngine.pull<T>(collection);
   }
 
   /**
@@ -931,7 +1007,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * rewritten out-of-band (e.g. an id-format change) and the local copies can
    * no longer be reconciled doc-by-doc.
    */
-  async resyncFromScratch(): Promise<void> {
+  private async resyncFromScratch(): Promise<void> {
     // Straight through the adapter, not hardDeleteMany: this must also clear
     // data left behind by collections the current build no longer defines.
     const collections = await this.adapter.listCollections();
@@ -943,7 +1019,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         this.emit(collection);
       }
     }
-    await this.sync.pullRegisteredCollections();
+    await this.syncEngine.pullRegisteredCollections();
   }
 
   // Backup / restore — a self-contained, server-independent snapshot.
@@ -960,7 +1036,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * `{ blobs: false }` for a documents-only archive (blobs can be re-pulled
    * from a sync server later via their referenced hashes).
    */
-  async createBackup(opts?: { blobs?: boolean }): Promise<Uint8Array> {
+  private async createBackup(opts?: { blobs?: boolean }): Promise<Uint8Array> {
     const collections: Record<string, BaseDocument[]> = {};
     for (const name of await this.adapter.listCollections()) {
       if (name.startsWith('_')) continue;
@@ -968,13 +1044,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       if (docs.length > 0) collections[name] = docs;
     }
 
-    const includeBlobs = (opts?.blobs ?? true) && this.blobs !== null;
+    const includeBlobs = (opts?.blobs ?? true) && this.blobAdapter !== null;
     const blobs: BackupBlob[] = [];
-    if (includeBlobs && this.blobs) {
-      for (const hash of await this.blobs.list()) {
-        const bytes = await this.blobs.read(hash);
+    if (includeBlobs && this.blobAdapter) {
+      for (const hash of await this.blobAdapter.list()) {
+        const bytes = await this.blobAdapter.read(hash);
         if (!bytes) continue;
-        const mimeType = (await this.blobs.mimeType(hash)) ?? 'application/octet-stream';
+        const mimeType = (await this.blobAdapter.mimeType(hash)) ?? 'application/octet-stream';
         blobs.push({ hash, mimeType, bytes });
       }
     }
@@ -994,7 +1070,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * `mode` defaults to `merge` (last-write-wins, safe on a live store); see
    * `RestoreMode`.
    */
-  async restoreBackup(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult> {
+  private async restoreBackup(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult> {
     const mode = opts?.mode ?? 'merge';
     const { manifest, blobs } = unpackBackup(archive);
     // Only defined collections restore; an archive from a domain with
@@ -1038,17 +1114,17 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     let blobsWritten = 0;
     let blobsSkipped = 0;
     if (blobs.length > 0) {
-      if (!this.blobs) {
+      if (!this.blobAdapter) {
         blobsSkipped = blobs.length;
       } else {
         if (mode === 'replace') {
-          for (const hash of await this.blobs.list()) await this.blobs.delete(hash);
+          for (const hash of await this.blobAdapter.list()) await this.blobAdapter.delete(hash);
         }
         for (const blob of blobs) {
           // Content-addressed: a present hash already holds these exact bytes,
           // so skip it in merge mode. Replace cleared the set above.
-          if (mode === 'merge' && (await this.blobs.has(blob.hash))) continue;
-          await this.blobs.write(blob.hash, blob.bytes, blob.mimeType);
+          if (mode === 'merge' && (await this.blobAdapter.has(blob.hash))) continue;
+          await this.blobAdapter.write(blob.hash, blob.bytes, blob.mimeType);
           blobsWritten++;
         }
         if (blobsWritten > 0) this.notifyBlobsChanged();
@@ -1066,23 +1142,41 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
   }
 
-  pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+  /** Fetch one doc fresh from the server and merge it in (last-write-wins). */
+  private pull<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
     this.assertDefined(collection);
-    return this.sync.pullDocument<T>(collection, id);
-  }
-
-  getLastSyncedAt(collections: string[]): Promise<Date | null> {
-    return this.sync.getLastSyncedAt(collections);
+    return this.syncEngine.pullDocument<T>(collection, id);
   }
 
   /**
-   * Typed handle to one defined collection. The name is narrowed to the
-   * domain's definition list and the document type is inferred from that
-   * collection's schema — undefined collections are a type error (and throw
-   * at runtime when the name arrives as a plain string).
+   * Typed handle to one defined collection — the only way to read and write
+   * documents. The name is narrowed to the domain's definition list and the
+   * document type is inferred from that collection's schema — undefined
+   * collections are a type error (and throw at runtime when the name arrives
+   * as a plain string). Pass the document type explicitly
+   * (`store.collection<Doc>('name')`) when the definition list isn't
+   * statically known.
    */
-  collection<Name extends CollectionName<Defs>>(name: Name): Collection<DocumentOf<Defs, Name>> {
+  collection<Name extends CollectionName<Defs>>(name: Name): Collection<DocumentOf<Defs, Name>>;
+  collection<T extends BaseDocument>(name: string): Collection<T>;
+  collection<T extends BaseDocument>(name: string): Collection<T> {
     this.assertDefined(name);
-    return new Collection<DocumentOf<Defs, Name>>(this, name);
+    return {
+      get: (id, opts) => this.get<T>(name, id, opts),
+      getMany: (ids) => this.getMany<T>(name, ids),
+      list: (opts) => this.list<T>(name, opts),
+      create: (input) => this.create<T>(name, input),
+      createMany: (items) => this.createMany<T>(name, items),
+      createAsSystem: (input) => this.createAsSystem<T>(name, input),
+      update: (id, input) => this.update<T>(name, id, input),
+      updateMany: (updates) => this.updateMany<T>(name, updates),
+      upsert: (input) => this.upsert<T>(name, input),
+      delete: (id) => this.delete(name, id),
+      deleteMany: (ids) => this.deleteMany(name, ids),
+      hardDelete: (id) => this.hardDelete(name, id),
+      hardDeleteMany: (ids) => this.hardDeleteMany(name, ids),
+      pull: (id) => this.pull<T>(name, id),
+      pullAll: () => this.pullAll<T>(name),
+    };
   }
 }

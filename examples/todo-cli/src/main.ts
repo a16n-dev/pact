@@ -6,7 +6,7 @@
 import { join } from 'node:path';
 import { Store } from '@a16n/pact-client';
 import { JsonFileAdapter } from './jsonFileAdapter'; // copied from examples/adapters
-import { domain, todos } from './domain';
+import { domain } from './domain';
 
 const HELP = `todo — a local-first TODO list (Pact example app)
 
@@ -28,7 +28,7 @@ Data lives in .pact-todo.json (override with PACT_TODO_FILE).
 Ids can be abbreviated to any unique tail, e.g. "todo done 4w" for td-x7k2m9qp4w.`;
 
 const file = process.env.PACT_TODO_FILE ?? join(process.cwd(), '.pact-todo.json');
-const store = await Store.create(new JsonFileAdapter(file), null, domain);
+const store = await Store.create({ adapter: new JsonFileAdapter(file), ...domain });
 const list = store.collection('todos'); // typed from the schema in domain.ts
 
 function fail(message: string): never {
@@ -57,11 +57,7 @@ try {
     case 'add': {
       const title = args.join(' ').trim();
       if (!title) fail('Usage: todo add <title...>');
-      const created = await list.create(todos.generateId(), {
-        title,
-        done: false,
-        completedAt: null,
-      });
+      const created = await list.create({ title, done: false, completedAt: null });
       print(created);
       break;
     }
@@ -100,7 +96,7 @@ try {
       if (!url || !password || !appName) {
         fail('Usage: todo register <url> <password> <appName> [clientName]');
       }
-      const result = await store.registerClient(url, password, appName, clientName ?? 'todo-cli');
+      const result = await store.sync.register(url, password, appName, clientName ?? 'todo-cli');
       if (!result.ok) fail(`Registration failed (${result.reason}).`);
       console.log('Registered. Now claim an identity: todo author <authorId>');
       break;
@@ -109,38 +105,37 @@ try {
     case 'author': {
       const authorId = args[0];
       if (!authorId) {
-        console.log(`Current author: ${await store.getCurrentAuthor()}`);
+        console.log(`Current author: ${await store.author.get()}`);
         break;
       }
-      await store.setAuthor(authorId);
+      await store.author.set(authorId);
       // Adopt anything written before the identity existed, so it can sync.
-      await store.reassignLocalAuthor(authorId);
+      await store.author.reassignLocal(authorId);
       console.log(`Writing as ${authorId}.`);
       break;
     }
 
     case 'sync': {
-      if (!(await store.getClientRegistration()))
+      if (!(await store.sync.registration()))
         fail('Not registered. Run "todo register" first.');
-      await store.drainOutbox(); // retry anything queued while offline
-      await store.pushAll();
-      const pulled = await store.pull('todos');
+      await store.sync.push(); // drains anything queued while offline, then pushes all
+      const pulled = await list.pullAll();
       console.log(`Synced. ${pulled.length} change(s) pulled.`);
       break;
     }
 
     case 'status': {
-      const registration = await store.getClientRegistration();
+      const registration = await store.sync.registration();
       console.log(`Data file:    ${file}`);
-      console.log(`Author:       ${await store.getCurrentAuthor()}`);
+      console.log(`Author:       ${await store.author.get()}`);
       console.log(
         registration
           ? `Server:       ${registration.url} (app: ${registration.appName}, client: ${registration.name})`
           : 'Server:       not registered (local-only)'
       );
       if (registration) {
-        console.log(`Pending push: ${await store.pendingPushCount()} doc(s)`);
-        const syncedAt = await store.getLastSyncedAt(['todos']);
+        console.log(`Pending push: ${await store.sync.pending()} doc(s)`);
+        const syncedAt = await store.sync.lastSyncedAt(['todos']);
         console.log(`Last synced:  ${syncedAt ? syncedAt.toISOString() : 'never'}`);
       }
       break;
