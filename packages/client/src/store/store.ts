@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import { z } from 'zod';
 import { randomId } from '../ids';
 import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BlobAdapter } from '../blobs/blobAdapter';
@@ -30,6 +31,7 @@ import {
   BACKUP_FORMAT_VERSION,
   type BackupBlob,
 } from '../backup/archive';
+import { BlobSync } from '../blobs/blobSync';
 import { SyncEngine } from './syncEngine';
 import type { Collection } from './collectionRef';
 import { seedContentEqual } from './helpers';
@@ -201,8 +203,25 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       create: (opts) => this.createBackup(opts),
       restore: (archive, opts) => this.restoreBackup(archive, opts),
     };
+    const blobSync = this.blobAdapter
+      ? new BlobSync({
+          adapter: this.blobAdapter,
+          credentials: () => this.getSyncCredentials(),
+          notifyChanged: () => this.notifyBlobsChanged(),
+        })
+      : null;
+    const requireBlobs = (): BlobSync => {
+      if (!blobSync) throw new Error('This store was created without a BlobAdapter');
+      return blobSync;
+    };
     this.blobs = {
       adapter: this.blobAdapter,
+      write: (bytes, mimeType) => requireBlobs().write(bytes, mimeType),
+      uri: (hash) => requireBlobs().uri(hash),
+      has: (hash) => requireBlobs().has(hash),
+      push: () => requireBlobs().push(),
+      pull: (referencedHashes) => requireBlobs().pull(referencedHashes),
+      pullReferenced: async () => requireBlobs().pull(await this.referencedBlobHashes()),
       referencedHashes: () => this.referencedBlobHashes(),
       prune: () => this.pruneBlobs(),
       notifyChanged: () => this.notifyBlobsChanged(),
@@ -273,9 +292,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * Tombstones are skipped — a blob kept alive only by deleted docs is
    * collectable. Returns an empty set when the domain declares no extractor.
    *
-   * Drives `pruneBlobs`, and lets a caller pull exactly the blobs the local
-   * doc set needs: `blobStore.pull(await store.referencedBlobHashes())` (or
-   * just `blobStore.pullReferenced()`). Docs are migrated in memory before
+   * Drives `blobs.prune` and `blobs.pullReferenced` — pulling exactly the
+   * blobs the local doc set needs. Docs are migrated in memory before
    * extraction (no write-back), so the extractor always sees current field
    * names — running it against a stale shape could miss a reference and
    * wrongly mark a live blob as an orphan.
@@ -563,14 +581,34 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * time. Internal `_config`/`_sync_meta` collections aren't in the
    * registry and short-circuit to a no-op.
    */
+  /**
+   * Normalise a doc coming off the adapter: migrate it to the current shape if
+   * stale, then re-validate through the collection schema. The re-validation
+   * reconstructs schema-typed values the storage format flattens — notably
+   * `date()` fields, whose persisted ISO string coerces back to a `Date`.
+   *
+   * A doc that fails validation (post-migration) is treated as *unreadable*
+   * rather than thrown: this returns null, so a single corrupt row degrades to
+   * a missing doc instead of bricking a whole `list()`/`getMany()`. Callers
+   * that map over collections must drop these nulls. Returns null for a null
+   * input (missing doc) too. (No corruption reporting yet — a future
+   * `onInvalidDocument` hook is the place to make this observable.)
+   */
   private migrateRead<T>(collection: string, doc: T | null): T | null {
     if (!doc) return doc;
-    if (!this.migrator.needsMigration(collection, doc)) return doc;
-    const upgraded = this.migrator.migrate<T>(collection, doc);
-    // Fire-and-forget write-back. Failure here isn't fatal — the next read
-    // will just migrate again.
-    this.adapter.put(collection, upgraded as unknown as BaseDocument).catch(() => {});
-    return upgraded;
+    let normalised: T = doc;
+    if (this.migrator.needsMigration(collection, doc)) {
+      normalised = this.migrator.migrate<T>(collection, doc);
+      // Fire-and-forget write-back of the migrated shape. Failure here isn't
+      // fatal — the next read will just migrate again.
+      this.adapter.put(collection, normalised as unknown as BaseDocument).catch(() => {});
+    }
+    try {
+      return this.validate(collection, normalised) as T;
+    } catch (err) {
+      if (err instanceof z.ZodError) return null;
+      throw err;
+    }
   }
 
   private async requireAuthor(): Promise<string> {
@@ -638,8 +676,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.syncEngine.triggerReadPull(collection);
     const docs = await this.adapter.getMany<T>(collection, ids);
     return docs
-      .map((doc) => this.migrateRead<T>(collection, doc) as T)
-      .filter((doc) => !doc.deletedAt);
+      .map((doc) => this.migrateRead<T>(collection, doc))
+      .filter((doc): doc is T => doc !== null && !doc.deletedAt);
   }
 
   /**
@@ -654,7 +692,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.assertDefined(collection);
     this.syncEngine.triggerReadPull(collection);
     const all = await this.adapter.getAll<T>(collection);
-    const docs = all.map((doc) => this.migrateRead<T>(collection, doc) as T);
+    const docs = all
+      .map((doc) => this.migrateRead<T>(collection, doc))
+      .filter((doc): doc is T => doc !== null);
     return opts?.includeDeleted ? docs : docs.filter((doc) => !doc.deletedAt);
   }
 

@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { randomId } from './ids';
-import { BaseDocumentSchema, type BaseDocument } from './types';
+import { BaseDocumentSchema, type BaseDocument, type Storable } from './types';
 import type { CollectionMigrations, MigrationRegistry } from './migrator';
+
+/**
+ * A date field that round-trips through JSON storage and sync. Persisted (and
+ * synced) as an ISO string, read back as a `Date`: coercion means the stored
+ * string re-parses to a `Date` on every read, on any adapter. Prefer this over
+ * a bare `z.date()`, whose output is a `Date` that can't survive serialization
+ * — the store re-validates reads, and a serialized `z.date()` throws on read.
+ */
+export const date = () => z.coerce.date();
 
 /** A document id under `Prefix` — the compile-time face of `docId`. */
 export type DocId<Prefix extends string = string> = `${Prefix}-${string}`;
@@ -91,7 +100,7 @@ export interface CollectionConfig<
  */
 export function defineCollection<
   Name extends string,
-  Schema extends z.ZodType,
+  Schema extends z.ZodType<Storable>,
   IdPrefix extends string,
 >(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionDefinition<Name, Schema, IdPrefix> {
   const {

@@ -11,7 +11,6 @@ export * from './blobs/blobFields';
 export * from './types';
 export * from './system';
 export * from './sync/sync';
-export * from './blobs/blobStore';
 export * from './sync/realtime';
 export * from './migrator';
 export * from './backup/archive';

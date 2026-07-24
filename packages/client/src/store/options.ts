@@ -38,7 +38,7 @@ export interface StoreDomain<
   /**
    * Blob hashes a document references. The Store unions these across all
    * *live* documents to power blob garbage collection (`store.blobs.prune`)
-   * and reference-driven pull (`BlobStore.pullReferenced`). Omit for domains
+   * and reference-driven pull (`store.blobs.pullReferenced`). Omit for domains
    * with no blobs — `prune` then refuses to run rather than treat every blob
    * as an orphan. For the common case of flat top-level hash fields, build
    * this with the `blobFields` helper; write it by hand when references are

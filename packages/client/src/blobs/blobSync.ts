@@ -1,8 +1,11 @@
-import type { Store } from '../store';
 import type { BlobAdapter } from './blobAdapter';
 
 /**
- * Content-addressed byte sync. The hash is the identity, so:
+ * Content-addressed byte sync — the engine behind `store.blobs`. Not part of
+ * the public API; the Store wires it up with its own credentials and change
+ * signal and exposes the methods on the `blobs` namespace.
+ *
+ * The hash is the identity, so:
  *   - writes are idempotent (same bytes → same key)
  *   - "is this synced?" is set membership, not a temporal cursor
  *   - push = upload `localBlobs − serverBlobs`
@@ -12,16 +15,21 @@ import type { BlobAdapter } from './blobAdapter';
  * reality because both sides of the diff come from authoritative sources
  * (the filesystem and the server's bucket listing).
  */
-export class BlobStore {
-  private store: Store;
-  private blobs: BlobAdapter;
+export interface BlobSyncDeps {
+  adapter: BlobAdapter;
+  /** Sync url + token, or null when the store isn't registered. */
+  credentials(): Promise<{ url: string; token: string } | null>;
+  /** The Store's blob-change signal (`store.blobs.notifyChanged`). */
+  notifyChanged(): void;
+}
 
-  constructor(store: Store) {
-    if (!store.blobs.adapter) {
-      throw new Error('BlobStore requires a Store created with a BlobAdapter');
-    }
-    this.store = store;
-    this.blobs = store.blobs.adapter;
+export class BlobSync {
+  private readonly blobs: BlobAdapter;
+  private readonly deps: BlobSyncDeps;
+
+  constructor(deps: BlobSyncDeps) {
+    this.blobs = deps.adapter;
+    this.deps = deps;
   }
 
   /**
@@ -32,7 +40,7 @@ export class BlobStore {
   async write(bytes: Uint8Array, mimeType: string): Promise<string> {
     const hash = await sha256Hex(bytes);
     await this.blobs.write(hash, bytes, mimeType);
-    this.store.blobs.notifyChanged();
+    this.deps.notifyChanged();
     void this.tryPush(hash, bytes, mimeType);
     return hash;
   }
@@ -52,7 +60,7 @@ export class BlobStore {
    * collapses since the key is the content hash.
    */
   async push(): Promise<void> {
-    const creds = await this.store.sync.credentials();
+    const creds = await this.deps.credentials();
     if (!creds) return;
     const local = await this.blobs.list();
     const remote = new Set(await this.fetchServerList(creds));
@@ -67,12 +75,10 @@ export class BlobStore {
 
   /**
    * Download blobs referenced by docs but missing locally. Caller passes the
-   * union of hashes referenced across all doc collections. Prefer
-   * `pullReferenced()` when the domain declares a `blobHashes` extractor — it
-   * sources that union from the Store for you.
+   * union of hashes referenced across all doc collections.
    */
   async pull(referencedHashes: Iterable<string>): Promise<void> {
-    const creds = await this.store.sync.credentials();
+    const creds = await this.deps.credentials();
     if (!creds) return;
     let any = false;
     for (const hash of referencedHashes) {
@@ -83,16 +89,7 @@ export class BlobStore {
         any = true;
       }
     }
-    if (any) this.store.blobs.notifyChanged();
-  }
-
-  /**
-   * Pull every blob the local document set references but doesn't yet have,
-   * sourcing the hash set from the Store's registered collections. Requires a
-   * `StoreDomain.blobHashes` extractor; a no-op (downloads nothing) without one.
-   */
-  async pullReferenced(): Promise<void> {
-    await this.pull(await this.store.blobs.referencedHashes());
+    if (any) this.deps.notifyChanged();
   }
 
   private async tryPush(
@@ -101,7 +98,7 @@ export class BlobStore {
     mimeType: string,
     creds?: { url: string; token: string }
   ): Promise<void> {
-    const c = creds ?? (await this.store.sync.credentials());
+    const c = creds ?? (await this.deps.credentials());
     if (!c) return;
     try {
       await fetch(`${c.url}/sync/blobs/${hash}`, {

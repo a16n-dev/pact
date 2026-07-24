@@ -120,14 +120,45 @@ export interface RestoreResult {
   blobsSkipped: number;
 }
 
-/** `store.blobs` — coordination between documents and the blob sidecar. */
+/**
+ * `store.blobs` — content-addressed binary storage alongside documents. The
+ * key is the SHA-256 of the bytes, so writes are idempotent and dedupe is
+ * automatic. Requires a `BlobAdapter` in `StoreOptions.blobs`; the methods
+ * that touch bytes throw without one.
+ */
 export interface StoreBlobs {
   /** The raw blob backend, or null on doc-only stores. */
   readonly adapter: BlobAdapter | null;
   /**
+   * Hash, write locally, and best-effort push to the sync server. Returns
+   * the SHA-256 hex digest — the blob's identity in every layer (filesystem,
+   * bucket key, doc reference). Failed pushes retry on `push()`.
+   */
+  write(bytes: Uint8Array, mimeType: string): Promise<string>;
+  /** Renderable URI for a stored blob (e.g. `file://…`), or null when not local. */
+  uri(hash: string): string | null;
+  /** Whether the blob is present locally. */
+  has(hash: string): Promise<boolean>;
+  /**
+   * Upload local blobs the server doesn't have yet: one round trip for the
+   * server's hash set, then PUT the difference. Idempotent.
+   */
+  push(): Promise<void>;
+  /**
+   * Download the named blobs where missing locally. Prefer `pullReferenced`,
+   * which sources the hash set from the documents for you.
+   */
+  pull(referencedHashes: Iterable<string>): Promise<void>;
+  /**
+   * Download every blob the local document set references but doesn't yet
+   * hold. Requires a `StoreDomain.blobHashes` extractor; downloads nothing
+   * without one.
+   */
+  pullReferenced(): Promise<void>;
+  /**
    * Union of blob hashes referenced by every live document, via the domain's
    * `blobHashes` extractor (empty set when none is declared). Drives `prune`
-   * and reference-driven pulls (`BlobStore.pullReferenced`).
+   * and `pullReferenced`.
    */
   referencedHashes(): Promise<Set<string>>;
   /**
@@ -137,9 +168,10 @@ export interface StoreBlobs {
    */
   prune(): Promise<{ deleted: string[] }>;
   /**
-   * Signal that the local blob set changed (capture, pull, delete). Routed
-   * through the `change` channel (as `_blobs`) so UI invalidation can hang
-   * off one subscription.
+   * Signal that the local blob set changed (a direct adapter write, an
+   * out-of-band delete). Routed through the `change` channel (as `_blobs`)
+   * so UI invalidation can hang off one subscription. The `blobs` methods
+   * here signal automatically — call this only for writes that bypass them.
    */
   notifyChanged(): void;
 }

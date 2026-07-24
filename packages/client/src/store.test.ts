@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Store, type SeedSet, type StoreDomain } from './store';
 import type { StoreSyncConfig } from './store/options';
 import { InMemoryAdapter } from './adapters/memoryAdapter';
-import { defineCollection } from './collection';
+import { defineCollection, date } from './collection';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
 import type { BaseDocument } from './types';
 import type { BlobAdapter } from './blobs/blobAdapter';
@@ -213,6 +213,75 @@ describe('Store migrate-on-read', () => {
     await new Promise((r) => setTimeout(r, 0));
     const raw = await adapter.get<Widget>('widgets', 'w1');
     expect(raw?.schemaVersion).toBe(2);
+  });
+});
+
+describe('Store read-time validation', () => {
+  type Event = BaseDocument & { at: Date };
+  const eventsDef = defineCollection({
+    name: 'events',
+    idPrefix: 'ev',
+    schema: (base) => base.extend({ id: z.string(), at: date() }),
+  });
+
+  function rawEvent(id: string, at: unknown): Record<string, unknown> {
+    return {
+      id,
+      schemaVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      createdBy: 'us/1',
+      updatedBy: 'us/1',
+      deletedAt: null,
+      deletedBy: null,
+      at,
+    };
+  }
+
+  it('coerces a stored ISO string back to a Date on read (round-trips any adapter)', async () => {
+    const { adapter, store } = setup({ collections: [eventsDef] });
+    // Simulate what a serializing adapter/sync wire holds: the date as a string.
+    await adapter.put('events', rawEvent('ev1', '2026-03-04T05:06:07.000Z') as never);
+
+    const got = await store.collection<Event>('events').get('ev1');
+    expect(got?.at).toBeInstanceOf(Date);
+    expect((got!.at as Date).toISOString()).toBe('2026-03-04T05:06:07.000Z');
+  });
+
+  it('accepts a Date on create and reads it back as a Date', async () => {
+    const { store } = setup({ collections: [eventsDef] });
+    await store.author.set('us/1');
+    const created = await store
+      .collection<Event>('events')
+      .create({ id: 'ev2', at: new Date('2026-03-04T05:06:07.000Z') });
+    expect(created.at).toBeInstanceOf(Date);
+
+    const got = await store.collection<Event>('events').get('ev2');
+    expect(got?.at).toBeInstanceOf(Date);
+    expect((got!.at as Date).toISOString()).toBe('2026-03-04T05:06:07.000Z');
+  });
+
+  it('reads a corrupt doc as null rather than throwing (invalid date)', async () => {
+    const { adapter, store } = setup({ collections: [eventsDef] });
+    await adapter.put('events', rawEvent('ev1', 'not-a-date') as never);
+    expect(await store.collection<Event>('events').get('ev1')).toBeNull();
+  });
+
+  it('reads a schema-violating doc as null rather than throwing', async () => {
+    const { adapter, store } = setup();
+    // name should be a string; a serializing bug wrote a number.
+    await adapter.put('widgets', { ...mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'), name: 123 } as never);
+    expect(await store.collection<Widget>('widgets').get('w1')).toBeNull();
+  });
+
+  it('omits corrupt docs from list() instead of bricking the whole batch', async () => {
+    const { adapter, store } = setup();
+    await adapter.put('widgets', mkDoc('w1', 'good', '2026-01-01T00:00:00.000Z'));
+    await adapter.put('widgets', { ...mkDoc('w2', 'X', '2026-01-01T00:00:00.000Z'), name: 123 } as never);
+    await adapter.put('widgets', mkDoc('w3', 'also-good', '2026-01-01T00:00:00.000Z'));
+
+    const docs = await store.collection<Widget>('widgets').list();
+    expect(docs.map((d) => d.id).sort()).toEqual(['w1', 'w3']);
   });
 });
 
@@ -845,6 +914,31 @@ class InMemoryBlobAdapter implements BlobAdapter {
     return this.bytes.has(hash) ? `mem://${hash}` : null;
   }
 }
+
+describe('store.blobs write/read surface', () => {
+  it('write hashes and stores the bytes; has/uri see them; a change is emitted', async () => {
+    const adapter = new InMemoryAdapter();
+    const blobs = new InMemoryBlobAdapter();
+    const store = new Store({ adapter, blobs, collections: [widgetsDef] });
+    const onChange = vi.fn();
+    store.on('change', onChange);
+
+    const hash = await store.blobs.write(Uint8Array.from([1, 2, 3]), 'image/png');
+    expect(hash).toMatch(/^[0-9a-f]{64}$/); // sha-256 of the bytes
+    expect(await store.blobs.has(hash)).toBe(true);
+    expect(store.blobs.uri(hash)).toBe(`mem://${hash}`);
+    expect(onChange).toHaveBeenCalledWith('_blobs');
+  });
+
+  it('byte methods throw without a blob adapter', async () => {
+    const { store } = setup();
+    expect(store.blobs.adapter).toBeNull();
+    expect(() => store.blobs.write(Uint8Array.from([1]), 'image/png')).toThrow(
+      /without a BlobAdapter/
+    );
+    expect(() => store.blobs.uri('h')).toThrow(/without a BlobAdapter/);
+  });
+});
 
 describe('Store backup/restore', () => {
   function setupWithBlobs(domain: Partial<StoreDomain> = {}) {
