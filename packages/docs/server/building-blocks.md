@@ -2,25 +2,6 @@
 
 Beyond `createSyncApp`, `@a16n/pact-server` exports a few optional pieces you compose into your Worker as needed. Each is independent — mount what you want, ignore the rest.
 
-## `createLandingApp`
-
-A `GET /` **connection page** that renders a QR code encoding a deep link, plus the raw origin to paste manually. Point a phone at it and the client app opens pre-filled with the server URL.
-
-```ts
-import { Hono } from 'hono';
-import { createSyncApp, createLandingApp, RealtimeDO } from '@a16n/pact-server';
-
-export { RealtimeDO };
-
-const app = new Hono();
-app.route('/', createLandingApp({ /* LandingOptions */ }));
-app.route('/', createSyncApp({ /* ... */ }));
-
-export default app;
-```
-
-The QR code encodes a `<scheme>://<path>?url=<origin>` deep link — your app registers the scheme, and the `url` param tells it which server to connect to. Mount it wherever you like (typically `/`).
-
 ## `RealtimeDO`
 
 The **Durable Object** backing `/realtime`. Export it from your Worker entry and declare it in `wrangler.toml`:
@@ -43,16 +24,15 @@ It uses hibernatable WebSockets, so idle connections evict from memory and cost 
 
 ## How they compose
 
-A fully-loaded Worker entry — sync surface, landing page, realtime — is just a couple of `route` calls over one Hono app:
+A fully-loaded Worker entry — sync surface plus realtime — is just a couple of `route` calls over one Hono app:
 
 ```ts
 import { Hono } from 'hono';
-import { createSyncApp, createLandingApp, RealtimeDO } from '@a16n/pact-server';
+import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 
 export { RealtimeDO };
 
 const app = new Hono();
-app.route('/', createLandingApp({ /* ... */ })); // GET / → QR connect page
 app.route('/', createSyncApp({ /* ... */ })); // /sync/*, /auth/*, /realtime, ...
 
 export default app;

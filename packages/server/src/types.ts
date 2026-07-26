@@ -40,22 +40,11 @@ export interface Env {
   DB: D1Database;
   BLOBS: R2Bucket;
   /**
-   * Tenant roster as a JSON secret: `{ "appName": "password", ... }`.
-   * Clients name their app at registration; everything after that is scoped
-   * by the app recorded on their client row.
-   */
-  APPS?: string;
-  /**
-   * @deprecated Single-tenant fallback: when `APPS` is unset, this password
-   * serves one app named `DEFAULT_APP_NAME` (or "default").
-   */
-  API_KEY?: string;
-  /** App name the legacy `API_KEY` fallback registers clients under. */
-  DEFAULT_APP_NAME?: string;
-  /**
-   * Master key enabling dynamic app provisioning via `POST /apps` (create an
-   * app or rotate its password without redeploying). When unset, the route
-   * is disabled and apps come only from `APPS`/`API_KEY`.
+   * Master key guarding dynamic app provisioning via `POST /apps` (create an
+   * app or rotate its password). This is the only way apps come into
+   * existence — clients name their app at registration, and everything after
+   * that is scoped by the app recorded on their client row. When unset, the
+   * route is disabled and no apps can be created.
    */
   PROVISION_KEY?: string;
   SERVER_NAME: string;

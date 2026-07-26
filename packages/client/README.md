@@ -1,6 +1,6 @@
-#  Pact
+# Pact
 
-A general purpose client library for document-based data storage. Local-only by default, with sync and realtime capabilities built in. 
+A general purpose client library for document-based data storage. Local-only by default, with sync and realtime capabilities built in.
 
 ```
 npm install @a16n/pact-client
@@ -10,7 +10,7 @@ Pact deliberately trades generality for simplicity:
 
 - **A small, high-trust group.** One server per app group (e.g. a household). Auth is one shared app password traded for per-client tokens; there's no per-document access control.
 - **Last-write-wins is good enough.** Conflicts resolve by `updatedAt`. No CRDTs, no merge UIs.
-- **Schemas are required, and owned by you.** The collection definitions you hand the store *are* the set of collections that exist — writes validate against them, and undefined collections are rejected.
+- **Schemas are required, and owned by you.** The collection definitions you hand the store _are_ the set of collections that exist — writes validate against them, and undefined collections are rejected.
 
 ## What you definitely need to know
 
@@ -19,18 +19,17 @@ Pact deliberately trades generality for simplicity:
 Pact uses a `store` which you can interact with. Create a store like so:
 
 ```ts
-import { Store } from "@a16n/pact-client";
+import { Store } from '@a16n/pact-client';
 
 const databaseAdapter = new InMemoryAdapter();
 
 const store = await Store.create({
-    adapter: databaseAdapter,
-    collections: [todos]
+  adapter: databaseAdapter,
+  collections: [todos],
 });
-
 ```
 
-The `adapter` lets pact use the storage backend of your choice. Recipes are provided here that you can copy+paste for common storage backends (localStorage, indexedDb, sqlite, file system, ...). 
+The `adapter` lets pact use the storage backend of your choice. Recipes are provided here that you can copy+paste for common storage backends (localStorage, indexedDb, sqlite, file system, ...).
 
 Alternatively implement your own: see `DatabaseAdapter` for a full reference. Everything else a store can take (blobs, encryption, hooks) is on `StoreOptions`.
 
@@ -50,7 +49,7 @@ const todos = defineCollection({
 });
 ```
 
-The schema can be any zod schema extending the base schema. Every document id carries the collection's prefix (`td-Ab3xY9kQz2`) — enforced at runtime *and* in the type system, so passing a todo id where a recipe id belongs is a compile error. See `CollectionConfig` for the full set of options.
+The schema can be any zod schema extending the base schema. Every document id carries the collection's prefix (`td-Ab3xY9kQz2`) — enforced at runtime _and_ in the type system, so passing a todo id where a recipe id belongs is a compile error. See `CollectionConfig` for the full set of options.
 
 ### All the CRUD you'd expect
 
@@ -60,22 +59,22 @@ Documents are read and written through a collection handle, fully typed from the
 const todosCollection = store.collection('todos');
 
 // Create one — the id is generated for you (pass `id` to choose your own)
-const todo = await todosCollection.create({ title: 'Do laundry' })
+const todo = await todosCollection.create({ title: 'Do laundry' });
 
 // Find one
-todosCollection.get('td-123') // returns null if not found
+todosCollection.get('td-123'); // returns null if not found
 
 // List all
-todosCollection.list()
+todosCollection.list();
 
 // Update one — a partial merge: fields you omit are left alone
-todosCollection.update('td-123', { title: 'Do laundry' })
+todosCollection.update('td-123', { title: 'Do laundry' });
 
 // Create-or-update by id
-todosCollection.upsert({ id: 'td-123', title: 'Do laundry' })
+todosCollection.upsert({ id: 'td-123', title: 'Do laundry' });
 
 // Delete one (soft: a tombstone remains, so the delete syncs)
-todosCollection.delete('td-123')
+todosCollection.delete('td-123');
 ```
 
 Each of `create`/`update`/`delete` has a `...Many` batch form, `get`/`list` accept `{ includeDeleted: true }` to see tombstones, and `pull`/`pullAll` fetch fresh from a sync server. See `Collection` for the full reference.
@@ -111,15 +110,17 @@ const todos = defineCollection({
     }),
   migrations: {
     current: 2,
-    migrations: [{
-      from: 1, 
-      to: 2,
-      up: (doc) => {
-        doc.completed = doc.done
-        return doc;
-      }
-    }]
-  } 
+    migrations: [
+      {
+        from: 1,
+        to: 2,
+        up: (doc) => {
+          doc.completed = doc.done;
+          return doc;
+        },
+      },
+    ],
+  },
 });
 ```
 
@@ -131,10 +132,10 @@ Point the store at a pact server and the same CRUD code syncs, with offline writ
 
 ```ts
 await store.sync.register(url, appPassword, 'myapp', "Alice's laptop"); // once per install
-await store.author.set('us-alice');          // claim who this device writes as
+await store.author.set('us-alice'); // claim who this device writes as
 await store.author.reassignLocal('us-alice'); // adopt any pre-identity writes
 
-await store.sync.push();      // drain queued writes, push everything
+await store.sync.push(); // drain queued writes, push everything
 await todosCollection.pullAll(); // pull everyone else's changes
 ```
 
@@ -160,9 +161,9 @@ await store.collection('photos').create({ caption: 'Sunset', imageHash: hash });
 const uri = store.blobs.uri(hash); // e.g. file://… — null if not local yet
 
 // Syncing (with a registered server)
-await store.blobs.push();           // upload blobs the server doesn't have
+await store.blobs.push(); // upload blobs the server doesn't have
 await store.blobs.pullReferenced(); // download blobs your docs reference but you don't hold
-await store.blobs.prune();          // locally delete blobs no live doc references
+await store.blobs.prune(); // locally delete blobs no live doc references
 ```
 
 The `blobHashes` extractor is what makes `pullReferenced` and `prune` possible — without it pact can't tell a referenced blob from an orphan. `blobFields` covers flat fields; write the function by hand for nested references.
@@ -174,8 +175,8 @@ The `blobHashes` extractor is what makes `pullReferenced` and `prune` possible �
 Pact can pack every document (and optionally blobs) into a single portable archive, independent of any server:
 
 ```ts
-const bytes = await store.backup.create();          // persist however you like
-await store.backup.restore(bytes);                  // merge (last-write-wins)
+const bytes = await store.backup.create(); // persist however you like
+await store.backup.restore(bytes); // merge (last-write-wins)
 await store.backup.restore(bytes, { mode: 'replace' });
 ```
 
@@ -197,6 +198,38 @@ Wrong keys fail fast at startup. `createWebCryptoCipher` covers Node/web/Workers
 ### Seeds
 
 `store.seed()` loads versioned reference data identically on every client without syncing it — system-authored docs that user edits always win over.
+
+### Indexes
+
+Most of the time, calling `collection.list()` and filtering after the fact is good enough. If you really need to, you can declare indexes on a collection with `.withIndexes()` and then query by index value:
+
+```ts
+const todos = defineCollection({
+  name: 'todos',
+  idPrefix: 'td',
+  schema: (base) =>
+    base.extend({
+      title: z.string().min(1),
+      done: z.boolean().default(false),
+      tags: z.array(z.string()).default([]),
+    }),
+}).withIndexes({
+  done: (doc) => doc.done, // doc is fully typed here
+  tags: (doc) => doc.tags, // multi-valued: indexed under each tag
+});
+
+// Then query by index — index name and value are both checked at compile time
+const doneTodos = await store.collection('todos').listByIndex('done', true);
+const urgentTodos = await store.collection('todos').listByIndex('tags', 'urgent');
+```
+
+An extractor returns the key(s) a doc is found under — one value, an array (each indexed
+separately), or `[]` to exclude it. Indexes are local, in-memory derived state: computed
+from the decrypted, migrated docs, rebuilt on every `Store.create`, and never persisted or
+synced. Equality/membership only — no ranges or sorting. `listByIndex` resolves matches
+through `getMany`, so results are always migrated and tombstone-free even if the index lags.
+
+Again, you probably don't need this.
 
 ## License
 

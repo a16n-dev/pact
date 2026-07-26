@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { randomId } from './ids';
 import { BaseDocumentSchema, type BaseDocument, type Storable } from './types';
 import type { CollectionMigrations, MigrationRegistry } from './migrator';
+import type { IndexMap } from './store/indexes';
 
 /**
  * A date field that round-trips through JSON storage and sync. Persisted (and
@@ -40,6 +41,10 @@ export interface CollectionDefinition<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
   IdPrefix extends string = string,
+  // `IndexMap<never>` is the universal bound: extractors are contravariant in
+  // the document type, so an index map for a *specific* doc is assignable to
+  // `IndexMap<never>` but not to `IndexMap<BaseDocument>`.
+  Idx extends IndexMap<never> = IndexMap<never>,
 > {
   name: Name;
   /**
@@ -61,6 +66,11 @@ export interface CollectionDefinition<
   schema: Schema;
   migrations?: CollectionMigrations;
   generateId: () => DocId<IdPrefix>;
+  /**
+   * This collection's secondary indexes: index name → key extractor. Always
+   * present (an empty object when none are declared). See `CollectionConfig.indexes`.
+   */
+  indexes: Idx;
 }
 
 const DEFAULT_ID_LENGTH = 10;
@@ -92,6 +102,44 @@ export interface CollectionConfig<
 }
 
 /**
+ * What `defineCollection` returns: a usable `CollectionDefinition` (with no
+ * indexes) that can also declare secondary indexes via `withIndexes`. The
+ * two-step shape is deliberate — resolving the schema first, then typing the
+ * extractors against the finished document type, sidesteps the inference
+ * deadlock that arises when index extractors (whose parameter derives from the
+ * schema) sit in the same object literal the schema is inferred from.
+ */
+export interface CollectionBuilder<
+  Name extends string,
+  Schema extends z.ZodType,
+  IdPrefix extends string,
+> extends CollectionDefinition<Name, Schema, IdPrefix, Record<string, never>> {
+  /**
+   * Declare this collection's secondary indexes as `indexName → extractor`, and
+   * return the finished definition. Each extractor maps a document to the key(s)
+   * it can be found under; query with
+   * `store.collection(name).listByIndex(indexName, key)`. Equality/membership
+   * only. Indexes are local derived state — computed in memory from the
+   * decrypted, migrated docs, rebuilt on every `Store.create`, never persisted
+   * or synced:
+   *
+   * ```ts
+   * const recipes = defineCollection({
+   *   name: 'recipes',
+   *   idPrefix: 'rcp',
+   *   schema: (base) => base.extend({ tags: z.array(z.string()), authorId: z.string() }),
+   * }).withIndexes({
+   *   tag: (r) => r.tags,          // multi-valued — r is fully typed here
+   *   author: (r) => r.authorId,   // single value
+   * });
+   * ```
+   */
+  withIndexes<Idx extends IndexMap<z.output<Schema> & BaseDocument>>(
+    indexes: Idx
+  ): CollectionDefinition<Name, Schema, IdPrefix, Idx>;
+}
+
+/**
  * Single source of truth for a collection: its name, id prefix, document
  * schema, and migration chain. The list of these handed to the Store *is*
  * the set of available collections — the Store derives its validation,
@@ -102,7 +150,7 @@ export function defineCollection<
   Name extends string,
   Schema extends z.ZodType<Storable>,
   IdPrefix extends string,
->(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionDefinition<Name, Schema, IdPrefix> {
+>(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionBuilder<Name, Schema, IdPrefix> {
   const {
     name,
     key = name,
@@ -114,15 +162,22 @@ export function defineCollection<
   if (key.startsWith('_')) {
     throw new Error(`Collection key "${key}" is reserved (the _* namespace is internal)`);
   }
-  return {
+  const base = {
     name,
     key,
     idPrefix,
     synced,
     migrations,
     schema: def.schema(baseSchemaFor(idPrefix)),
-    generateId: () => `${idPrefix}-${randomId(idLength)}`,
+    generateId: () => `${idPrefix}-${randomId(idLength)}` as DocId<IdPrefix>,
   };
+  return {
+    ...base,
+    indexes: {},
+    withIndexes(indexes) {
+      return { ...base, indexes };
+    },
+  } as CollectionBuilder<Name, Schema, IdPrefix>;
 }
 
 /** A document id decomposed into the collection it belongs to and its parts. */
@@ -182,3 +237,13 @@ export type DocumentOf<
   Defs extends readonly CollectionDefinition[],
   Name extends CollectionName<Defs>,
 > = z.output<Extract<Defs[number], { name: Name }>['schema']> & BaseDocument;
+
+/**
+ * Union of the index names declared on the named collection (the keys of its
+ * `indexes` map), or `never` when it declares none. Narrows the first argument
+ * of `collection(name).listByIndex`.
+ */
+export type CollectionIndexNames<
+  Defs extends readonly CollectionDefinition[],
+  Name extends CollectionName<Defs>,
+> = keyof Extract<Defs[number], { name: Name }>['indexes'] & string;

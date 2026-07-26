@@ -24,7 +24,9 @@ export interface StoreDomain<
   /**
    * The collections this Store serves, each defined via `defineCollection`.
    * Required — a collection with no definition (and therefore no schema)
-   * does not exist as far as the Store is concerned.
+   * does not exist as far as the Store is concerned. Secondary indexes are
+   * declared per-collection inside `defineCollection` (see its `indexes`
+   * option), not here.
    */
   collections: Defs;
   /**

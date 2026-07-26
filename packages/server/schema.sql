@@ -1,4 +1,3 @@
--- @a16n/pact-server D1 schema.
 -- Apply with: wrangler d1 execute <db> --remote --file node_modules/@a16n/pact-server/schema.sql
 --
 -- Every table is scoped by app_name — the tenant boundary on a multi-tenant

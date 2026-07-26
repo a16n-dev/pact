@@ -22,9 +22,11 @@ import {
   createIdParser,
   type CollectionDefinition,
   type CollectionName,
+  type CollectionIndexNames,
   type DocumentOf,
   type ParsedId,
 } from '../collection';
+import { IndexManager, normalizeKey, type IndexKeyInput } from './indexes';
 import {
   packBackup,
   unpackBackup,
@@ -46,12 +48,7 @@ import type {
   RestoreMode,
   RestoreResult,
 } from './namespaces';
-import type {
-  ClientConfigDoc,
-  AuthorConfigDoc,
-  SeedMarkerDoc,
-  EncryptionCheckDoc,
-} from './types';
+import type { ClientConfigDoc, AuthorConfigDoc, SeedMarkerDoc, EncryptionCheckDoc } from './types';
 
 // Sealed sentinel for the `_config/encryption` key check — any constant
 // works; wrong keys fail to open it regardless of content.
@@ -94,6 +91,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   // Sidecar for opaque byte blobs (surfaced as `blobs.adapter`). Null on
   // consumers that only deal in JSON docs (e.g. CLI tools).
   private readonly blobAdapter: BlobAdapter | null;
+  // In-memory secondary indexes over the collections that declare them,
+  // maintained off the persist/remove choke point and rebuilt on `create`.
+  // Null when no collection declares any index.
+  private readonly indexes: IndexManager | null;
 
   // The namespaced surface — everything beyond core doc access lives here.
   /** Server-facing operations: pushing, pulling, registration. */
@@ -135,7 +136,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     // exclusively in plaintext while storage only ever holds ciphertext.
     // The alias wrapper goes outermost, so the cipher sees physical keys —
     // envelopes are AAD-bound to the same identity the wire seals against.
-    let stacked = this.cipher ? new EncryptedAdapter(options.adapter, this.cipher) : options.adapter;
+    let stacked = this.cipher
+      ? new EncryptedAdapter(options.adapter, this.cipher)
+      : options.adapter;
     if (this.collectionKeys) stacked = new AliasAdapter(stacked, this.collectionKeys);
     this.adapter = stacked;
     this.wireTransform = this.cipher
@@ -147,6 +150,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       : null;
     this.migrator = new Migrator(buildMigrationRegistry(defs));
     this.syncedCollections = defs.filter((d) => d.synced).map((d) => d.name);
+    // Indexes are declared per-collection (so their target collection always
+    // exists and names are unique within it). Null out the manager entirely
+    // when nothing declares an index, keeping the write path free of overhead.
+    const indexManager = new IndexManager(defs);
+    this.indexes = indexManager.isEmpty ? null : indexManager;
     this.idParser = createIdParser(defs);
     this.onSetAuthor = domain.onSetAuthor;
     this.hasBlobRefs = domain.blobHashes !== undefined;
@@ -166,6 +174,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       collections: this.syncedCollections,
       getAuthorId: () => this.cachedAuthorId,
       emit: (collection) => this.emit(collection),
+      persist: (collection, doc) => this.persist(collection, doc),
     });
     const creds = options.sync;
     this.syncEngine.setSyncClient(
@@ -351,7 +360,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<Store<Defs>> {
     const clientDoc = await options.adapter.get<ClientConfigDoc>('_config', 'client');
     const sync: StoreSyncConfig | undefined =
-      options.sync ?? (clientDoc ? { syncUrl: clientDoc.url, syncToken: clientDoc.token } : undefined);
+      options.sync ??
+      (clientDoc ? { syncUrl: clientDoc.url, syncToken: clientDoc.token } : undefined);
     const store = new Store({ ...options, sync });
     // Pre-sync, the author is implicitly LOCAL_AUTHOR_ID. If a real identity
     // was previously claimed (via a sync server), restore it from the author
@@ -359,7 +369,27 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const authorDoc = await options.adapter.get<AuthorConfigDoc>('_config', 'author');
     if (authorDoc) store.cachedAuthorId = authorDoc.authorId;
     await store.verifyEncryptionKey();
+    await store.buildIndexes();
     return store;
+  }
+
+  /**
+   * Populate every secondary index from local storage. Indexes are in-memory
+   * derived state, so each load rebuilds them from the persisted documents
+   * (migrated + validated; tombstones and unreadable rows skipped). A no-op
+   * when no collection declares an index. This is the one full scan indexes
+   * cost — paid once at startup, not per query.
+   */
+  private async buildIndexes(): Promise<void> {
+    if (!this.indexes) return;
+    this.indexes.clear();
+    for (const collection of this.indexes.indexedCollections()) {
+      const raw = await this.adapter.getAll<BaseDocument>(collection);
+      for (const doc of raw) {
+        const normalised = this.normalizeForIndex(collection, doc);
+        if (normalised) this.indexes.onPersist(collection, normalised);
+      }
+    }
   }
 
   /**
@@ -413,7 +443,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       // round-trip through the wrapper re-encrypts the lot.
       const docs = await this.adapter.getAll<BaseDocument>(collection);
       for (const doc of docs) {
-        await this.adapter.put(collection, doc);
+        await this.persist(collection, doc);
         rewritten += 1;
       }
     }
@@ -541,6 +571,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    */
   async wipe(): Promise<void> {
     await this.adapter.wipe();
+    this.indexes?.clear();
     this.cachedAuthorId = LOCAL_AUTHOR_ID;
   }
 
@@ -601,7 +632,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       normalised = this.migrator.migrate<T>(collection, doc);
       // Fire-and-forget write-back of the migrated shape. Failure here isn't
       // fatal — the next read will just migrate again.
-      this.adapter.put(collection, normalised as unknown as BaseDocument).catch(() => {});
+      this.persist(collection, normalised as unknown as BaseDocument).catch(() => {});
     }
     try {
       return this.validate(collection, normalised) as T;
@@ -647,7 +678,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           deletedBy: doc.deletedBy === LOCAL_AUTHOR_ID ? newAuthorId : doc.deletedBy,
           updatedAt: now,
         };
-        await this.adapter.put(collection, updated);
+        await this.persist(collection, updated);
       }
       this.emit(collection);
     }
@@ -715,7 +746,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       deletedBy: null,
     } as unknown as T;
     const validated = this.validateDoc(collection, doc);
-    await this.adapter.put(collection, validated);
+    await this.persist(collection, validated);
     this.emit(collection);
     return validated;
   }
@@ -781,11 +812,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         pending.push(candidate);
       }
       if (pending.length > 0) {
-        if (this.adapter.putMany) {
-          await this.adapter.putMany(collection, pending);
-        } else {
-          for (const doc of pending) await this.adapter.put(collection, doc);
-        }
+        await this.persistMany(collection, pending);
         written += pending.length;
         this.emit(collection);
       }
@@ -817,6 +844,62 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return def.generateId();
   }
 
+  // The single choke point for persisting domain documents to local storage.
+  // Every write of a defined collection's doc funnels through `persist` /
+  // `persistMany` (soft-deletes included — a tombstone is a `put`), and every
+  // hard removal through `remove`, so state derived from writes (see the index
+  // layer) has exactly one place to hook. Internal `_*` bookkeeping docs
+  // (config, pull cursors, the outbox, the seed marker) bypass these and hit
+  // the adapter directly: they carry no domain schema and feed no derived state.
+  private async persist(collection: string, doc: BaseDocument): Promise<void> {
+    await this.adapter.put(collection, doc);
+    this.indexWrite(collection, doc);
+  }
+
+  private async persistMany(collection: string, docs: readonly BaseDocument[]): Promise<void> {
+    if (docs.length === 0) return;
+    if (this.adapter.putMany) await this.adapter.putMany(collection, docs as BaseDocument[]);
+    else for (const doc of docs) await this.adapter.put(collection, doc);
+    for (const doc of docs) this.indexWrite(collection, doc);
+  }
+
+  private async remove(collection: string, id: string): Promise<void> {
+    await this.adapter.delete(collection, id);
+    this.indexes?.onRemove(collection, id);
+  }
+
+  /**
+   * Reflect a just-persisted doc into the in-memory indexes. Re-derives the
+   * migrated, validated shape the extractors expect (persist callers pass docs
+   * in varying states — freshly validated, migrated-only, or raw from a
+   * restore/pull), so index keys are consistent regardless. A tombstone is
+   * dropped inside `onPersist`; a doc that can't be normalised is unreadable
+   * (a `list()` would skip it too), so it's removed from the index.
+   */
+  private indexWrite(collection: string, doc: BaseDocument): void {
+    if (!this.indexes?.hasIndexesFor(collection)) return;
+    const normalised = this.normalizeForIndex(collection, doc);
+    if (normalised) this.indexes.onPersist(collection, normalised);
+    else this.indexes.onRemove(collection, doc.id);
+  }
+
+  /**
+   * Migrate-then-validate a doc for index extraction, without the read path's
+   * lazy write-back or network pull. Returns null for a doc that fails
+   * validation post-migration (mirroring `migrateRead`'s null-on-invalid).
+   */
+  private normalizeForIndex(collection: string, doc: BaseDocument): BaseDocument | null {
+    const migrated = this.migrator.needsMigration(collection, doc)
+      ? this.migrator.migrate<BaseDocument>(collection, doc)
+      : doc;
+    try {
+      return this.validate(collection, migrated) as BaseDocument;
+    } catch (err) {
+      if (err instanceof z.ZodError) return null;
+      throw err;
+    }
+  }
+
   private async create<T extends BaseDocument>(
     collection: string,
     input: Omit<T, keyof BaseDocument> & { id?: T['id'] }
@@ -835,7 +918,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       deletedBy: null,
     } as unknown as T;
     const validated = this.validateDoc(collection, doc);
-    await this.adapter.put(collection, validated);
+    await this.persist(collection, validated);
     await this.syncEngine.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
@@ -859,7 +942,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       updatedBy: authorId,
     } as T;
     const validated = this.validateDoc(collection, updated);
-    await this.adapter.put(collection, validated);
+    await this.persist(collection, validated);
     await this.syncEngine.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
@@ -878,28 +961,26 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const { id, ...rest } = input;
     const existing = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
     const now = dayjs().toISOString();
-    const doc = (
-      existing && !existing.deletedAt
-        ? {
-            ...existing,
-            ...rest,
-            id,
-            updatedAt: now,
-            updatedBy: authorId,
-          }
-        : {
-            ...rest,
-            id,
-            createdAt: now,
-            updatedAt: now,
-            createdBy: authorId,
-            updatedBy: authorId,
-            deletedAt: null,
-            deletedBy: null,
-          }
-    ) as unknown as T;
+    const doc = (existing && !existing.deletedAt
+      ? {
+          ...existing,
+          ...rest,
+          id,
+          updatedAt: now,
+          updatedBy: authorId,
+        }
+      : {
+          ...rest,
+          id,
+          createdAt: now,
+          updatedAt: now,
+          createdBy: authorId,
+          updatedBy: authorId,
+          deletedAt: null,
+          deletedBy: null,
+        }) as unknown as T;
     const validated = this.validateDoc(collection, doc);
-    await this.adapter.put(collection, validated);
+    await this.persist(collection, validated);
     await this.syncEngine.queuePush(collection, [validated.id]);
     this.emit(collection);
     return validated;
@@ -921,7 +1002,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       deletedAt: now,
       deletedBy: authorId,
     };
-    await this.adapter.put(collection, deleted);
+    await this.persist(collection, deleted);
     await this.syncEngine.queuePush(collection, [deleted.id]);
     this.emit(collection);
   }
@@ -945,7 +1026,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       } as unknown as T;
       return this.validateDoc(collection, doc);
     });
-    await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
+    await Promise.all(docs.map((doc) => this.persist(collection, doc)));
     await this.syncEngine.queuePush(
       collection,
       docs.map((doc) => doc.id)
@@ -975,7 +1056,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       } as T);
       docs.push(updated);
     }
-    await Promise.all(docs.map((doc) => this.adapter.put(collection, doc)));
+    await Promise.all(docs.map((doc) => this.persist(collection, doc)));
     await this.syncEngine.queuePush(
       collection,
       docs.map((doc) => doc.id)
@@ -1003,7 +1084,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         deletedBy: authorId,
       });
     }
-    await Promise.all(deleted.map((doc) => this.adapter.put(collection, doc)));
+    await Promise.all(deleted.map((doc) => this.persist(collection, doc)));
     await this.syncEngine.queuePush(
       collection,
       deleted.map((doc) => doc.id)
@@ -1021,14 +1102,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    */
   private async hardDelete(collection: string, id: string): Promise<void> {
     this.assertDefined(collection);
-    await this.adapter.delete(collection, id);
+    await this.remove(collection, id);
     this.emit(collection);
   }
 
   /** Batch form of `hardDelete`. */
   private async hardDeleteMany(collection: string, ids: string[]): Promise<void> {
     this.assertDefined(collection);
-    await Promise.all(ids.map((id) => this.adapter.delete(collection, id)));
+    await Promise.all(ids.map((id) => this.remove(collection, id)));
     this.emit(collection);
   }
 
@@ -1050,6 +1131,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private async resyncFromScratch(): Promise<void> {
     // Straight through the adapter, not hardDeleteMany: this must also clear
     // data left behind by collections the current build no longer defines.
+    // Indexes are dropped wholesale here rather than diffed per delete; the
+    // pulls below repopulate them through the persist choke point.
+    this.indexes?.clear();
     const collections = await this.adapter.listCollections();
     for (const collection of collections) {
       if (collection === '_config') continue;
@@ -1110,7 +1194,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * `mode` defaults to `merge` (last-write-wins, safe on a live store); see
    * `RestoreMode`.
    */
-  private async restoreBackup(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult> {
+  private async restoreBackup(
+    archive: Uint8Array,
+    opts?: { mode?: RestoreMode }
+  ): Promise<RestoreResult> {
     const mode = opts?.mode ?? 'merge';
     const { manifest, blobs } = unpackBackup(archive);
     // Only defined collections restore; an archive from a domain with
@@ -1128,7 +1215,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const incoming = manifest.collections[name];
       if (mode === 'replace') {
         const existing = await this.adapter.getAll<BaseDocument>(name);
-        await Promise.all(existing.map((d) => this.adapter.delete(name, d.id)));
+        await Promise.all(existing.map((d) => this.remove(name, d.id)));
       }
       const toWrite: BaseDocument[] = [];
       for (const doc of incoming) {
@@ -1144,8 +1231,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         toWrite.push(doc);
       }
       if (toWrite.length > 0) {
-        if (this.adapter.putMany) await this.adapter.putMany(name, toWrite);
-        else for (const doc of toWrite) await this.adapter.put(name, doc);
+        await this.persistMany(name, toWrite);
         docsWritten += toWrite.length;
         this.emit(name);
       }
@@ -1189,6 +1275,25 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
+   * Resolve a secondary-index lookup: the live docs recorded under `key` in the
+   * collection's named index. Goes through `getMany`, so the returned docs are
+   * migrated, validated, and tombstone-free even if the in-memory index lags a
+   * concurrent write. Throws on an unknown index name.
+   */
+  private async listByIndex<T extends BaseDocument>(
+    collection: string,
+    index: string,
+    key: IndexKeyInput
+  ): Promise<T[]> {
+    this.assertDefined(collection);
+    if (!this.indexes?.has(collection, index)) {
+      throw new Error(`Unknown index "${index}" on collection "${collection}"`);
+    }
+    const ids = this.indexes.find(collection, index, normalizeKey(key));
+    return ids.length > 0 ? this.getMany<T>(collection, ids) : [];
+  }
+
+  /**
    * Typed handle to one defined collection — the only way to read and write
    * documents. The name is narrowed to the domain's definition list and the
    * document type is inferred from that collection's schema — undefined
@@ -1197,7 +1302,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * (`store.collection<Doc>('name')`) when the definition list isn't
    * statically known.
    */
-  collection<Name extends CollectionName<Defs>>(name: Name): Collection<DocumentOf<Defs, Name>>;
+  collection<Name extends CollectionName<Defs>>(
+    name: Name
+  ): Collection<DocumentOf<Defs, Name>, CollectionIndexNames<Defs, Name>>;
   collection<T extends BaseDocument>(name: string): Collection<T>;
   collection<T extends BaseDocument>(name: string): Collection<T> {
     this.assertDefined(name);
@@ -1205,6 +1312,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       get: (id, opts) => this.get<T>(name, id, opts),
       getMany: (ids) => this.getMany<T>(name, ids),
       list: (opts) => this.list<T>(name, opts),
+      listByIndex: (index, key) => this.listByIndex<T>(name, index, key),
       create: (input) => this.create<T>(name, input),
       createMany: (items) => this.createMany<T>(name, items),
       createAsSystem: (input) => this.createAsSystem<T>(name, input),

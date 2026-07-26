@@ -1,11 +1,13 @@
 import type { BaseDocument } from '../types';
+import type { IndexKeyInput } from './indexes';
 
 /**
  * A typed handle to one defined collection — the only way to read and write
  * documents. Obtain one via `store.collection(name)`; the document type is
- * inferred from that collection's schema.
+ * inferred from that collection's schema, and `IndexNames` from its declared
+ * indexes (`string` when the collection isn't statically known).
  */
-export interface Collection<T extends BaseDocument> {
+export interface Collection<T extends BaseDocument, IndexNames extends string = string> {
   /**
    * One doc by id, or null when missing. Soft-deleted docs read as null
    * unless `includeDeleted` is set — with it, inspect `deletedAt` to tell a
@@ -19,6 +21,14 @@ export interface Collection<T extends BaseDocument> {
    * (inspect `deletedAt` to tell them apart) — for debug/admin surfaces.
    */
   list(opts?: { includeDeleted?: boolean }): Promise<T[]>;
+  /**
+   * Live docs found under `key` in the named secondary index — the docs whose
+   * extractor (declared in `defineCollection`'s `indexes`) emitted `key`.
+   * Equality/membership only; order is unspecified. Reads the matched docs
+   * through the store, so results are migrated, validated, and tombstone-free
+   * even if the index momentarily lags a write. Throws on an unknown index name.
+   */
+  listByIndex(index: IndexNames, key: IndexKeyInput): Promise<T[]>;
   /** Create a doc. The id is generated (prefix + random) unless supplied. */
   create(input: Omit<T, keyof BaseDocument> & { id?: T['id'] }): Promise<T>;
   /** Batch form of `create`. */

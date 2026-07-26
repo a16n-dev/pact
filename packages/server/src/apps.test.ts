@@ -1,18 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  getApps,
-  getAppPassword,
-  isValidAppName,
-  hashAppPassword,
-  verifyAppPassword,
-  resolveAppAuth,
-  LEGACY_DEFAULT_APP,
-} from './apps';
+import { isValidAppName, hashAppPassword, verifyAppPassword, resolveAppAuth } from './apps';
 import type { Env } from './types';
-
-function env(fields: Partial<Env>): Env {
-  return fields as Env;
-}
 
 /** Env whose DB serves a fixed `apps`-table row set. */
 function envWithAppsTable(
@@ -30,36 +18,6 @@ function envWithAppsTable(
     },
   } as unknown as Env;
 }
-
-describe('getApps', () => {
-  it('parses the APPS JSON roster', () => {
-    expect(getApps(env({ APPS: '{"fond":"pw1","other":"pw2"}' }))).toEqual({
-      fond: 'pw1',
-      other: 'pw2',
-    });
-  });
-
-  it('falls back to API_KEY as a single legacy app', () => {
-    expect(getApps(env({ API_KEY: 'k' }))).toEqual({ [LEGACY_DEFAULT_APP]: 'k' });
-    expect(getApps(env({ API_KEY: 'k', DEFAULT_APP_NAME: 'fond' }))).toEqual({ fond: 'k' });
-  });
-
-  it('prefers APPS over the legacy API_KEY when both are set', () => {
-    expect(getApps(env({ APPS: '{"a":"pa"}', API_KEY: 'k' }))).toEqual({ a: 'pa' });
-  });
-
-  it('throws on invalid JSON, non-object rosters, bad names, and bad passwords', () => {
-    expect(() => getApps(env({ APPS: 'not json' }))).toThrow('valid JSON');
-    expect(() => getApps(env({ APPS: '["a"]' }))).toThrow('JSON object');
-    expect(() => getApps(env({ APPS: '{"Bad Name":"pw"}' }))).toThrow('invalid app name');
-    expect(() => getApps(env({ APPS: '{"a":""}' }))).toThrow('non-empty');
-    expect(() => getApps(env({ APPS: '{"a":42}' }))).toThrow('non-empty string');
-  });
-
-  it('returns an empty roster when nothing is configured (table-only deployments)', () => {
-    expect(getApps(env({}))).toEqual({});
-  });
-});
 
 describe('hashAppPassword / verifyAppPassword', () => {
   it('round-trips and encodes the work factor', async () => {
@@ -81,12 +39,6 @@ describe('hashAppPassword / verifyAppPassword', () => {
 });
 
 describe('resolveAppAuth', () => {
-  it('authenticates env-roster apps by plaintext compare', async () => {
-    const e = envWithAppsTable({ APPS: '{"a":"pa"}' }, {});
-    expect(await resolveAppAuth(e, 'a', 'pa')).toBe(true);
-    expect(await resolveAppAuth(e, 'a', 'wrong')).toBe(false);
-  });
-
   it('authenticates table apps by hash verify', async () => {
     const stored = await hashAppPassword('table-pw');
     const e = envWithAppsTable({}, { dyn: stored });
@@ -94,30 +46,10 @@ describe('resolveAppAuth', () => {
     expect(await resolveAppAuth(e, 'dyn', 'nope')).toBe(false);
   });
 
-  it('rejects unknown apps', async () => {
-    const e = envWithAppsTable({ APPS: '{"a":"pa"}' }, {});
+  it('rejects unknown apps (uniform false, even against a real app name)', async () => {
+    const stored = await hashAppPassword('pa');
+    const e = envWithAppsTable({}, { a: stored });
     expect(await resolveAppAuth(e, 'ghost', 'pa')).toBe(false);
-  });
-
-  it('the env roster wins over a table row with the same name', async () => {
-    const stored = await hashAppPassword('table-pw');
-    const e = envWithAppsTable({ APPS: '{"a":"env-pw"}' }, { a: stored });
-    expect(await resolveAppAuth(e, 'a', 'env-pw')).toBe(true);
-    expect(await resolveAppAuth(e, 'a', 'table-pw')).toBe(false);
-  });
-});
-
-describe('getAppPassword', () => {
-  const e = env({ APPS: '{"a":"pa","b":"pb"}' });
-
-  it('returns the password for a known app and null for an unknown one', () => {
-    expect(getAppPassword(e, 'a')).toBe('pa');
-    expect(getAppPassword(e, 'nope')).toBeNull();
-  });
-
-  it('never resolves inherited Object properties as apps', () => {
-    expect(getAppPassword(e, 'toString')).toBeNull();
-    expect(getAppPassword(e, '__proto__')).toBeNull();
   });
 });
 

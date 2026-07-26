@@ -12,40 +12,7 @@ import {
   timingSafeEqual,
   type ClientRow,
 } from './auth/auth';
-import { getApps, isValidAppName, resolveAppAuth, upsertApp } from './apps';
-
-export { RealtimeDO } from './realtime';
-export { createLandingApp, type LandingOptions } from './landing/landing';
-export type { Env, SyncDocument, PushRequest, PushResponse, PullResponse } from './types';
-export type { ClientRow } from './auth/auth';
-export {
-  pushDocuments,
-  pullDocument,
-  pullDocumentsSince,
-  wipeAllDocumentsViaApi,
-  wipeAllBlobsViaApi,
-  getBlob,
-  putBlob,
-  listBlobs,
-} from './sync/api';
-export type { SyncHooks, PushOptions, PushOutcome, PushResult, AppContext } from './sync/api';
-export {
-  bumpClientLastSeen,
-  extractBearerToken,
-  lookupClientByToken,
-  registerClient,
-  timingSafeEqual,
-} from './auth/auth';
-export {
-  getApps,
-  getAppPassword,
-  isValidAppName,
-  resolveAppAuth,
-  upsertApp,
-  hashAppPassword,
-  verifyAppPassword,
-  LEGACY_DEFAULT_APP,
-} from './apps';
+import { isValidAppName, resolveAppAuth, upsertApp } from './apps';
 
 type Variables = { client: ClientRow };
 
@@ -117,9 +84,9 @@ export function createSyncApp(
       return c.json({ error: 'appName must match [a-z0-9][a-z0-9_-]{0,63}' }, 400);
     }
 
-    // Checks the env roster (APPS/API_KEY) then the apps table. Unknown app
-    // and wrong password are indistinguishable: both burn a full comparison
-    // and both return the same 401 — no probing which app names exist.
+    // Looks up the app in the apps table. Unknown app and wrong password are
+    // indistinguishable: both burn a full PBKDF2 comparison and both return
+    // the same 401 — no probing which app names exist.
     if (!(await resolveAppAuth(c.env, appName, password))) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
@@ -148,12 +115,6 @@ export function createSyncApp(
     }
     if (!body.password) {
       return c.json({ error: 'password must be non-empty' }, 400);
-    }
-    // Env-roster apps are the operator's explicit config and always win at
-    // auth time, so "rotating" one here would silently do nothing — reject
-    // instead of letting the two sources drift.
-    if (Object.prototype.hasOwnProperty.call(getApps(c.env), appName)) {
-      return c.json({ error: 'app is defined in the APPS secret; edit the secret instead' }, 409);
     }
 
     const { created } = await upsertApp(c.env.DB, appName, body.password);

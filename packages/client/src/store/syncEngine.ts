@@ -33,6 +33,12 @@ export interface SyncEngineDeps {
   getAuthorId: () => string;
   /** Routes a collection-changed signal back through the Store's `change` channel. */
   emit: (collection: string) => void;
+  /**
+   * Persist a merged document through the Store's write choke point (rather
+   * than straight to the adapter), so derived state maintained off writes —
+   * e.g. indexes — sees pulled/merged docs just as it sees local mutations.
+   */
+  persist: (collection: string, doc: BaseDocument) => Promise<void>;
 }
 
 /**
@@ -48,6 +54,7 @@ export class SyncEngine {
   private readonly collections: readonly string[];
   private readonly getAuthorId: () => string;
   private readonly emit: (collection: string) => void;
+  private readonly persist: (collection: string, doc: BaseDocument) => Promise<void>;
 
   private syncClient: SyncClient | null = null;
   private readonly lastReadPullAt = new Map<string, number>();
@@ -65,6 +72,7 @@ export class SyncEngine {
     this.collections = deps.collections;
     this.getAuthorId = deps.getAuthorId;
     this.emit = deps.emit;
+    this.persist = deps.persist;
   }
 
   /** Point the engine at a new sync server, or `null` to go local-only. */
@@ -253,7 +261,7 @@ export class SyncEngine {
         // to the incoming doc. The cursor still advances past it — the local
         // copy is newer and will be pushed, so re-pulling the server's is moot.
         if (local && local.updatedAt > doc.updatedAt) continue;
-        await this.adapter.put(collection, doc);
+        await this.persist(collection, doc);
         applied.push(doc);
       }
       await this.setLastSyncCursor(collection, page.cursor);
@@ -275,7 +283,7 @@ export class SyncEngine {
     // Last-write-wins: a newer local edit takes precedence over the pulled
     // server copy (see `pull`). Return the version that's now authoritative.
     if (local && local.updatedAt > upgraded.updatedAt) return local;
-    await this.adapter.put(collection, upgraded);
+    await this.persist(collection, upgraded);
     this.emit(collection);
     return upgraded;
   }

@@ -61,7 +61,7 @@ export default createSyncApp({
 });
 ```
 
-`createSyncApp` returns a Hono app. You can `export default` it directly, or mount it inside a larger router alongside your own routes (e.g. a [landing page](/server/building-blocks#createlandingapp)).
+`createSyncApp` returns a Hono app. You can `export default` it directly, or mount it inside a larger router alongside your own routes.
 
 ## Environment bindings
 
@@ -72,8 +72,6 @@ interface Env {
   DB: D1Database; // documents + clients + blobs registry (all app-scoped)
   BLOBS: R2Bucket; // blob bytes, keyed <appName>/<hash>
   APPS?: string; // tenant roster secret: {"appName":"password",...}
-  API_KEY?: string; // deprecated single-tenant fallback password
-  DEFAULT_APP_NAME?: string; // app name the API_KEY fallback serves
   SERVER_NAME: string; // public name returned by GET /info
   ENABLE_REALTIME: string; // "true" to enable /realtime + broadcast
   REALTIME: DurableObjectNamespace<RealtimeDO>;
@@ -87,8 +85,6 @@ interface Env {
 | `REALTIME` | Durable Object namespace | Bound to the `RealtimeDO` class; one DO instance per app. |
 | `APPS` | Secret (optional) | Static tenant roster: a JSON object of `{ "appName": "password" }`. Set with `wrangler secret put APPS`. |
 | `PROVISION_KEY` | Secret (optional) | Enables dynamic provisioning: `POST /apps` creates an app (or rotates its password) at runtime — no secret edits, no redeploy. Set at least one of `APPS` / `PROVISION_KEY`. |
-| `API_KEY` | Secret (deprecated) | Single-tenant fallback used only when `APPS` is unset — serves one app named `DEFAULT_APP_NAME` (default `"default"`). |
-| `DEFAULT_APP_NAME` | Var (optional) | App name for the `API_KEY` fallback. |
 | `SERVER_NAME` | Var | Human-readable name returned by `GET /info`. |
 | `ENABLE_REALTIME` | Var | `"true"` enables `/realtime` + broadcast; anything else disables it. |
 
@@ -169,64 +165,4 @@ A client then [registers](/server/auth) with the server URL, its `appName`, and 
 ## Realtime costs nothing when off
 
 When realtime is gated off (`ENABLE_REALTIME` ≠ `"true"`), the `/realtime` route returns `404` and the Durable Object stays deployed but **idle** — it costs nothing until a socket connects and a write fans out. You can flip realtime on later by changing the var and redeploying; no schema or binding changes needed.
-
-## Migrating a single-tenant deployment
-
-A deployment created before multi-tenancy has no `app_name` columns and bare-hash blob keys. To migrate, pick the app name your existing data belongs to (`myapp` below), then run the three steps in one maintenance window — clients tolerate brief downtime and retry sync.
-
-**1. D1 — rebuild the tables.** SQLite can't alter primary keys, so each table is rebuilt (existing client tokens keep working):
-
-```sql
--- documents
-CREATE TABLE documents_new (
-  app_name TEXT NOT NULL,
-  id TEXT NOT NULL, collection TEXT NOT NULL,
-  updated_at TEXT NOT NULL, data TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  PRIMARY KEY (app_name, collection, id)
-);
-INSERT INTO documents_new (app_name, id, collection, updated_at, data, seq)
-  SELECT 'myapp', id, collection, updated_at, data, seq FROM documents;
-DROP TABLE documents;
-ALTER TABLE documents_new RENAME TO documents;
-CREATE UNIQUE INDEX idx_documents_app_seq ON documents (app_name, seq);
-CREATE INDEX idx_documents_pull ON documents (app_name, collection, seq);
-
--- blobs
-CREATE TABLE blobs_new (
-  app_name TEXT NOT NULL,
-  hash TEXT NOT NULL, mime_type TEXT NOT NULL,
-  size INTEGER NOT NULL, created_at TEXT NOT NULL,
-  PRIMARY KEY (app_name, hash)
-);
-INSERT INTO blobs_new (app_name, hash, mime_type, size, created_at)
-  SELECT 'myapp', hash, mime_type, size, created_at FROM blobs;
-DROP TABLE blobs;
-ALTER TABLE blobs_new RENAME TO blobs;
-
--- apps (new table — nothing to migrate into it)
-CREATE TABLE apps (
-  app_name TEXT NOT NULL PRIMARY KEY,
-  password_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
--- clients
-CREATE TABLE clients_new (
-  app_name TEXT NOT NULL,
-  id TEXT NOT NULL, name TEXT NOT NULL,
-  token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-  PRIMARY KEY (app_name, id)
-);
-INSERT INTO clients_new (app_name, id, name, token, created_at, last_seen_at)
-  SELECT 'myapp', id, name, token, created_at, last_seen_at FROM clients;
-DROP TABLE clients;
-ALTER TABLE clients_new RENAME TO clients;
-CREATE INDEX idx_clients_token ON clients (token);
-```
-
-**2. R2 — prefix the blob keys.** Every existing object belongs to the one legacy app, so copy each bare-hash key to `myapp/<hash>` and delete the original (a small operator script over `list` → `get` → `put` → `delete`; there is deliberately **no** runtime fallback to bare-hash keys — that would let another app read legacy blobs).
-
-**3. Secrets.** `wrangler secret put APPS` with `{"myapp":"<the old API_KEY value>"}` (add more apps whenever), deploy the new server version, then delete the old `API_KEY` secret. Existing clients keep their tokens and keep working; only *new* registrations need the `appName`.
 

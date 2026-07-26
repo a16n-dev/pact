@@ -15,7 +15,7 @@ Pact's auth model is deliberately minimal, matching its [high-trust assumption](
                                Authorization: Bearer pact_<nanoid>
 ```
 
-1. The server knows its apps from two sources (see [Provisioning apps](#provisioning-apps)): the static `APPS` secret and/or the dynamic `apps` table. (A legacy deployment can still use the single `API_KEY` secret; it behaves as one app named `DEFAULT_APP_NAME`, default `"default"`.)
+1. The server knows its apps from two sources (see [Provisioning apps](#provisioning-apps)): the static `APPS` secret and/or the dynamic `apps` table.
 2. A client `POST`s its app's password once to `/auth/register` with the `appName`, a self-generated `clientId` and a display name, and gets back a **long-lived token** (`pact_<nanoid>`).
 3. The token is **bound to the app server-side** — the client row records which app it registered under, and every subsequent request derives its tenant from that row, never from anything the client sends. Every other request carries just the token as `Authorization: Bearer …`.
 4. **Re-registering the same `clientId` rotates the token** while keeping the client's identity. The same `clientId` under a different app is a different client.

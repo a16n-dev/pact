@@ -267,8 +267,6 @@ interface Env {
   BLOBS: R2Bucket;                             // blob bytes, keyed <appName>/<hash>
   APPS?: string;                               // static tenant roster secret: {"appName":"password",...}
   PROVISION_KEY?: string;                      // master key enabling dynamic POST /apps provisioning
-  API_KEY?: string;                            // deprecated single-tenant fallback password
-  DEFAULT_APP_NAME?: string;                   // app name the API_KEY fallback serves (default "default")
   SERVER_NAME: string;                         // public name returned by GET /info
   ENABLE_REALTIME: string;                     // "true" to enable /realtime + broadcast
   REALTIME: DurableObjectNamespace<RealtimeDO>;
@@ -296,7 +294,7 @@ interface Env {
 
 **Auth model.** The server is **multi-tenant**: completely different apps (different schemas, different clients) share one deployment with zero data visibility between them. Apps are provisioned either statically (the `APPS` secret, a JSON roster of `{ "appName": "password" }`) or dynamically (`POST /apps` guarded by a `PROVISION_KEY` master secret; passwords stored PBKDF2-hashed in the `apps` table — the env roster wins on name collisions). A client `POST`s its app's password once to `/auth/register` with an `appName`, a self-generated `clientId` and a display name, and gets back a long-lived token (`pact_<nanoid>`) bound server-side to that app. Every other request carries just the token as `Authorization: Bearer …` — the app is resolved from the client row it was registered under, never from anything the client sends later. Re-registering the same `clientId` rotates the token while keeping the client's identity. `last_seen_at` is bumped (fire-and-forget) on each authenticated request.
 
-**Tenant isolation.** Every D1 row carries an `app_name` (baked into every query and primary key, with a per-app `seq` counter), blob bytes are keyed `<appName>/<hash>` in R2, and each app gets its own realtime Durable Object (`idFromName(appName)`) — so documents, blobs, and broadcasts are all partitioned by construction. App names are validated (`[a-z0-9][a-z0-9_-]{0,63}`) at the only entry points that accept one. A legacy single-tenant deployment can keep using `API_KEY`; it behaves as one app named `DEFAULT_APP_NAME` (default `"default"`).
+**Tenant isolation.** Every D1 row carries an `app_name` (baked into every query and primary key, with a per-app `seq` counter), blob bytes are keyed `<appName>/<hash>` in R2, and each app gets its own realtime Durable Object (`idFromName(appName)`) — so documents, blobs, and broadcasts are all partitioned by construction. App names are validated (`[a-z0-9][a-z0-9_-]{0,63}`) at the only entry points that accept one.
 
 ### D1 schema
 
@@ -342,7 +340,6 @@ The server deliberately bundles **no agent surface**. An agent's MCP server is a
 
 ### Optional server building blocks
 
-- **`createLandingApp`** — a `GET /` connection page rendering a QR code that encodes a `<scheme>://<path>?url=<origin>` deep link, plus the raw origin to paste manually. Mount it where you want (typically `/`).
 - **`RealtimeDO`** — the Durable Object backing `/realtime`. Export it from your Worker entry and declare it in `wrangler.toml`.
 
 ### Deploy notes

@@ -1,12 +1,5 @@
 import dayjs from 'dayjs';
-import { timingSafeEqual } from './auth/auth';
 import type { Env } from './types';
-
-/**
- * App name synthesized when a deployment still uses the single-tenant
- * `API_KEY` secret instead of `APPS` (and hasn't set `DEFAULT_APP_NAME`).
- */
-export const LEGACY_DEFAULT_APP = 'default';
 
 /**
  * App names become R2 key prefixes, Durable Object names, and SQL values, so
@@ -20,57 +13,12 @@ export function isValidAppName(name: string): boolean {
   return APP_NAME_RE.test(name);
 }
 
-/**
- * The env-defined part of the tenant roster: appName → plaintext password,
- * from the `APPS` secret (a JSON object, set via `wrangler secret put APPS`).
- * When `APPS` is absent, a legacy single-tenant deployment's `API_KEY` is
- * honoured as the password for one app named `DEFAULT_APP_NAME` (or
- * "default"). Returns `{}` when neither is set — a valid state now that apps
- * can also be provisioned dynamically into the `apps` table (see
- * `resolveAppAuth`). A malformed `APPS` secret still throws: that's a deploy
- * error, not an empty roster.
- */
-export function getApps(env: Env): Record<string, string> {
-  if (env.APPS !== undefined && env.APPS !== '') {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(env.APPS);
-    } catch {
-      throw new Error('APPS is not valid JSON');
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('APPS must be a JSON object of { appName: password }');
-    }
-    const apps: Record<string, string> = {};
-    for (const [name, password] of Object.entries(parsed)) {
-      if (!isValidAppName(name)) {
-        throw new Error(`APPS contains invalid app name: ${JSON.stringify(name)}`);
-      }
-      if (typeof password !== 'string' || password === '') {
-        throw new Error(`APPS password for "${name}" must be a non-empty string`);
-      }
-      apps[name] = password;
-    }
-    return apps;
-  }
-  if (env.API_KEY) {
-    return { [env.DEFAULT_APP_NAME ?? LEGACY_DEFAULT_APP]: env.API_KEY };
-  }
-  return {};
-}
-
-export function getAppPassword(env: Env, appName: string): string | null {
-  const apps = getApps(env);
-  return Object.prototype.hasOwnProperty.call(apps, appName) ? apps[appName]! : null;
-}
-
 // --- Table-provisioned apps -------------------------------------------------
 //
-// Apps can also be created at runtime via `POST /apps` (guarded by the
-// PROVISION_KEY secret) into the D1 `apps` table. Unlike the env roster —
-// operator-supplied secrets compared in plaintext — table passwords are
-// human-chosen and stored only as PBKDF2 hashes, so a database leak doesn't
-// expose reusable credentials.
+// Apps are created at runtime via `POST /apps` (guarded by the PROVISION_KEY
+// secret) into the D1 `apps` table. Passwords are human-chosen and stored
+// only as PBKDF2 hashes, so a database leak doesn't expose reusable
+// credentials.
 
 /**
  * PBKDF2 work factor. Native WebCrypto keeps this cheap in absolute terms,
@@ -141,20 +89,16 @@ export async function verifyAppPassword(password: string, stored: string): Promi
 }
 
 /**
- * The single register-time credential check, across both provisioning modes.
- * The env roster wins on a name collision — it's the operator's explicit
- * config. Unknown apps still burn a full comparison (dummy hash) and return
- * plain `false`, indistinguishable from a wrong password.
+ * The single register-time credential check. Unknown apps still burn a full
+ * PBKDF2 comparison (dummy hash) and return plain `false`, indistinguishable
+ * from a wrong password — so the uniform 401 can't be used to probe which app
+ * names are provisioned.
  */
 export async function resolveAppAuth(
   env: Env,
   appName: string,
   password: string
 ): Promise<boolean> {
-  const envApps = getApps(env);
-  if (Object.prototype.hasOwnProperty.call(envApps, appName)) {
-    return timingSafeEqual(password, envApps[appName]!);
-  }
   const row = await env.DB.prepare(`SELECT password_hash FROM apps WHERE app_name = ?1`)
     .bind(appName)
     .first();

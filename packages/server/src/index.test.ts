@@ -12,8 +12,9 @@ import type { Env } from './types';
  * Fake env for exercising the register + provisioning routes end-to-end
  * through Hono. The fake DB records every client INSERT's bound values so
  * tests can assert which app a client row was written under — or that
- * nothing was written at all — and holds a live `apps` table so dynamic
- * provisioning round-trips.
+ * nothing was written at all — and holds a live `apps` table that starts
+ * empty: apps only come into existence by going through `POST /apps`, so
+ * tests provision the same way a real deployment does.
  */
 function registerEnv(extra: Partial<Env> = {}) {
   const inserts: unknown[][] = [];
@@ -40,7 +41,6 @@ function registerEnv(extra: Partial<Env> = {}) {
       }),
     },
     BLOBS: {},
-    APPS: '{"app-a":"pa","app-b":"pb"}',
     SERVER_NAME: 'test',
     ENABLE_REALTIME: 'false',
     ...extra,
@@ -62,9 +62,15 @@ function register(env: Env, password: string, body: Record<string, unknown>) {
 
 const BODY = { appName: 'app-a', clientId: 'cl-1', clientName: 'Test Device' };
 
+/** Provision an app the only way one can exist: through `POST /apps`. */
+function provision(env: Env, appName: string, password: string) {
+  return claim(env, 'master', { appName, password });
+}
+
 describe('POST /auth/register (multi-tenant)', () => {
   it("registers with the app's own password and stores the row under that app", async () => {
-    const { env, inserts } = registerEnv();
+    const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
+    await provision(env, 'app-a', 'pa');
     const res = await register(env, 'pa', BODY);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { clientId: string; token: string };
@@ -75,21 +81,25 @@ describe('POST /auth/register (multi-tenant)', () => {
   });
 
   it('rejects the wrong password for a known app', async () => {
-    const { env, inserts } = registerEnv();
+    const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
+    await provision(env, 'app-a', 'pa');
     const res = await register(env, 'wrong', BODY);
     expect(res.status).toBe(401);
     expect(inserts).toHaveLength(0);
   });
 
   it("rejects one app's valid password used against another app", async () => {
-    const { env, inserts } = registerEnv();
+    const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
+    await provision(env, 'app-a', 'pa');
+    await provision(env, 'app-b', 'pb');
     const res = await register(env, 'pa', { ...BODY, appName: 'app-b' });
     expect(res.status).toBe(401);
     expect(inserts).toHaveLength(0);
   });
 
   it('rejects an unknown app with the same 401 as a bad password', async () => {
-    const { env, inserts } = registerEnv();
+    const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
+    // Deliberately not provisioned — the app simply doesn't exist.
     const res = await register(env, 'pa', { ...BODY, appName: 'no-such-app' });
     expect(res.status).toBe(401);
     expect(inserts).toHaveLength(0);
@@ -101,17 +111,6 @@ describe('POST /auth/register (multi-tenant)', () => {
     expect(missing.status).toBe(400);
     const malformed = await register(env, 'pa', { ...BODY, appName: 'Bad/Name' });
     expect(malformed.status).toBe(400);
-  });
-
-  it('serves a legacy API_KEY deployment as its default app', async () => {
-    const { env, inserts } = registerEnv({
-      APPS: undefined,
-      API_KEY: 'legacy-pw',
-      DEFAULT_APP_NAME: 'fond',
-    });
-    const res = await register(env, 'legacy-pw', { ...BODY, appName: 'fond' });
-    expect(res.status).toBe(200);
-    expect(inserts[0]![0]).toBe('fond');
   });
 });
 
@@ -138,7 +137,7 @@ describe('POST /apps (dynamic provisioning)', () => {
     const { env, apps } = registerEnv({ PROVISION_KEY: 'master' });
     const res = await claim(env, 'wrong', { appName: 'dyn', password: 'pw' });
     expect(res.status).toBe(401);
-    expect(apps.size).toBe(0);
+    expect(apps.has('dyn')).toBe(false);
   });
 
   it('creates an app, storing the password hashed', async () => {
@@ -172,13 +171,6 @@ describe('POST /apps (dynamic provisioning)', () => {
 
     expect((await register(env, 'old-pw', { ...BODY, appName: 'dyn' })).status).toBe(401);
     expect((await register(env, 'new-pw', { ...BODY, appName: 'dyn' })).status).toBe(200);
-  });
-
-  it('refuses to shadow an app defined in the APPS secret', async () => {
-    const { env, apps } = registerEnv({ PROVISION_KEY: 'master' });
-    const res = await claim(env, 'master', { appName: 'app-a', password: 'pw' });
-    expect(res.status).toBe(409);
-    expect(apps.size).toBe(0);
   });
 
   it('validates the app name and password', async () => {

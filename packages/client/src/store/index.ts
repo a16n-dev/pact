@@ -1,12 +1,7 @@
 export { Store } from './store';
 export type { Collection } from './collectionRef';
-export type {
-  StoreDomain,
-  StoreOptions,
-  StoreSyncConfig,
-  SeedSet,
-  ChangeHandler,
-} from './options';
+export type { IndexKey, IndexKeyInput, IndexExtractor, IndexMap } from './indexes';
+export type { StoreDomain, StoreOptions, StoreSyncConfig, SeedSet, ChangeHandler } from './options';
 export type {
   StoreSync,
   StoreAuthor,

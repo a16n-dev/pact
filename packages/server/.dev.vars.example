@@ -1,0 +1,2 @@
+# Copy to .dev.vars (gitignored) for local development
+PROVISION_KEY=change-me

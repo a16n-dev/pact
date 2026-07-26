@@ -1,28 +1,12 @@
 {
-  "name": "@a16n/pact-server",
+  "name": "pact-server",
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "files": [
-    "dist",
-    "schema.sql"
-  ],
-  "publishConfig": {
-    "types": "./dist/index.d.ts",
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    }
-  },
   "scripts": {
-    "build": "tsup",
-    "clean": "rm -rf dist",
-    "prepack": "pnpm run build",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "schema": "wrangler d1 execute pact-db --remote --file schema.sql",
     "test": "vitest run",
     "test:watch": "vitest",
     "tc": "tsc --noEmit",
@@ -32,14 +16,12 @@
   "dependencies": {
     "dayjs": "catalog:",
     "hono": "catalog:",
-    "nanoid": "catalog:",
-    "qrcode-generator": "catalog:"
+    "nanoid": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
-    "@types/qrcode-generator": "catalog:",
-    "tsup": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "wrangler": "^4"
   }
 }

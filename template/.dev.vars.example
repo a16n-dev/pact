@@ -1,5 +1,0 @@
-# Copy to .dev.vars (gitignored) for local development with `pnpm run dev`.
-# APPS is a JSON object of appName → password (names: [a-z0-9][a-z0-9_-]{0,63}).
-# PROVISION_KEY enables POST /apps locally; omit either line if unused.
-APPS={"myapp":"change-me"}
-PROVISION_KEY=change-me-too
