@@ -1,6 +1,6 @@
 {
   "name": "@a16n/pact-client",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Local-first document store with optional sync, realtime, blobs, migrations, and end-to-end encryption — the client half of Pact.",
   "license": "UNLICENSED",
   "type": "module",
