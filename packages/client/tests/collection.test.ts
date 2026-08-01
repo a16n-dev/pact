@@ -6,8 +6,8 @@ import {
   defineCollection,
   type DocId,
   type DocumentOf,
-} from './collection';
-import { Migrator } from './migrator';
+} from '../src/collection';
+import { Migrator } from '../src/migrator';
 
 const widgets = defineCollection({
   name: 'widgets',

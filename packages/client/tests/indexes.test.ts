@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Store } from './store';
-import { InMemoryAdapter } from '../adapters/memoryAdapter';
-import { defineCollection, date } from '../collection';
-import { createWebCryptoCipher } from '../crypto/webCrypto';
-import { isEncryptedDoc } from '../crypto/docCrypto';
-import type { DatabaseAdapter } from '../adapters/adapter';
-import type { BaseDocument } from '../types';
+import { Store } from '../src/store/store';
+import { InMemoryAdapter } from '../src/adapters/memoryAdapter';
+import { defineCollection, date } from '../src/collection';
+import { createWebCryptoCipher } from '../src/crypto/webCrypto';
+import { isEncryptedDoc } from '../src/crypto/docCrypto';
+import type { DatabaseAdapter } from '../src/adapters/adapter';
+import type { BaseDocument } from '../src/types';
 
 // A collection that declares three indexes: a single-valued string field, a
 // multi-valued array field, and a numeric field (exercising key coercion).

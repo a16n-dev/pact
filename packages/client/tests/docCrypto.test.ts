@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { createWebCryptoCipher, deriveEncryptionKey } from './webCrypto';
-import { encryptDoc, decryptDoc, isEncryptedDoc } from './docCrypto';
-import type { BaseDocument } from '../types';
+import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
+import { encryptDoc, decryptDoc, isEncryptedDoc } from '../src/crypto/docCrypto';
+import type { BaseDocument } from '../src/types';
 
 type Widget = BaseDocument & { name: string; secret: { nested: number } };
 

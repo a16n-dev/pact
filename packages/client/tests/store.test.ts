@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { Store, type SeedSet, type StoreDomain } from './store';
-import type { StoreSyncConfig } from './store/options';
-import { InMemoryAdapter } from './adapters/memoryAdapter';
-import { defineCollection, date } from './collection';
-import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from './system';
-import type { BaseDocument } from './types';
-import type { BlobAdapter } from './blobs/blobAdapter';
-import { blobFields } from './blobs/blobFields';
-import { createWebCryptoCipher } from './crypto/webCrypto';
-import { decryptDoc, encryptDoc, isEncryptedDoc } from './crypto/docCrypto';
+import { Store, type SeedSet, type StoreDomain } from '../src/store';
+import type { StoreSyncConfig } from '../src/store/options';
+import { InMemoryAdapter } from '../src/adapters/memoryAdapter';
+import { defineCollection, date } from '../src/collection';
+import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../src/system';
+import type { BaseDocument } from '../src/types';
+import type { BlobAdapter } from '../src/blobs/blobAdapter';
+import { blobFields } from '../src/blobs/blobFields';
+import { createWebCryptoCipher } from '../src/crypto/webCrypto';
+import { decryptDoc, encryptDoc, isEncryptedDoc } from '../src/crypto/docCrypto';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
 

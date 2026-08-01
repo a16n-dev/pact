@@ -29,7 +29,7 @@
     "prepack": "pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tc": "tsc --noEmit",
+    "tc": "tsc --noEmit -p tsconfig.test.json",
     "check": "eslint . && prettier --check .",
     "format": "eslint --fix . && prettier --write ."
   },

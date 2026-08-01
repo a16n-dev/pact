@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { AliasAdapter } from './aliasAdapter';
-import { InMemoryAdapter } from './memoryAdapter';
-import type { BaseDocument } from '../types';
+import { AliasAdapter } from '../src/adapters/aliasAdapter';
+import { InMemoryAdapter } from '../src/adapters/memoryAdapter';
+import type { BaseDocument } from '../src/types';
 
 function mkDoc(id: string): BaseDocument {
   const now = '2026-01-01T00:00:00.000Z';

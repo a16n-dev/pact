@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { randomId } from './ids';
+import { randomId } from '../src/ids';
 
 describe('randomId', () => {
   it('generates a URL-safe body of the requested length, free of separator chars', () => {

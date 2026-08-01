@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Migrator, noopMigrator, type MigrationRegistry } from './migrator';
+import { Migrator, noopMigrator, type MigrationRegistry } from '../src/migrator';
 
 const registry: MigrationRegistry = {
   widgets: {

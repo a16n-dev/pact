@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryAdapter } from './memoryAdapter';
-import { EncryptedAdapter } from './encryptedAdapter';
-import { createWebCryptoCipher } from '../crypto/webCrypto';
-import { isEncryptedDoc } from '../crypto/docCrypto';
-import type { BaseDocument } from '../types';
+import { InMemoryAdapter } from '../src/adapters/memoryAdapter';
+import { EncryptedAdapter } from '../src/adapters/encryptedAdapter';
+import { createWebCryptoCipher } from '../src/crypto/webCrypto';
+import { isEncryptedDoc } from '../src/crypto/docCrypto';
+import type { BaseDocument } from '../src/types';
 
 type Widget = BaseDocument & { name: string };
 
