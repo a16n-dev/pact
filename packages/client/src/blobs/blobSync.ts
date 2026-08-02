@@ -53,6 +53,20 @@ export class BlobSync {
     return this.blobs.has(hash);
   }
 
+  list(): Promise<string[]> {
+    return this.blobs.list();
+  }
+
+  /**
+   * Evict a blob from local storage. Local-only, like `prune`: the server's
+   * copy stays, so a document still referencing this hash re-pulls it on the
+   * next sync. Signals the change so blob-backed UI re-reads.
+   */
+  async delete(hash: string): Promise<void> {
+    await this.blobs.delete(hash);
+    this.deps.notifyChanged();
+  }
+
   /**
    * Upload local blobs the server doesn't have yet. One round trip to
    * fetch the server's hash set, then PUT the difference. Idempotent —

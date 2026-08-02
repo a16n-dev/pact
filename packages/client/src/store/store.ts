@@ -193,6 +193,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         await this.syncEngine.drainOutbox();
         await this.syncEngine.pushAll();
       },
+      drain: () => this.syncEngine.drainOutbox(),
       pending: () => this.syncEngine.pendingPushCount(),
       resync: () => this.resyncFromScratch(),
       lastSyncedAt: (collections) => this.syncEngine.getLastSyncedAt(collections),
@@ -228,6 +229,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       write: (bytes, mimeType) => requireBlobs().write(bytes, mimeType),
       uri: (hash) => requireBlobs().uri(hash),
       has: (hash) => requireBlobs().has(hash),
+      list: () => requireBlobs().list(),
+      delete: (hash) => requireBlobs().delete(hash),
       push: () => requireBlobs().push(),
       pull: (referencedHashes) => requireBlobs().pull(referencedHashes),
       pullReferenced: async () => requireBlobs().pull(await this.referencedBlobHashes()),

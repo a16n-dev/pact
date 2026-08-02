@@ -10,6 +10,13 @@ import type { RegisterResult } from '../sync/sync';
 export interface StoreSync {
   /** Drain the push outbox, then push every doc in every synced collection. */
   push(): Promise<void>;
+  /**
+   * Drain the push outbox only — retry the writes the server hasn't accepted
+   * yet, without the full-dataset sweep `push()` also performs. This is the
+   * cheap one, and what routine "sync now" paths (app foreground, pull-to-
+   * refresh) want: cost scales with the backlog rather than the database.
+   */
+  drain(): Promise<void>;
   /** Count of documents written locally but not yet accepted by the server. */
   pending(): Promise<number>;
   /**
@@ -139,6 +146,14 @@ export interface StoreBlobs {
   uri(hash: string): string | null;
   /** Whether the blob is present locally. */
   has(hash: string): Promise<boolean>;
+  /** Hashes of every blob currently held locally. */
+  list(): Promise<string[]>;
+  /**
+   * Evict a blob from local storage and signal the change. Local-only, like
+   * `prune`: the server's copy stays, so a document still referencing this
+   * hash re-pulls it on the next sync.
+   */
+  delete(hash: string): Promise<void>;
   /**
    * Upload local blobs the server doesn't have yet: one round trip for the
    * server's hash set, then PUT the difference. Idempotent.
