@@ -3,6 +3,13 @@
   "version": "1.2.0",
   "description": "Local-first document store with optional sync, realtime, blobs, migrations, and end-to-end encryption — the client half of Pact.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a16n-dev/pact.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/a16n-dev/pact#readme",
+  "bugs": "https://github.com/a16n-dev/pact/issues",
   "type": "module",
   "types": "./src/index.ts",
   "exports": {
