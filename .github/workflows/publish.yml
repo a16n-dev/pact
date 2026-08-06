@@ -1,0 +1,77 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/client/**'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/publish.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-client
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: '@a16n/pact-client'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version tag
+      id-token: write # npm trusted publishing (OIDC)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read package version
+        id: version
+        run: echo "version=$(node -p "require('./packages/client/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already published
+        id: check
+        run: |
+          if npm view "@a16n/pact-client@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::notice::Version ${{ steps.version.outputs.version }} is already on npm — nothing to do."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Version ${{ steps.version.outputs.version }} is new — publishing."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.check.outputs.publish == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.publish == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        if: steps.check.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck, lint & test
+        if: steps.check.outputs.publish == 'true'
+        run: |
+          pnpm --filter @a16n/pact-client tc
+          pnpm --filter @a16n/pact-client check
+          pnpm --filter @a16n/pact-client test
+
+      # pnpm (not npm) so `catalog:` dependency ranges are rewritten to real versions
+      # in the published manifest. `prepack` runs the build. Auth is npm trusted
+      # publishing via OIDC — no NPM_TOKEN needed.
+      - name: Publish to npm
+        if: steps.check.outputs.publish == 'true'
+        run: pnpm --filter @a16n/pact-client publish --access public --no-git-checks
+
+      - name: Tag release
+        if: steps.check.outputs.publish == 'true'
+        env:
+          TAG: client-v${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "@a16n/pact-client ${{ steps.version.outputs.version }}"
+          git push origin "$TAG"

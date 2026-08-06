@@ -2,6 +2,14 @@ packages:
   - "packages/*"
   - "examples/*"
 
+nodeLinker: hoisted
+injectWorkspacePackages: true
+
+# pnpm 10+ requires dependency install scripts to be opted into explicitly.
+allowBuilds:
+  esbuild: true
+  workerd: true
+
 catalog:
   '@cloudflare/workers-oauth-provider': ^0.7.0
   '@cloudflare/workers-types': ^4

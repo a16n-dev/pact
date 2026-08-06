@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { packBackup, unpackBackup, BACKUP_FORMAT_VERSION, type BackupManifest } from '../src/backup/archive';
+import {
+  packBackup,
+  unpackBackup,
+  BACKUP_FORMAT_VERSION,
+  type BackupManifest,
+} from '../src/backup/archive';
 import type { BaseDocument } from '../src/types';
 
 function doc(id: string, extra: Record<string, unknown> = {}): BaseDocument {

@@ -74,7 +74,10 @@ describe('Store CRUD + tombstones', () => {
       updatedBy: 'us/1',
       deletedAt: null,
     });
-    expect(await store.collection<Widget>('widgets').get('w1')).toMatchObject({ id: 'w1', name: 'Alpha' });
+    expect(await store.collection<Widget>('widgets').get('w1')).toMatchObject({
+      id: 'w1',
+      name: 'Alpha',
+    });
     expect(onChange).toHaveBeenCalledWith('widgets');
   });
 
@@ -84,7 +87,9 @@ describe('Store CRUD + tombstones', () => {
     const w = await store.collection<Widget>('widgets').create({ name: 'NoId' });
     expect(w.id).toMatch(/^w-[A-Za-z0-9]{10}$/);
     expect(await store.collection<Widget>('widgets').get(w.id)).toMatchObject({ name: 'NoId' });
-    const many = await store.collection<Widget>('widgets').createMany([{ name: 'A' }, { id: 'w9', name: 'B' }]);
+    const many = await store
+      .collection<Widget>('widgets')
+      .createMany([{ name: 'A' }, { id: 'w9', name: 'B' }]);
     expect(many[0].id).toMatch(/^w-/);
     expect(many[1].id).toBe('w9');
   });
@@ -131,7 +136,9 @@ describe('Store CRUD + tombstones', () => {
 
     expect(await store.collection<Widget>('widgets').get('w2')).toBeNull();
     expect((await store.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['w1']);
-    expect((await store.collection<Widget>('widgets').getMany(['w1', 'w2'])).map((w) => w.id)).toEqual(['w1']);
+    expect(
+      (await store.collection<Widget>('widgets').getMany(['w1', 'w2'])).map((w) => w.id)
+    ).toEqual(['w1']);
 
     const tomb = await store.collection<Widget>('widgets').get('w2', { includeDeleted: true });
     expect(tomb?.deletedAt).not.toBeNull();
@@ -152,7 +159,9 @@ describe('Store collection registry (schemas define collections)', () => {
     const { store } = setup();
     await store.author.set('us/1');
     await expect(
-      store.collection<Widget>('widgets').create({ id: 'w1', name: 42 } as unknown as { name: string })
+      store
+        .collection<Widget>('widgets')
+        .create({ id: 'w1', name: 42 } as unknown as { name: string })
     ).rejects.toThrow();
   });
 
@@ -270,14 +279,20 @@ describe('Store read-time validation', () => {
   it('reads a schema-violating doc as null rather than throwing', async () => {
     const { adapter, store } = setup();
     // name should be a string; a serializing bug wrote a number.
-    await adapter.put('widgets', { ...mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'), name: 123 } as never);
+    await adapter.put('widgets', {
+      ...mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'),
+      name: 123,
+    } as never);
     expect(await store.collection<Widget>('widgets').get('w1')).toBeNull();
   });
 
   it('omits corrupt docs from list() instead of bricking the whole batch', async () => {
     const { adapter, store } = setup();
     await adapter.put('widgets', mkDoc('w1', 'good', '2026-01-01T00:00:00.000Z'));
-    await adapter.put('widgets', { ...mkDoc('w2', 'X', '2026-01-01T00:00:00.000Z'), name: 123 } as never);
+    await adapter.put('widgets', {
+      ...mkDoc('w2', 'X', '2026-01-01T00:00:00.000Z'),
+      name: 123,
+    } as never);
     await adapter.put('widgets', mkDoc('w3', 'also-good', '2026-01-01T00:00:00.000Z'));
 
     const docs = await store.collection<Widget>('widgets').list();
@@ -525,9 +540,7 @@ describe('Store realtime enablement', () => {
       })
     );
 
-    const store = await Store.create({ adapter: new InMemoryAdapter(),
-      collections: [widgetsDef],
-    });
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [widgetsDef] });
     const res = await store.sync.register('https://sync.test', 'pw', 'my-app', 'My Device');
     expect(res.ok).toBe(true);
 
@@ -970,7 +983,9 @@ describe('Store backup/restore', () => {
     expect(result).toMatchObject({ mode: 'merge', collections: ['widgets'], docsWritten: 2 });
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
     expect(await store.collection<Widget>('widgets').get('w2')).toBeNull(); // hidden (deleted)...
-    expect((await store.collection<Widget>('widgets').get('w2', { includeDeleted: true }))?.deletedAt).not.toBeNull();
+    expect(
+      (await store.collection<Widget>('widgets').get('w2', { includeDeleted: true }))?.deletedAt
+    ).not.toBeNull();
     // Internal collections never crossed over.
     expect(await adapter.get('_config', 'client')).toBeNull();
     expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
@@ -1216,7 +1231,11 @@ describe('Store encryption (optional E2E)', () => {
     const domain: StoreDomain = { collections: [widgetsDef], encryption: { cipher } };
     await Store.create({ adapter: inner, ...domain }); // writes the key check
     await expect(
-      Store.create({ adapter: inner, collections: [widgetsDef], encryption: { cipher: otherCipher } })
+      Store.create({
+        adapter: inner,
+        collections: [widgetsDef],
+        encryption: { cipher: otherCipher },
+      })
     ).rejects.toThrow(/key does not match/);
     // The right key keeps opening fine.
     await expect(Store.create({ adapter: inner, ...domain })).resolves.toBeInstanceOf(Store);

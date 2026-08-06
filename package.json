@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "description": "A generic, domain-agnostic document sync framework",
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@11.20.0",
   "scripts": {
     "build": "pnpm -r --if-present build",
     "pack:all": "pnpm --filter @a16n/pact-client exec pnpm pack --pack-destination ../../artifacts",
