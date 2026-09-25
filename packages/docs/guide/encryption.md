@@ -62,11 +62,11 @@ Consequences to design for:
 Reads pass plaintext rows through untouched, so a store with pre-encryption history works immediately. To convert it fully:
 
 ```ts
-await store.encryptLocalData(); // rewrite local rows as ciphertext
-await store.pushAll(); // overwrite the server's plaintext copies
+await store.encryption.encryptLocal(); // rewrite local rows as ciphertext
+await store.sync.push(); // overwrite the server's plaintext copies
 ```
 
-`pushAll` works because the server's last-write-wins guard accepts equal `updatedAt` — each plaintext row on the server is replaced by its encrypted twin.
+`sync.push()` works because the server's last-write-wins guard accepts equal `updatedAt` — each plaintext row on the server is replaced by its encrypted twin.
 
 ## Threat model — what this does and doesn't hide
 
@@ -80,4 +80,4 @@ await store.pushAll(); // overwrite the server's plaintext copies
 
 - **Everyone needs the key** (single-key default): every client of the app — every device, and an agent's [MCP Worker](/server/mcp) if you run one — must be configured with the same key. A client without it sees envelopes it can't open. (With `onUndecryptable: 'hide'`, clients with different keys coexist instead, each seeing only its own subset.)
 - **Losing the key loses the data** on the server: there is no recovery path. Local plaintext never exists at rest, so back the passphrase up like it matters.
-- **Rotation** is manual: construct a Store with the new cipher, `encryptLocalData()` + `pushAll()` from one up-to-date device, reconfigure the other clients. (They'll need to re-pull; the `_config/encryption` check doc must be cleared on devices switching keys.)
+- **Rotation** is manual: construct a Store with the new cipher, `encryption.encryptLocal()` + `sync.push()` from one up-to-date device, reconfigure the other clients. (They'll need to re-pull; the `_config/encryption` check doc must be cleared on devices switching keys.)
