@@ -196,13 +196,17 @@ export interface StoreEncryption {
   /**
    * Fail fast on a wrong key: verify (or write, on first encrypted use) the
    * sealed sentinel in `_config/encryption`. No-op without encryption.
-   * `Store.create` calls this automatically.
+   * `Store.create` calls this automatically. With
+   * `onUndecryptable: 'hide'` there is no wrong key — the sentinel is still
+   * written but never verified.
    */
   verifyKey(): Promise<void>;
   /**
    * One-time sweep for enabling encryption on an existing install: rewrite
    * every doc through the encrypting adapter. Follow with `sync.push()` to
-   * convert the server's copies. Idempotent.
+   * convert the server's copies. Idempotent. `skipped` counts docs sealed
+   * under other keys (always 0 outside `onUndecryptable: 'hide'`), which
+   * are left untouched.
    */
-  encryptLocal(): Promise<{ rewritten: number }>;
+  encryptLocal(): Promise<{ rewritten: number; skipped: number }>;
 }

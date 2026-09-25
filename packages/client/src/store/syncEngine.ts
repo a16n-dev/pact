@@ -3,6 +3,7 @@ import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BaseDocument } from '../types';
 import type { Migrator } from '../migrator';
 import { SyncClient } from '../sync/sync';
+import { isEncryptedDoc } from '../crypto/docCrypto';
 import { LOCAL_AUTHOR_ID } from '../system';
 import {
   OUTBOX,
@@ -26,6 +27,13 @@ function isLocalAuthored(doc: BaseDocument): boolean {
 
 export interface SyncEngineDeps {
   adapter: DatabaseAdapter;
+  /**
+   * The same adapter stack minus the cipher (identical to `adapter` on
+   * unencrypted stores). Used where only cleartext base fields are needed
+   * (LWW timestamps), and to move docs sealed under other keys — which the
+   * decrypting `adapter` hides in multi-key mode — through sync intact.
+   */
+  rawAdapter: DatabaseAdapter;
   migrator: Migrator;
   /** The synced collections — the full push-all / pull-all enumeration. */
   collections: readonly string[];
@@ -50,6 +58,7 @@ export interface SyncEngineDeps {
  */
 export class SyncEngine {
   private readonly adapter: DatabaseAdapter;
+  private readonly rawAdapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly collections: readonly string[];
   private readonly getAuthorId: () => string;
@@ -68,6 +77,7 @@ export class SyncEngine {
 
   constructor(deps: SyncEngineDeps) {
     this.adapter = deps.adapter;
+    this.rawAdapter = deps.rawAdapter;
     this.migrator = deps.migrator;
     this.collections = deps.collections;
     this.getAuthorId = deps.getAuthorId;
@@ -107,10 +117,22 @@ export class SyncEngine {
   async pushAll(): Promise<void> {
     if (!this.syncClient) return;
     for (const collection of this.collections) {
-      const raw = await this.adapter.getAll<BaseDocument>(collection);
-      const docs = raw
+      const readable = await this.adapter.getAll<BaseDocument>(collection);
+      const docs = readable
         .map((doc) => this.migrator.migrate<BaseDocument>(collection, doc))
         .filter((doc) => !isLocalAuthored(doc));
+      // Rows sealed under other keys are invisible to the decrypting read but
+      // must still reach the server (e.g. restored from a backup on a device
+      // that registered under a different key). They push verbatim — the wire
+      // transform passes an already-sealed envelope through unchanged.
+      if (this.rawAdapter !== this.adapter) {
+        const readableIds = new Set(readable.map((doc) => doc.id));
+        for (const row of await this.rawAdapter.getAll<BaseDocument>(collection)) {
+          if (isEncryptedDoc(row) && !readableIds.has(row.id) && !isLocalAuthored(row)) {
+            docs.push(row);
+          }
+        }
+      }
       if (docs.length > 0) {
         await this.syncClient.push(collection, docs);
       }
@@ -217,6 +239,15 @@ export class SyncEngine {
       for (const entry of group) {
         const doc = await this.adapter.get<BaseDocument>(collection, entry.docId);
         if (!doc) {
+          // The row may exist but be sealed under another key (multi-key
+          // mode) — e.g. queued before an identity claim reassigned it, then
+          // superseded by a pulled foreign version. Push the envelope
+          // verbatim rather than dropping the entry as "vanished".
+          const raw = await this.rawAdapter.get<BaseDocument>(collection, entry.docId);
+          if (raw && isEncryptedDoc(raw)) {
+            if (isLocalAuthored(raw)) continue;
+            docs.push(raw);
+          }
           clearable.push(entry);
           continue;
         }
@@ -252,14 +283,28 @@ export class SyncEngine {
     let cursor = await this.getLastSyncCursor(collection);
     for (;;) {
       const page = await this.syncClient.pull<T>(collection, cursor);
-      const upgraded = page.documents.map((doc) => this.migrator.migrate<T>(collection, doc));
-      for (const doc of upgraded) {
-        const local = await this.adapter.get<T>(collection, doc.id);
+      for (const wireDoc of page.documents) {
         // Last-write-wins: skip an incoming doc that's older than the local
         // copy, so a not-yet-pushed local edit isn't clobbered by a stale
         // server version. Mirrors the server's upsert guard (db.ts); ties go
         // to the incoming doc. The cursor still advances past it — the local
-        // copy is newer and will be pushed, so re-pulling the server's is moot.
+        // copy is newer and will be pushed, so re-pulling the server's is
+        // moot. The raw read suffices (`updatedAt` is cleartext on
+        // envelopes) and sees local rows sealed under other keys too.
+        //
+        // A doc still sealed after the wire transform is another key's
+        // (multi-key mode): store the envelope raw — no migration,
+        // validation, or indexing is possible on ciphertext — so it survives
+        // locally and surfaces on a device holding its key. It's invisible
+        // here, so it doesn't count as applied.
+        if (isEncryptedDoc(wireDoc)) {
+          const local = await this.rawAdapter.get<BaseDocument>(collection, wireDoc.id);
+          if (local && local.updatedAt > wireDoc.updatedAt) continue;
+          await this.rawAdapter.put(collection, wireDoc);
+          continue;
+        }
+        const doc = this.migrator.migrate<T>(collection, wireDoc);
+        const local = await this.rawAdapter.get<BaseDocument>(collection, doc.id);
         if (local && local.updatedAt > doc.updatedAt) continue;
         await this.persist(collection, doc);
         applied.push(doc);
@@ -278,11 +323,25 @@ export class SyncEngine {
     if (!this.syncClient) return null;
     const doc = await this.syncClient.pullDocument<T>(collection, id);
     if (!doc) return null;
+    // Still sealed after the wire transform: another key's doc (multi-key
+    // mode). Store the envelope raw and report it as missing — it's
+    // invisible to this key (see `pull`).
+    if (isEncryptedDoc(doc)) {
+      const localRaw = await this.rawAdapter.get<BaseDocument>(collection, id);
+      if (!localRaw || localRaw.updatedAt <= doc.updatedAt) {
+        await this.rawAdapter.put(collection, doc);
+      }
+      return null;
+    }
     const upgraded = this.migrator.migrate<T>(collection, doc);
-    const local = await this.adapter.get<T>(collection, id);
+    const local = await this.rawAdapter.get<BaseDocument>(collection, id);
     // Last-write-wins: a newer local edit takes precedence over the pulled
     // server copy (see `pull`). Return the version that's now authoritative.
-    if (local && local.updatedAt > upgraded.updatedAt) return local;
+    if (local && local.updatedAt > upgraded.updatedAt) {
+      // The raw row carries only base fields when encrypted; return the
+      // decrypted local copy the caller can actually use.
+      return this.adapter.get<T>(collection, id);
+    }
     await this.persist(collection, upgraded);
     this.emit(collection);
     return upgraded;

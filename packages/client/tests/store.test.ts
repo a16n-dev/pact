@@ -9,6 +9,7 @@ import type { BaseDocument } from '../src/types';
 import type { BlobAdapter } from '../src/blobs/blobAdapter';
 import { blobFields } from '../src/blobs/blobFields';
 import { createWebCryptoCipher } from '../src/crypto/webCrypto';
+import type { DocCipher } from '../src/crypto/types';
 import { decryptDoc, encryptDoc, isEncryptedDoc } from '../src/crypto/docCrypto';
 
 type Widget = BaseDocument & { name: string; upgraded?: boolean };
@@ -1292,6 +1293,240 @@ describe('Store encryption (optional E2E)', () => {
       documents: { id: string }[];
     };
     expect(body.documents.map((d) => d.id)).toEqual(['mine']);
+  });
+});
+
+describe('Store encryption (multi-key: onUndecryptable hide)', () => {
+  const keyA = createWebCryptoCipher(new Uint8Array(32).fill(1));
+  const keyB = createWebCryptoCipher(new Uint8Array(32).fill(2));
+
+  function hideDomain(cipher: DocCipher, sync?: StoreSyncConfig) {
+    return {
+      collections: [widgetsDef],
+      encryption: { cipher, onUndecryptable: 'hide' as const },
+      sync,
+    };
+  }
+
+  // A store opened with keyA that wrote one doc, then went away.
+  async function seedKeyA(inner: InMemoryAdapter): Promise<void> {
+    const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
+    await storeA.author.set('us/1');
+    await storeA.collection<Widget>('widgets').create({ id: 'wa', name: 'A Secret' });
+    storeA.dispose();
+  }
+
+  it('any key opens the store; each key sees only the subset it sealed', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+
+    // keyB opens without a key check…
+    const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
+    // …and keyA's doc is completely invisible.
+    expect(await storeB.collection<Widget>('widgets').get('wa')).toBeNull();
+    expect(await storeB.collection<Widget>('widgets').list()).toEqual([]);
+
+    await storeB.author.set('us/2');
+    await storeB.collection<Widget>('widgets').create({ id: 'wb', name: 'B Secret' });
+    expect((await storeB.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['wb']);
+    storeB.dispose();
+
+    // Both rows sit sealed side by side; reopening with keyA sees only wa.
+    const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
+    expect((await storeA.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['wa']);
+    expect((await storeA.collection<Widget>('widgets').get('wa'))?.name).toBe('A Secret');
+    storeA.dispose();
+  });
+
+  it('upsert refuses to overwrite a row sealed under another key', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+    const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
+    await storeB.author.set('us/2');
+
+    await expect(
+      storeB.collection<Widget>('widgets').upsert({ id: 'wa', name: 'Clobber' })
+    ).rejects.toThrow(/another encryption key/);
+
+    // keyA's row survives untouched.
+    const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
+    await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Secret' });
+    storeB.dispose();
+  });
+
+  it('seed skips ids occupied by another key’s docs', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+    const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
+
+    const seeds: SeedSet = {
+      version: 'v1',
+      docs: new Map([['widgets', [{ id: 'wa', name: 'Seeded' }]]]),
+    };
+    expect((await storeB.seed(seeds)).written).toBe(0);
+    const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
+    await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Secret' });
+    storeB.dispose();
+  });
+
+  it('encryptLocal seals plaintext rows and reports other-key rows as skipped', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+    await inner.put('widgets', mkDoc('legacy', 'Plain Old Doc', '2026-01-01T00:00:00.000Z'));
+
+    const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
+    const { rewritten, skipped } = await storeB.encryption.encryptLocal();
+    expect(rewritten).toBe(1);
+    expect(skipped).toBe(1);
+    expect(isEncryptedDoc(await inner.get<BaseDocument>('widgets', 'legacy'))).toBe(true);
+    // wa still opens with keyA — the sweep left it alone.
+    const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
+    await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Secret' });
+    storeB.dispose();
+  });
+
+  it('pull stores another key’s envelope raw, advances the cursor, and hides it', async () => {
+    const inner = new InMemoryAdapter();
+    const storeB = new Store({ adapter: inner, ...hideDomain(keyB, SYNC) });
+    await storeB.author.set('us/2');
+
+    const foreign = await encryptDoc(
+      keyA,
+      'widgets',
+      mkDoc('w-foreign', 'A Remote', '2026-06-06T00:00:00.000Z')
+    );
+    const mine = await encryptDoc(
+      keyB,
+      'widgets',
+      mkDoc('w-mine', 'B Remote', '2026-06-06T00:00:00.000Z')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            { id: 'w-foreign', collection: 'widgets', updatedAt: foreign.updatedAt, data: foreign },
+            { id: 'w-mine', collection: 'widgets', updatedAt: mine.updatedAt, data: mine },
+          ],
+          cursor: 7,
+        })
+      )
+    );
+
+    const applied = await storeB.collection<Widget>('widgets').pullAll();
+    // Only the readable doc counts as applied; the pull did not wedge on the
+    // foreign envelope and the cursor advanced past both.
+    expect(applied.map((w) => w.id)).toEqual(['w-mine']);
+    const meta = await inner.get<BaseDocument & { cursor: number }>('_sync_meta', 'widgets');
+    expect(meta?.cursor).toBe(7);
+    expect(await storeB.collection<Widget>('widgets').get('w-foreign')).toBeNull();
+    storeB.dispose();
+
+    // The foreign envelope landed intact and surfaces for keyA.
+    const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
+    expect((await storeA.collection<Widget>('widgets').get('w-foreign'))?.name).toBe('A Remote');
+    storeA.dispose();
+  });
+
+  it('pull LWW: an older incoming envelope does not clobber a newer hidden local row', async () => {
+    const inner = new InMemoryAdapter();
+    await inner.put(
+      'widgets',
+      await encryptDoc(keyA, 'widgets', mkDoc('wa', 'A Newer', '2026-05-05T00:00:00.000Z'))
+    );
+    const storeB = new Store({ adapter: inner, ...hideDomain(keyB, SYNC) });
+
+    const stale = await encryptDoc(
+      keyA,
+      'widgets',
+      mkDoc('wa', 'A Stale', '2026-01-01T00:00:00.000Z')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [{ id: 'wa', collection: 'widgets', updatedAt: stale.updatedAt, data: stale }],
+          cursor: 1,
+        })
+      )
+    );
+    await storeB.collection<Widget>('widgets').pullAll();
+
+    const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
+    await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Newer' });
+    storeB.dispose();
+  });
+
+  it('pushAll pushes rows sealed under other keys verbatim', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+    const storeB = new Store({ adapter: inner, ...hideDomain(keyB, SYNC) });
+    await storeB.author.set('us/2');
+
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 2, skipped: 0 });
+      return jsonResponse({ documents: [], cursor: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await storeB.collection<Widget>('widgets').create({ id: 'wb', name: 'B Secret' });
+    await storeB.sync.push();
+
+    const pushBodies = fetchMock.mock.calls
+      .filter(([u]) => String(u).includes('/sync/push'))
+      .map(
+        ([, init]) =>
+          JSON.parse((init as RequestInit).body as string) as {
+            documents: { id: string; data: Record<string, unknown> }[];
+          }
+      );
+    const pushed = new Map(pushBodies.flatMap((b) => b.documents.map((d) => [d.id, d.data])));
+    expect(Array.from(pushed.keys()).sort()).toEqual(['wa', 'wb']);
+    // The foreign doc went up as keyA's envelope, byte-identical to the row.
+    expect(pushed.get('wa')).toEqual(await inner.get('widgets', 'wa'));
+    storeB.dispose();
+  });
+
+  it('backup preserves other keys’ docs as sealed envelopes', async () => {
+    const inner = new InMemoryAdapter();
+    await seedKeyA(inner);
+    const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
+    await storeB.author.set('us/2');
+    await storeB.collection<Widget>('widgets').create({ id: 'wb', name: 'B Secret' });
+    const archive = await storeB.backup.create();
+    storeB.dispose();
+
+    const fresh = new InMemoryAdapter();
+    const restoreStore = new Store({ adapter: fresh, ...hideDomain(keyB) });
+    const result = await restoreStore.backup.restore(archive);
+    expect(result.docsWritten).toBe(2);
+    expect((await restoreStore.collection<Widget>('widgets').get('wb'))?.name).toBe('B Secret');
+    restoreStore.dispose();
+
+    const storeA = await Store.create({ adapter: fresh, ...hideDomain(keyA) });
+    expect((await storeA.collection<Widget>('widgets').get('wa'))?.name).toBe('A Secret');
+    storeA.dispose();
+  });
+
+  it('blob prune refuses while docs sealed under other keys exist', async () => {
+    const photosDef = defineCollection({
+      name: 'photos',
+      idPrefix: 'p',
+      schema: (base) => base.extend({ id: z.string(), imageHash: z.string().optional() }),
+    });
+    const inner = new InMemoryAdapter();
+    await inner.put(
+      'photos',
+      await encryptDoc(keyA, 'photos', mkDoc('pa', 'hidden', '2026-01-01T00:00:00.000Z'))
+    );
+    const store = new Store({
+      adapter: inner,
+      blobs: new InMemoryBlobAdapter(),
+      collections: [photosDef],
+      blobHashes: blobFields({ photos: ['imageHash'] }),
+      encryption: { cipher: keyB, onUndecryptable: 'hide' },
+    });
+    await expect(store.blobs.prune()).rejects.toThrow(/other encryption keys/);
+    store.dispose();
   });
 });
 

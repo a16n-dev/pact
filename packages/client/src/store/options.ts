@@ -52,10 +52,19 @@ export interface StoreDomain<
    * sealed into one ciphertext string both at rest (the adapter only ever
    * stores ciphertext; docs are decrypted as they're read into memory) and
    * on the sync wire — the server sees base sync fields plus the envelope.
-   * All clients of the app (including an agent's MCP Worker) must hold the
-   * same key. Internal `_*` collections and blob bytes are not encrypted.
+   * Internal `_*` collections and blob bytes are not encrypted.
+   *
+   * `onUndecryptable` picks the key model. `'throw'` (default): one key per
+   * store — all clients of the app (including an agent's MCP Worker) must
+   * hold the same key, and opening with a wrong key fails fast. `'hide'`:
+   * multiple keys coexist — any key opens the store, each document is
+   * readable only by the key that sealed it, and undecryptable docs are
+   * invisible (they read as missing but stay intact at rest and on the
+   * wire, so they surface again on a device holding their key). Note
+   * AES-GCM cannot distinguish a wrong key from tampering, so `'hide'`
+   * hides tampered envelopes too.
    */
-  encryption?: { cipher: DocCipher };
+  encryption?: { cipher: DocCipher; onUndecryptable?: 'throw' | 'hide' };
 }
 
 /**

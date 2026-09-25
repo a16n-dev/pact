@@ -80,3 +80,28 @@ export async function decryptDoc<T extends BaseDocument>(
   const domain = JSON.parse(decoder.decode(plain)) as Record<string, unknown>;
   return { ...domain, ...base } as T;
 }
+
+/**
+ * `decryptDoc`, but an envelope this cipher cannot open returns `null`
+ * instead of throwing — the multi-key (`onUndecryptable: 'hide'`) read path,
+ * where a doc sealed under a different key is simply invisible. AES-GCM
+ * cannot distinguish a wrong key from tampering, so both hide. A JSON parse
+ * failure *after* successful authentication is real corruption and still
+ * throws.
+ */
+export async function tryDecryptDoc<T extends BaseDocument>(
+  cipher: DocCipher,
+  collection: string,
+  doc: BaseDocument
+): Promise<T | null> {
+  if (!isEncryptedDoc(doc)) return doc as T;
+  const { enc, ...base } = doc;
+  let plain: Uint8Array;
+  try {
+    plain = await cipher.open(enc, aadFor(collection, doc.id));
+  } catch {
+    return null;
+  }
+  const domain = JSON.parse(decoder.decode(plain)) as Record<string, unknown>;
+  return { ...domain, ...base } as T;
+}

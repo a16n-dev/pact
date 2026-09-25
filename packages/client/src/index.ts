@@ -5,7 +5,13 @@ export * from './adapters/encryptedAdapter';
 export * from './adapters/aliasAdapter';
 export * from './crypto/types';
 export * from './crypto/webCrypto';
-export { encryptDoc, decryptDoc, isEncryptedDoc, type EncryptedDoc } from './crypto/docCrypto';
+export {
+  encryptDoc,
+  decryptDoc,
+  tryDecryptDoc,
+  isEncryptedDoc,
+  type EncryptedDoc,
+} from './crypto/docCrypto';
 export * from './blobs/blobAdapter';
 export * from './blobs/blobFields';
 export * from './types';

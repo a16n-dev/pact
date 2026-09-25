@@ -31,7 +31,9 @@ import { Store, createWebCryptoCipher, deriveEncryptionKey } from '@a16n/pact-cl
 // every member derives the same key), or load 32 raw bytes from a keychain.
 const key = await deriveEncryptionKey(passphrase, 'myapp');
 
-const store = await Store.create(adapter, blobAdapter, {
+const store = await Store.create({
+  adapter,
+  blobs: blobAdapter,
   ...domain,
   encryption: { cipher: createWebCryptoCipher(key) },
 });
@@ -39,7 +41,21 @@ const store = await Store.create(adapter, blobAdapter, {
 
 `createWebCryptoCipher` uses WebCrypto (Workers, Node, web). React Native apps supply their own `DocCipher` implementation (the interface is two methods, `seal`/`open`) backed by a native crypto module.
 
-`Store.create` verifies the key against a sealed sentinel in `_config/encryption` and **fails fast with a clear error if the key doesn't match the store's existing data** — no scattered decrypt failures mid-read.
+By default, `Store.create` verifies the key against a sealed sentinel in `_config/encryption` and **fails fast with a clear error if the key doesn't match the store's existing data** — no scattered decrypt failures mid-read.
+
+## Multi-key stores (`onUndecryptable: 'hide'`)
+
+```ts
+encryption: { cipher, onUndecryptable: 'hide' }
+```
+
+`'hide'` replaces key validation with a subset model: **any key opens the store, and each document is readable only by the key that sealed it.** A doc another key sealed simply reads as missing — `get` returns null, `list` filters it out — while its row stays intact at rest, moves through sync and backups verbatim, and surfaces again on a client holding its key. New writes always seal under the session's key, so multiple keys accumulate disjoint subsets side by side.
+
+Consequences to design for:
+
+- **No wrong-key error exists.** A typo'd passphrase opens what looks like an empty store, and anything written there seals under the typo'd key. That indistinguishability is also a deniability feature — decide which your app wants before choosing this mode.
+- **AES-GCM can't tell a wrong key from tampering**, so a tampered envelope hides instead of throwing.
+- `upsert` and `seed` refuse to overwrite a hidden row occupying their id; `blobs.prune` refuses to run while hidden docs exist (their blob references can't be seen); `encryption.encryptLocal()` reports hidden rows as `skipped`.
 
 ## Enabling on an existing install
 
@@ -62,6 +78,6 @@ await store.pushAll(); // overwrite the server's plaintext copies
 
 ## Keys are yours to manage
 
-- **Everyone needs the key**: every client of the app — every device, and an agent's [MCP Worker](/server/mcp) if you run one — must be configured with the same key. A client without it sees envelopes it can't open.
+- **Everyone needs the key** (single-key default): every client of the app — every device, and an agent's [MCP Worker](/server/mcp) if you run one — must be configured with the same key. A client without it sees envelopes it can't open. (With `onUndecryptable: 'hide'`, clients with different keys coexist instead, each seeing only its own subset.)
 - **Losing the key loses the data** on the server: there is no recovery path. Local plaintext never exists at rest, so back the passphrase up like it matters.
 - **Rotation** is manual: construct a Store with the new cipher, `encryptLocalData()` + `pushAll()` from one up-to-date device, reconfigure the other clients. (They'll need to re-pull; the `_config/encryption` check doc must be cleared on devices switching keys.)
