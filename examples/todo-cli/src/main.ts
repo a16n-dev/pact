@@ -116,8 +116,7 @@ try {
     }
 
     case 'sync': {
-      if (!(await store.sync.registration()))
-        fail('Not registered. Run "todo register" first.');
+      if (!(await store.sync.registration())) fail('Not registered. Run "todo register" first.');
       await store.sync.push(); // drains anything queued while offline, then pushes all
       const pulled = await list.pullAll();
       console.log(`Synced. ${pulled.length} change(s) pulled.`);
