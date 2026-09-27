@@ -486,7 +486,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * One-time sweep for enabling encryption on an existing install: rewrite
    * every doc in every non-internal collection through the encrypting
    * adapter, so plaintext rows become ciphertext at rest. To also convert
-   * the server's copies, follow with `pushAll()` — the server's
+   * the server's copies, follow with `sync.push()` — the server's
    * last-write-wins guard accepts equal `updatedAt`, so each plaintext row
    * up there is overwritten by its encrypted twin. Idempotent: already
    * encrypted docs pass through unchanged. In `'hide'` mode, docs sealed
