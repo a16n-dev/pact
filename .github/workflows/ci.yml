@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, lint & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Workspace-wide: client, server, and examples.
+      - name: Typecheck
+        run: pnpm tc
+
+      - name: Lint & format
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+      # Catch tsup/bundling breakage before it surfaces in the publish workflow.
+      - name: Build client
+        run: pnpm --filter @a16n/pact-client build
