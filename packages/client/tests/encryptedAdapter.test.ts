@@ -64,4 +64,23 @@ describe('EncryptedAdapter', () => {
     }
     expect((await adapter.getAll<Widget>('widgets')).map((d) => d.name).sort()).toEqual(['A', 'B']);
   });
+
+  it('throws on another key’s envelope by default, hides it with onUndecryptable', async () => {
+    const inner = new InMemoryAdapter();
+    const keyA = createWebCryptoCipher(new Uint8Array(32).fill(1));
+    const keyB = createWebCryptoCipher(new Uint8Array(32).fill(2));
+    await new EncryptedAdapter(inner, keyA).put('widgets', widget('wa', 'A Secret'));
+
+    const strict = new EncryptedAdapter(inner, keyB);
+    await expect(strict.get<Widget>('widgets', 'wa')).rejects.toThrow();
+
+    const hiding = new EncryptedAdapter(inner, keyB, { onUndecryptable: 'hide' });
+    expect(await hiding.get<Widget>('widgets', 'wa')).toBeNull();
+    expect(await hiding.getMany<Widget>('widgets', ['wa'])).toEqual([]);
+    expect(await hiding.getAll<Widget>('widgets')).toEqual([]);
+
+    // The row itself is untouched — keyA still reads it.
+    const readerA = new EncryptedAdapter(inner, keyA, { onUndecryptable: 'hide' });
+    expect((await readerA.get<Widget>('widgets', 'wa'))?.name).toBe('A Secret');
+  });
 });

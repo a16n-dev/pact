@@ -12,7 +12,7 @@ import {
 } from '../sync/sync';
 import { EncryptedAdapter } from '../adapters/encryptedAdapter';
 import { AliasAdapter } from '../adapters/aliasAdapter';
-import { encryptDoc, decryptDoc } from '../crypto/docCrypto';
+import { encryptDoc, decryptDoc, tryDecryptDoc, isEncryptedDoc } from '../crypto/docCrypto';
 import type { DocCipher } from '../crypto/types';
 import { LOCAL_AUTHOR_ID, SYSTEM_AUTHOR_ID } from '../system';
 import { RealtimeConnection } from '../sync/realtime';
@@ -64,6 +64,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private readonly wireTransform: SyncTransform | null;
   private cachedAuthorId: string = LOCAL_AUTHOR_ID;
   private adapter: DatabaseAdapter;
+  // Multi-key mode (`encryption.onUndecryptable: 'hide'`): docs sealed under
+  // another key read as missing instead of throwing.
+  private readonly hideUndecryptable: boolean;
+  // The same adapter stack minus the cipher: rows read raw, envelopes intact.
+  // Paths that only need cleartext base fields (LWW timestamps), or that must
+  // see docs *this* key can't open (backup, push, hidden-row guards), read
+  // here. Identical to `adapter` on unencrypted stores.
+  private readonly rawAdapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly validate: (collection: string, doc: unknown) => unknown;
   // The domain's collection definitions, keyed by name — the authoritative
@@ -136,16 +144,31 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     // exclusively in plaintext while storage only ever holds ciphertext.
     // The alias wrapper goes outermost, so the cipher sees physical keys —
     // envelopes are AAD-bound to the same identity the wire seals against.
+    this.hideUndecryptable = domain.encryption?.onUndecryptable === 'hide';
     let stacked = this.cipher
-      ? new EncryptedAdapter(options.adapter, this.cipher)
+      ? new EncryptedAdapter(options.adapter, this.cipher, {
+          onUndecryptable: domain.encryption?.onUndecryptable,
+        })
       : options.adapter;
-    if (this.collectionKeys) stacked = new AliasAdapter(stacked, this.collectionKeys);
+    let raw: DatabaseAdapter = options.adapter;
+    if (this.collectionKeys) {
+      stacked = new AliasAdapter(stacked, this.collectionKeys);
+      raw = new AliasAdapter(raw, this.collectionKeys);
+    }
     this.adapter = stacked;
+    this.rawAdapter = this.cipher ? raw : this.adapter;
     this.wireTransform = this.cipher
       ? {
           toWire: (collection, doc) => encryptDoc(this.cipher!, collection, doc),
-          fromWire: (collection, data) =>
-            decryptDoc(this.cipher!, collection, data as BaseDocument),
+          // In hide mode a pulled envelope another key sealed comes back
+          // *still sealed* (tryDecryptDoc → null → pass the envelope through);
+          // the sync engine stores it raw so it survives locally without ever
+          // surfacing as plaintext.
+          fromWire: this.hideUndecryptable
+            ? async (collection, data) =>
+                (await tryDecryptDoc(this.cipher!, collection, data as BaseDocument)) ??
+                (data as BaseDocument)
+            : (collection, data) => decryptDoc(this.cipher!, collection, data as BaseDocument),
         }
       : null;
     this.migrator = new Migrator(buildMigrationRegistry(defs));
@@ -170,6 +193,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
     this.syncEngine = new SyncEngine({
       adapter: this.adapter,
+      rawAdapter: this.rawAdapter,
       migrator: this.migrator,
       collections: this.syncedCollections,
       getAuthorId: () => this.cachedAuthorId,
@@ -271,7 +295,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     void this.realtime.start();
   }
 
-  on(event: 'change', handler: ChangeHandler): () => void {
+  on(_event: 'change', handler: ChangeHandler): () => void {
     this.changeHandlers.add(handler);
     return () => this.changeHandlers.delete(handler);
   }
@@ -327,6 +351,21 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
+   * Hide mode: whether any collection holds rows this key can't open — the
+   * decrypting read returns fewer docs than the raw enumeration. Cheap
+   * count-only comparison; used to guard operations that would misbehave
+   * around invisible documents (blob pruning).
+   */
+  private async hasHiddenDocs(): Promise<boolean> {
+    for (const collection of this.definitions.keys()) {
+      const readable = (await this.adapter.getAll<BaseDocument>(collection)).length;
+      const total = (await this.rawAdapter.getAll<BaseDocument>(collection)).length;
+      if (total > readable) return true;
+    }
+    return false;
+  }
+
+  /**
    * Delete local blobs that no live document references, reclaiming device
    * storage. Returns the hashes removed.
    *
@@ -345,6 +384,15 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     if (!this.hasBlobRefs) {
       throw new Error(
         'pruneBlobs requires a StoreDomain.blobHashes extractor; refusing to treat every blob as an orphan'
+      );
+    }
+    // Hide mode: docs sealed under other keys can't contribute their blob
+    // references, so any blob only they reference would look like an orphan.
+    // Refuse rather than delete bytes another key still needs.
+    if (this.hideUndecryptable && (await this.hasHiddenDocs())) {
+      throw new Error(
+        'pruneBlobs refused: documents sealed under other encryption keys are present, ' +
+          'and their blob references cannot be seen from this key'
       );
     }
     const referenced = await this.referencedBlobHashes();
@@ -400,10 +448,15 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * write) the sealed sentinel in `_config/encryption`. No-op without
    * encryption. `Store.create` calls this automatically; call it yourself
    * only when constructing a Store directly.
+   *
+   * In `'hide'` mode there is no such thing as a wrong key — the sentinel is
+   * still written on first encrypted use (apps use its existence as the
+   * "encryption has been enabled here" switch) but never verified.
    */
   private async verifyEncryptionKey(): Promise<void> {
     if (!this.cipher) return;
     const existing = await this.adapter.get<EncryptionCheckDoc>('_config', 'encryption');
+    if (existing && this.hideUndecryptable) return;
     if (!existing) {
       const now = dayjs().toISOString();
       await this.adapter.put<EncryptionCheckDoc>('_config', {
@@ -433,24 +486,32 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * One-time sweep for enabling encryption on an existing install: rewrite
    * every doc in every non-internal collection through the encrypting
    * adapter, so plaintext rows become ciphertext at rest. To also convert
-   * the server's copies, follow with `pushAll()` — the server's
+   * the server's copies, follow with `sync.push()` — the server's
    * last-write-wins guard accepts equal `updatedAt`, so each plaintext row
    * up there is overwritten by its encrypted twin. Idempotent: already
-   * encrypted docs pass through unchanged.
+   * encrypted docs pass through unchanged. In `'hide'` mode, docs sealed
+   * under another key are left untouched and reported as `skipped`.
    */
-  private async encryptLocalData(): Promise<{ rewritten: number }> {
+  private async encryptLocalData(): Promise<{ rewritten: number; skipped: number }> {
     if (!this.cipher) throw new Error('encryptLocalData requires the encryption option');
     let rewritten = 0;
+    let skipped = 0;
     for (const collection of this.definitions.keys()) {
       // Reads decrypt (or pass plaintext through); writes seal — one
-      // round-trip through the wrapper re-encrypts the lot.
+      // round-trip through the wrapper re-encrypts the lot. Hidden rows
+      // (another key's, hide mode only) don't come back from the read and
+      // are already ciphertext, so leaving them alone is the correct sweep.
       const docs = await this.adapter.getAll<BaseDocument>(collection);
       for (const doc of docs) {
         await this.persist(collection, doc);
         rewritten += 1;
       }
+      if (this.hideUndecryptable) {
+        const total = (await this.rawAdapter.getAll<BaseDocument>(collection)).length;
+        skipped += total - docs.length;
+      }
     }
-    return { rewritten };
+    return { rewritten, skipped };
   }
 
   // Current author
@@ -650,6 +711,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
+   * Hide mode only: true when a row exists at this id but is sealed under
+   * another key (the decrypting read returned null while a raw envelope is
+   * present). Writers that treat "missing" as "free to create" — upsert,
+   * seed — must not silently overwrite another key's document. Callers check
+   * this only after a null decrypted read, so a readable envelope never
+   * reaches it.
+   */
+  private async isHiddenRow(collection: string, id: string): Promise<boolean> {
+    if (!this.hideUndecryptable) return false;
+    const raw = await this.rawAdapter.get<BaseDocument>(collection, id);
+    return raw !== null && isEncryptedDoc(raw);
+  }
+
+  /**
    * Reassigns every local document with `createdBy`, `updatedBy`, or
    * `deletedBy` === `LOCAL_AUTHOR_ID` to the given author id, bumping
    * `updatedAt` so the next push picks them up. `deletedBy` is included so a
@@ -682,6 +757,30 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           updatedAt: now,
         };
         await this.persist(collection, updated);
+      }
+      // Hide mode: rows sealed under another key were invisible to the pass
+      // above but may also be local-authored (written pre-sync in a session
+      // holding their key). Author fields live cleartext outside the
+      // envelope, so swap them in place — the sealed domain is untouched and
+      // the write bypasses persist/indexing (the doc isn't readable here).
+      if (this.hideUndecryptable) {
+        for (const raw of await this.rawAdapter.getAll<BaseDocument>(collection)) {
+          if (!isEncryptedDoc(raw)) continue;
+          if (
+            raw.createdBy !== LOCAL_AUTHOR_ID &&
+            raw.updatedBy !== LOCAL_AUTHOR_ID &&
+            raw.deletedBy !== LOCAL_AUTHOR_ID
+          ) {
+            continue;
+          }
+          await this.rawAdapter.put(collection, {
+            ...raw,
+            createdBy: raw.createdBy === LOCAL_AUTHOR_ID ? newAuthorId : raw.createdBy,
+            updatedBy: raw.updatedBy === LOCAL_AUTHOR_ID ? newAuthorId : raw.updatedBy,
+            deletedBy: raw.deletedBy === LOCAL_AUTHOR_ID ? newAuthorId : raw.deletedBy,
+            updatedAt: now,
+          });
+        }
       }
       this.emit(collection);
     }
@@ -783,6 +882,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           collection,
           await this.adapter.get<BaseDocument>(collection, id)
         );
+        if (!existing && (await this.isHiddenRow(collection, id))) continue;
         const now = dayjs().toISOString();
         let candidate: BaseDocument | null = null;
         if (!existing || existing.updatedBy === SYSTEM_AUTHOR_ID) {
@@ -963,6 +1063,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const authorId = await this.requireAuthor();
     const { id, ...rest } = input;
     const existing = this.migrateRead<T>(collection, await this.adapter.get<T>(collection, id));
+    if (!existing && (await this.isHiddenRow(collection, id))) {
+      throw new Error(
+        `Cannot upsert ${collection}/${id}: a document sealed under another encryption key ` +
+          'already occupies this id'
+      );
+    }
     const now = dayjs().toISOString();
     const doc = (existing && !existing.deletedAt
       ? {
@@ -1140,7 +1246,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const collections = await this.adapter.listCollections();
     for (const collection of collections) {
       if (collection === '_config') continue;
-      const all = await this.adapter.getAll<BaseDocument>(collection);
+      // Raw enumeration: only ids are needed, and it must also clear rows
+      // sealed under other keys (hide mode), which a decrypting read hides.
+      const all = await this.rawAdapter.getAll<BaseDocument>(collection);
       if (all.length > 0) {
         await Promise.all(all.map((d) => this.adapter.delete(collection, d.id)));
         this.emit(collection);
@@ -1168,6 +1276,16 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const name of await this.adapter.listCollections()) {
       if (name.startsWith('_')) continue;
       const docs = await this.adapter.getAll<BaseDocument>(name);
+      // Hide mode: rows sealed under other keys are invisible to the
+      // decrypting read but must not vanish from a backup — archive their
+      // envelopes as-is (restore writes envelopes back raw, so they stay
+      // readable to whichever key sealed them).
+      if (this.hideUndecryptable) {
+        const readable = new Set(docs.map((doc) => doc.id));
+        for (const raw of await this.rawAdapter.getAll<BaseDocument>(name)) {
+          if (isEncryptedDoc(raw) && !readable.has(raw.id)) docs.push(raw);
+        }
+      }
       if (docs.length > 0) collections[name] = docs;
     }
 
@@ -1217,25 +1335,34 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const name of collections) {
       const incoming = manifest.collections[name];
       if (mode === 'replace') {
-        const existing = await this.adapter.getAll<BaseDocument>(name);
+        // Raw enumeration so rows sealed under other keys are cleared too.
+        const existing = await this.rawAdapter.getAll<BaseDocument>(name);
         await Promise.all(existing.map((d) => this.remove(name, d.id)));
       }
       const toWrite: BaseDocument[] = [];
+      const sealed: BaseDocument[] = [];
       for (const doc of incoming) {
         if (mode === 'merge') {
           // Last-write-wins, mirroring the pull path (syncEngine): skip only
           // when the local copy is strictly newer; ties go to the archive.
-          const local = await this.adapter.get<BaseDocument>(name, doc.id);
+          // `updatedAt` is cleartext on envelopes, so the raw read compares
+          // correctly even when the local row is sealed under another key.
+          const local = await this.rawAdapter.get<BaseDocument>(name, doc.id);
           if (local && local.updatedAt > doc.updatedAt) {
             docsSkipped++;
             continue;
           }
         }
-        toWrite.push(doc);
+        // An archive from an encrypted store carries foreign-key docs as
+        // sealed envelopes. They bypass persist (no migration/validation/
+        // indexing is possible on ciphertext) and land raw, intact.
+        if (isEncryptedDoc(doc)) sealed.push(doc);
+        else toWrite.push(doc);
       }
-      if (toWrite.length > 0) {
-        await this.persistMany(name, toWrite);
-        docsWritten += toWrite.length;
+      if (toWrite.length > 0) await this.persistMany(name, toWrite);
+      for (const doc of sealed) await this.rawAdapter.put(name, doc);
+      if (toWrite.length + sealed.length > 0) {
+        docsWritten += toWrite.length + sealed.length;
         this.emit(name);
       }
     }
