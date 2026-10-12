@@ -1,6 +1,6 @@
 {
   // Must match the Worker name in the Cloudflare dashboard.
-  "name": "pact-docs",
+  "name": "pact",
   "compatibility_date": "2025-09-01",
   // Static-only Worker: serve the VitePress build output.
   "assets": {
