@@ -4,8 +4,7 @@ layout: home
 
 hero:
   name: Pact
-  text: Build local, then collaborate
-  tagline: The fast way to build local-first apps — for yourself, your family, your friends, your agents, and your cat.
+  tagline: The fast way to build local-first apps — for yourself, your family, your friends and your agents.
   actions:
     - theme: brand
       text: Start Building
