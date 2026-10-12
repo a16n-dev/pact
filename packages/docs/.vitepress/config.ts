@@ -2,6 +2,7 @@ import { defineConfig } from 'vitepress';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hazelDark, hazelLight } from './hazel-shiki';
 
 const srcDir = fileURLToPath(new URL('..', import.meta.url));
 
@@ -22,6 +23,12 @@ export default defineConfig({
     'A local-first client/server framework for small, high-trust groups of people and agents collaborating in real time.',
   cleanUrls: true,
   lastUpdated: true,
+  // Hazel is dark-first; the toggle still offers its light variant.
+  appearance: 'dark',
+
+  markdown: {
+    theme: { light: hazelLight, dark: hazelDark },
+  },
 
   // Copy raw Markdown into the build output so each page's "For LLMs" button
   // (see theme/Layout.vue) can link to its own source, e.g. /guide/intro.md.
@@ -58,7 +65,16 @@ export default defineConfig({
   },
 
   head: [
-    ['meta', { name: 'theme-color', content: '#3c7d5a' }],
+    ['meta', { name: 'theme-color', content: '#282021' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    [
+      'link',
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap',
+      },
+    ],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:title', content: 'Pact' }],
     [
