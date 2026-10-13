@@ -1,8 +1,22 @@
 export interface SyncDocument {
   id: string;
   collection: string;
+  /**
+   * The document's own `updatedAt`, repeated outside the (possibly sealed)
+   * body. The server uses it for exactly one thing: a client's own row never
+   * moves backwards. Clients use it to fold siblings before decrypting.
+   */
   updatedAt: string;
+  /** The full document body. Opaque to the server. */
   data: unknown;
+  /**
+   * Which client's row this is. Set by the server on every pulled document
+   * (clients fold siblings by it); ignored on push, where the authenticated
+   * client is always the owner.
+   */
+  clientId?: string;
+  /** Server write sequence of this row. Set on pull; ignored on push. */
+  seq?: number;
 }
 
 /**
@@ -22,11 +36,18 @@ export interface PushRequest {
 }
 
 export interface PushResponse {
+  /**
+   * Documents written. Less than the batch only when a client's own stored
+   * row was already newer than what it pushed (a late or out-of-order push).
+   */
   accepted: number;
-  skipped: number;
 }
 
 export interface PullResponse {
+  /**
+   * May hold several rows with the same `id` (siblings from different
+   * clients); the client folds them with its merge rule.
+   */
   documents: SyncDocument[];
   /** Server `seq` high-water mark the client persists as its next pull cursor. */
   cursor: number;

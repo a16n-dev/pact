@@ -64,7 +64,7 @@ interface BaseDocument {
 Key consequences of this shape:
 
 - **Soft deletes only.** `delete` writes a tombstone (`deletedAt` set) rather than removing the row, so the deletion can sync. Reads (`get`, `list`, `getMany`) filter tombstones out; `getIncludingDeleted` returns them (seeding uses this to tell "author deleted this seed" from "never existed").
-- **`updatedAt` is the conflict clock.** Both client and server resolve conflicts by keeping the higher `updatedAt`; ties go to the incoming/server copy.
+- **`updatedAt` is the conflict clock.** Clients resolve conflicts by keeping the higher `updatedAt` (ties between clients' versions break on `clientId`); the server stores every client's version and never merges.
 - **`schemaVersion` drives migrations.** New writes are stamped with the collection's current version; older docs are walked forward on read (see [Migrations](#migrations)).
 
 ### Collections
@@ -72,7 +72,7 @@ Key consequences of this shape:
 Documents live in named collections (`recipes`, `users`, …). Collection names prefixed with `_` are reserved for Pact's internal bookkeeping and are never synced:
 
 - `_config` — the `client` doc (clientId, clientName, sync url, token) and the `author` doc (current author id).
-- `_sync_meta` — per-collection "last pulled at" timestamp, used to request only what's changed.
+- `_sync_meta` — the app-wide pull cursor (a server `seq`), used to request only what's changed.
 
 ## Examples
 
@@ -165,16 +165,18 @@ await store.reassignLocalAuthor('us-alice'); // rewrites _local docs to a real i
 
 ## Sync
 
-Sync is HTTP, pull-based for reads and push-based for writes, with last-write-wins reconciliation throughout.
+Sync is HTTP, pull-based for reads and push-based for writes. Conflicts are resolved on the client: the server stores one row per (document, client) and never merges.
 
 | Operation | What it does |
 |-----------|--------------|
 | optimistic push | every mutation fire-and-forgets the changed docs to `POST /sync/push` |
 | `store.pushAll()` | re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush |
-| `store.pull(collection)` | requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp |
-| `store.pullDocument(c, id)` | pulls a single doc (LWW against the local copy) |
+| `store.pull(collection)` | requests every row written since the app-wide pull cursor, folds siblings, LWW-merges the winners locally, advances the cursor; returns the docs applied to `collection` |
+| `store.pullDocument(c, id)` | pulls every client's row for one doc, folds them, LWW against the local copy |
 
-**Last-write-wins, both directions.** On pull, an incoming doc older than the local copy is skipped (so a not-yet-pushed local edit isn't clobbered by a stale server version). The server's upsert mirrors this: `ON CONFLICT … WHERE excluded.updated_at >= documents.updated_at`. Ties go to the incoming doc.
+**Clients resolve conflicts.** Each client owns its own server row per document; a push only replaces that row, so concurrent edits from two clients become two rows (siblings). On pull a client folds siblings on the cleartext row fields (later `updatedAt` wins, ties break on `clientId`), decrypts only the winner, then skips it if it's older than the local copy (so a not-yet-pushed local edit isn't clobbered). The server's one comparison is a client against its own row: an out-of-order push can't move it backwards. Siblings are bounded by the number of clients, since each push replaces that client's row.
+
+**Protocol version.** Client and server speak protocol **4**; the client sends `X-Pact-Protocol` on every request and the server refuses (426) anything outside the range it advertises on `/info`. No compatibility window — upgrade both together.
 
 ## Realtime
 
@@ -213,7 +215,7 @@ const migrator = new Migrator({
 - **Migrate-on-read.** Behind-version docs are upgraded on every read and lazily written back, so old shapes drain from local storage over time.
 - **Pure functions.** A migration's `up` can't read other collections or do IO.
 - **Forward-incompat is loud.** A doc at a `schemaVersion` higher than the build knows throws ("upgrade the app") rather than silently corrupting data.
-- The server can run the same chain on push via the `migrate` hook, keeping client and server schemas aligned.
+- The server never migrates. It stores bodies opaquely; whichever client pulls a doc walks it forward on read.
 
 ## Blobs
 
@@ -254,7 +256,6 @@ import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 export { RealtimeDO };  // Durable Object class for realtime fan-out
 
 export default createSyncApp({
-  hooks: { migrate: (collection, data) => myMigrator.migrate(collection, data) },
   info: { mcp: true },  // extra fields merged into GET /info
 });
 ```
@@ -278,14 +279,14 @@ interface Env {
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/status` | none | liveness — `{ status: "ok" }` |
-| GET | `/info` | none | `{ name, protocolVersion: 3, realtime, …info }` — clients read this during connect |
+| GET | `/info` | none | `{ name, protocolVersion: 4, minProtocolVersion: 4, realtime, …info }` — clients read this during connect |
 | POST | `/auth/register` | Bearer **app password** | body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }` |
 | POST | `/apps` | Bearer **PROVISION_KEY** | body `{ appName, password }` — create an app or rotate its password (404 when `PROVISION_KEY` unset) |
 | GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
 | GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
-| POST | `/sync/push` | Bearer **token** | upsert documents (LWW) |
-| GET | `/sync/pull?collection=&since=` | Bearer **token** | docs changed since a timestamp |
-| GET | `/sync/pull?collection=&id=` | Bearer **token** | a single doc by id |
+| POST | `/sync/push` | Bearer **token** | write documents into the caller's own rows |
+| GET | `/sync/pull?cursor=` | Bearer **token** | rows across all collections written after a `seq` cursor (may include siblings) |
+| GET | `/sync/pull?collection=&id=` | Bearer **token** | every client's row for one doc |
 | GET | `/sync/blobs` | Bearer **token** | authoritative set of stored blob hashes |
 | PUT | `/sync/blobs/:hash` | Bearer **token** | upload blob bytes (hash = SHA-256 of body) |
 | GET | `/sync/blobs/:hash` | Bearer **token** | download blob bytes |

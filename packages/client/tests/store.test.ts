@@ -419,6 +419,226 @@ describe('Store pull (last-write-wins)', () => {
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('server');
   });
 
+  it('folds sibling rows of one document to the clientId tiebreak winner on a tie', async () => {
+    const { store } = setup({}, SYNC);
+    const t = '2026-05-05T00:00:00.000Z';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 1,
+              updatedAt: t,
+              data: mkDoc('w1', 'from-b', t),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 2,
+              updatedAt: t,
+              data: mkDoc('w1', 'from-a', t),
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        })
+      )
+    );
+
+    const applied = await store.collection<Widget>('widgets').pullAll();
+    // One document, not two applications; the higher clientId wins the tie
+    // even though its row arrived second.
+    expect(applied.map((w) => w.name)).toEqual(['from-b']);
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('from-b');
+  });
+
+  it('folds siblings by updatedAt before comparing with the local copy', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('w1', 'local', '2026-03-01T00:00:00.000Z'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            // Newer than local — but loses to its sibling below.
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 1,
+              updatedAt: '2026-04-01T00:00:00.000Z',
+              data: mkDoc('w1', 'april', '2026-04-01T00:00:00.000Z'),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 2,
+              updatedAt: '2026-05-01T00:00:00.000Z',
+              data: mkDoc('w1', 'may', '2026-05-01T00:00:00.000Z'),
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        })
+      )
+    );
+    await store.collection<Widget>('widgets').pullAll();
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('may');
+  });
+
+  it('pullDocument folds the siblings the server returns', async () => {
+    const { store } = setup({}, SYNC);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 1,
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              data: mkDoc('w1', 'old', '2026-01-01T00:00:00.000Z'),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 2,
+              updatedAt: '2026-02-01T00:00:00.000Z',
+              data: mkDoc('w1', 'new', '2026-02-01T00:00:00.000Z'),
+            },
+          ],
+          cursor: 0,
+          hasMore: false,
+        })
+      )
+    );
+    const doc = await store.collection<Widget>('widgets').pull('w1');
+    expect(doc?.name).toBe('new');
+  });
+
+  it('skips rows for collections this build does not register, still advancing the cursor', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    const t = '2026-05-05T00:00:00.000Z';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'g1',
+              collection: 'gadgets',
+              clientId: 'cl-x',
+              updatedAt: t,
+              seq: 1,
+              data: mkDoc('g1', 'x', t),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-x',
+              updatedAt: t,
+              seq: 2,
+              data: mkDoc('w1', 'w', t),
+            },
+            {
+              id: 's1',
+              collection: '_seeds',
+              clientId: 'cl-x',
+              updatedAt: t,
+              seq: 3,
+              data: mkDoc('s1', 's', t),
+            },
+          ],
+          cursor: 3,
+          hasMore: false,
+        })
+      )
+    );
+    const applied = await store.collection<Widget>('widgets').pullAll();
+    expect(applied.map((w) => w.id)).toEqual(['w1']);
+    expect(await adapter.getAll('gadgets')).toHaveLength(0);
+    expect(await adapter.getAll('_seeds')).toHaveLength(0);
+    const meta = await adapter.get<BaseDocument & { cursor: number; collections: string[] }>(
+      '_sync_meta',
+      '_app'
+    );
+    expect(meta).toMatchObject({ cursor: 3, collections: ['widgets'] });
+  });
+
+  it('restarts from 0 when the stored cursor does not cover a registered collection', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    // A previous build pulled to 9 knowing only `gadgets`; this build adds
+    // `widgets`, whose earlier rows that build skipped as unknown.
+    await adapter.put('_sync_meta', {
+      ...mkDoc('_app', '', '2026-01-01T00:00:00.000Z'),
+      cursor: 9,
+      syncedAt: '2026-01-01T00:00:00.000Z',
+      collections: ['gadgets'],
+    });
+    const fetchMock = vi.fn(async (_url: unknown) =>
+      jsonResponse({ documents: [], cursor: 9, hasMore: false })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await store.collection<Widget>('widgets').pullAll();
+    expect(String(fetchMock.mock.calls[0][0])).toContain('cursor=0');
+  });
+
+  it('declares its protocol version on every sync request', async () => {
+    const { store } = setup({}, SYNC);
+    await store.author.set('us/1');
+    const fetchMock = vi.fn(async (url: unknown, _init?: RequestInit) =>
+      String(url).includes('/sync/push')
+        ? jsonResponse({ accepted: 1 })
+        : jsonResponse({ documents: [], cursor: 0, hasMore: false })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
+    await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
+    await store.collection<Widget>('widgets').pullAll();
+    const syncCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/'));
+    expect(syncCalls.length).toBeGreaterThanOrEqual(2);
+    for (const [, init] of syncCalls) {
+      expect((init as RequestInit).headers).toMatchObject({ 'x-pact-protocol': '4' });
+    }
+  });
+
+  it('reports a 426 from the server as a protocol mismatch on register', async () => {
+    const { store } = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response(JSON.stringify({ code: 'protocol_unsupported' }), { status: 426 })
+      )
+    );
+    const result = await store.sync.register('https://sync.test', 'pw', 'app', 'Dev');
+    expect(result).toEqual({ ok: false, reason: 'protocol' });
+  });
+
+  it('coalesces concurrent pulls onto one in-flight request', async () => {
+    const { store } = setup({}, SYNC);
+    const fetchMock = vi.fn(async (_url: unknown) =>
+      jsonResponse({ documents: [], cursor: 0, hasMore: false })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await Promise.all([
+      store.collection<Widget>('widgets').pullAll(),
+      store.collection<Widget>('widgets').pullAll(),
+      store.collection<Widget>('widgets').pullAll(),
+    ]);
+    // One pass for the first caller, plus one more because requests arrived
+    // mid-flight — never one per caller.
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'))).toHaveLength(2);
+  });
+
   it('drains every page, advancing the cursor until hasMore is false', async () => {
     const { store } = setup({}, SYNC);
     const pageFor = (cursor: number) => {
@@ -1256,6 +1476,52 @@ describe('Store encryption (optional E2E)', () => {
     expect((await store.collection<Widget>('widgets').get('legacy'))?.name).toBe('Plain Old Doc');
   });
 
+  it('folds siblings before decrypting, so a losing envelope under another key cannot wedge a pull', async () => {
+    const { store } = setupEncrypted(SYNC);
+    // Strict mode (no onUndecryptable): decrypting a foreign envelope throws.
+    // The foreign row is older, so the fold discards it on cleartext fields
+    // and the transform only ever sees the winner.
+    const foreign = await encryptDoc(
+      otherCipher,
+      'widgets',
+      mkDoc('w1', 'Theirs', '2026-01-01T00:00:00.000Z')
+    );
+    const mine = await encryptDoc(
+      cipher,
+      'widgets',
+      mkDoc('w1', 'Mine', '2026-05-05T00:00:00.000Z')
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 1,
+              updatedAt: foreign.updatedAt,
+              data: foreign,
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 2,
+              updatedAt: mine.updatedAt,
+              data: mine,
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        })
+      )
+    );
+    const applied = await store.collection<Widget>('widgets').pullAll();
+    expect(applied.map((w) => w.name)).toEqual(['Mine']);
+  });
+
   it('binds envelopes to the physical key when a collection is aliased', async () => {
     const aliasedWidgets = { ...widgetsDef, key: 'c1' };
     const inner = new InMemoryAdapter();
@@ -1417,7 +1683,7 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     // Only the readable doc counts as applied; the pull did not wedge on the
     // foreign envelope and the cursor advanced past both.
     expect(applied.map((w) => w.id)).toEqual(['w-mine']);
-    const meta = await inner.get<BaseDocument & { cursor: number }>('_sync_meta', 'widgets');
+    const meta = await inner.get<BaseDocument & { cursor: number }>('_sync_meta', '_app');
     expect(meta?.cursor).toBe(7);
     expect(await storeB.collection<Widget>('widgets').get('w-foreign')).toBeNull();
     storeB.dispose();
@@ -1557,9 +1823,24 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
   it('pushes and pulls under the key on the wire', async () => {
     const { store } = setupAliased(SYNC);
     await store.author.set('us/1');
+    const t = '2026-05-05T00:00:00.000Z';
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
-      if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1, skipped: 0 });
-      return jsonResponse({ documents: [], cursor: 0 });
+      if (String(url).includes('/sync/push')) return jsonResponse({ accepted: 1 });
+      // The server speaks keys: a row for `c1` must land in local `widgets`.
+      return jsonResponse({
+        documents: [
+          {
+            id: 'w2',
+            collection: 'c1',
+            clientId: 'cl-x',
+            updatedAt: t,
+            seq: 1,
+            data: mkDoc('w2', 'Remote', t),
+          },
+        ],
+        cursor: 1,
+        hasMore: false,
+      });
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -1571,10 +1852,13 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
     };
     expect(body.documents[0]!.collection).toBe('c1');
 
-    await store.collection('widgets').pullAll();
+    const applied = await store.collection<Widget>('widgets').pullAll();
     const pullCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/sync/pull'))!;
-    expect(String(pullCall[0])).toContain('collection=c1');
+    // The pull is app-wide: no collection on the URL, and nothing leaks the name.
+    expect(String(pullCall[0])).not.toContain('collection=');
     expect(String(pullCall[0])).not.toContain('widgets');
+    expect(applied.map((w) => w.id)).toEqual(['w2']);
+    expect((await store.collection<Widget>('widgets').get('w2'))?.name).toBe('Remote');
   });
 
   it('translates realtime invalidations (keys) back to names', async () => {

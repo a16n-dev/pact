@@ -36,7 +36,7 @@ Pact's internal bookkeeping collections are **not** included:
 | Excluded | Why |
 |----------|-----|
 | `_config` | Holds this device's identity, sync URL, and token — device-specific, not data. |
-| `_sync_meta` | Per-collection "last pulled at" cursors — meaningless on another device. |
+| `_sync_meta` | The pull cursor — meaningless on another device. |
 | `_outbox` | Pending local writes — transient sync state. |
 
 Note that on an [encrypted store](/guide/encryption), backups still export **plaintext** — the archive reads through the decrypting layer. Treat backup files with the same care as the data itself.

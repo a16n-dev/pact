@@ -3,8 +3,8 @@ import { pushDocuments, wipeAllBlobsViaApi, putBlob, getBlob } from './api';
 import { getDocumentsSince, upsertDocuments, ALL_SQL } from './db';
 import type { Env, SyncDocument } from '../types';
 
-/** The tenant most tests act as. */
-const APP_A = { appName: 'app-a' };
+/** The tenant (and writing client) most tests act as. */
+const APP_A = { appName: 'app-a', clientId: 'cl-a' };
 
 function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): SyncDocument {
   return {
@@ -96,28 +96,12 @@ describe('pushDocuments', () => {
     expect(out.code).toBe('local_author_push_rejected');
   });
 
-  it('runs the migrate hook on each doc', async () => {
-    const migrate = vi.fn((_collection: string, data: unknown) => data);
-    await pushDocuments(fakeEnv().env, APP_A, [doc('w1', 'widgets', 't')], { hooks: { migrate } });
-    expect(migrate).toHaveBeenCalledWith('widgets', expect.objectContaining({ id: 'w1' }));
-  });
-
-  it('fails with migration_failed when the migrate hook throws', async () => {
-    const migrate = () => {
-      throw new Error('schema too new');
-    };
-    const out = await pushDocuments(throwingEnv(), APP_A, [doc('w1', 'widgets', 't')], {
-      hooks: { migrate },
-    });
-    expect(out).toMatchObject({ ok: false, code: 'migration_failed', error: 'schema too new' });
-  });
-
-  it('returns accepted/skipped from the upsert', async () => {
-    const out = await pushDocuments(fakeEnv({ changes: [1, 0] }).env, APP_A, [
+  it('accepts the whole batch — a client only ever replaces its own rows', async () => {
+    const out = await pushDocuments(fakeEnv().env, APP_A, [
       doc('a', 'widgets', 't'),
       doc('b', 'widgets', 't'),
     ]);
-    expect(out).toEqual({ ok: true, result: { accepted: 1, skipped: 1 } });
+    expect(out).toEqual({ ok: true, result: { accepted: 2 } });
   });
 
   it('broadcasts to realtime when enabled and waitUntil is provided', async () => {
@@ -131,7 +115,7 @@ describe('pushDocuments', () => {
 
   it("broadcasts to the pushing app's DO room, not a shared one", async () => {
     const { env, doNames } = fakeEnv({ enableRealtime: true, changes: [1] });
-    await pushDocuments(env, { appName: 'app-b' }, [doc('w1', 'widgets', 't')], {
+    await pushDocuments(env, { appName: 'app-b', clientId: 'cl-b' }, [doc('w1', 'widgets', 't')], {
       waitUntil: vi.fn(),
     });
     expect(doNames).toEqual(['app-b']);
@@ -145,17 +129,57 @@ describe('pushDocuments', () => {
   });
 });
 
-describe('upsertDocuments', () => {
-  it('counts applied rows as accepted and the rest as skipped', async () => {
+describe('upsertDocuments (per-client rows)', () => {
+  /** Fake D1 recording each statement's SQL and bound values, in batch order. */
+  function recordingDb() {
+    const calls: { sql: string; args: unknown[] }[] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => {
+          const stmt = { sql, args };
+          return stmt;
+        },
+      }),
+      batch: async (stmts: { sql: string; args: unknown[] }[]) => {
+        calls.push(...stmts);
+        return stmts.map(() => ({ meta: { changes: 1 } }));
+      },
+    } as unknown as D1Database;
+    return { db, calls };
+  }
+
+  it("writes each doc into the pushing client's own row", async () => {
+    const { db, calls } = recordingDb();
+    const result = await upsertDocuments(db, 'app-a', 'cl-a', [doc('a', 'c', 't')]);
+    expect(result).toEqual({ accepted: 1 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain('ON CONFLICT (app_name, collection, id, client_id)');
+    expect(calls[0].args).toEqual(['app-a', 'a', 'c', 'cl-a', 't', expect.any(String)]);
+  });
+
+  it("guards a client's own row against moving backwards, and nothing else", async () => {
+    const { db, calls } = recordingDb();
+    await upsertDocuments(db, 'app-a', 'cl-a', [doc('a', 'c', 't'), doc('b', 'c', 't')]);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      // The only comparison is the conflict target (this client's row)
+      // against the incoming version; no other client's row is read or
+      // written.
+      expect(call.sql).toContain('WHERE excluded.updated_at >= documents.updated_at');
+      expect(call.sql).not.toContain('DELETE');
+    }
+  });
+
+  it('counts a write the own-row guard declined as not accepted', async () => {
     const db = {
       prepare: () => ({ bind: () => ({}) }),
       batch: async () => [{ meta: { changes: 1 } }, { meta: { changes: 0 } }],
     } as unknown as D1Database;
-    const result = await upsertDocuments(db, APP_A.appName, [
+    const result = await upsertDocuments(db, 'app-a', 'cl-a', [
       doc('a', 'c', 't'),
       doc('b', 'c', 't'),
     ]);
-    expect(result).toEqual({ accepted: 1, skipped: 1 });
+    expect(result).toEqual({ accepted: 1 });
   });
 });
 
@@ -234,16 +258,24 @@ describe('blob storage isolation', () => {
 describe('getDocumentsSince (pagination)', () => {
   // Fake D1 that returns `available` synthetic rows capped at the bound limit,
   // and records the limit it was asked for (the peek-ahead is limit+1).
-  function pagingDb(available: number): { db: D1Database; boundLimit: () => number } {
+  function pagingDb(available: number): {
+    db: D1Database;
+    boundLimit: () => number;
+    boundArgs: () => unknown[];
+  } {
     let asked = 0;
+    let args: unknown[] = [];
     const db = {
       prepare: () => ({
-        bind: (_appName: string, _collection: string, cursor: number, limit: number) => {
+        bind: (...bound: unknown[]) => {
+          args = bound;
+          const [, cursor, limit] = bound as [string, number, number];
           asked = limit;
           const n = Math.min(available, limit);
           const results = Array.from({ length: n }, (_v, i) => ({
             id: `d${i}`,
             collection: 'c',
+            client_id: 'cl-x',
             updated_at: 't',
             data: '{}',
             seq: cursor + i + 1,
@@ -252,21 +284,24 @@ describe('getDocumentsSince (pagination)', () => {
         },
       }),
     } as unknown as D1Database;
-    return { db, boundLimit: () => asked };
+    return { db, boundLimit: () => asked, boundArgs: () => args };
   }
 
   it('peeks one past the page and reports hasMore when the page is full', async () => {
-    const { db, boundLimit } = pagingDb(10);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 0, 3);
+    const { db, boundLimit, boundArgs } = pagingDb(10);
+    const page = await getDocumentsSince(db, 'app-a', 0, 3);
     expect(boundLimit()).toBe(4); // limit + 1
+    expect(boundArgs()).toEqual(['app-a', 0, 4]); // app-wide: no collection bound
     expect(page.documents).toHaveLength(3); // the extra peeked row is dropped
     expect(page.hasMore).toBe(true);
     expect(page.cursor).toBe(3); // max seq of the kept page
+    // Siblings are folded client-side, so every row carries its owner + seq.
+    expect(page.documents[0]).toMatchObject({ id: 'd0', clientId: 'cl-x', seq: 1, updatedAt: 't' });
   });
 
   it('reports no more pages and the advanced cursor on the final partial page', async () => {
     const { db } = pagingDb(2);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 5, 3);
+    const page = await getDocumentsSince(db, 'app-a', 5, 3);
     expect(page.documents).toHaveLength(2);
     expect(page.hasMore).toBe(false);
     expect(page.cursor).toBe(7); // 5 + 2
@@ -274,7 +309,7 @@ describe('getDocumentsSince (pagination)', () => {
 
   it('leaves the cursor unchanged when nothing matches', async () => {
     const { db } = pagingDb(0);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 42, 3);
+    const page = await getDocumentsSince(db, 'app-a', 42, 3);
     expect(page.documents).toHaveLength(0);
     expect(page.hasMore).toBe(false);
     expect(page.cursor).toBe(42);

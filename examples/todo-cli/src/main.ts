@@ -134,7 +134,7 @@ try {
       );
       if (registration) {
         console.log(`Pending push: ${await store.sync.pending()} doc(s)`);
-        const syncedAt = await store.sync.lastSyncedAt(['todos']);
+        const syncedAt = await store.sync.lastSyncedAt();
         console.log(`Last synced:  ${syncedAt ? syncedAt.toISOString() : 'never'}`);
       }
       break;

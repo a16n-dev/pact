@@ -36,7 +36,7 @@ interface Recipe extends BaseDocument {
 
 ### `updatedAt` is the conflict clock
 
-Both client and server resolve conflicts by keeping the higher `updatedAt`. Ties go to the incoming / server copy. This single rule is the whole conflict-resolution story — see [Sync](/guide/sync) for how it plays out in both directions.
+Clients resolve conflicts by keeping the higher `updatedAt`; an exact tie between two clients' versions breaks on `clientId`. The server never compares it — it stores every client's version and lets the clients fold. See [Sync](/guide/sync) for the full story.
 
 ### `schemaVersion` drives migrations
 
@@ -49,6 +49,6 @@ Documents live in named collections (`recipes`, `users`, …). Collection names 
 | Collection | Holds |
 |------------|-------|
 | `_config` | The `client` doc (clientId, clientName, sync url, token) and the `author` doc (current author id). |
-| `_sync_meta` | Per-collection "last pulled at" timestamp, used to request only what's changed. |
+| `_sync_meta` | The app-wide pull cursor (a server `seq`), used to request only what's changed. |
 
 Because these never sync and never leave the device, restoring a client's identity across restarts is just reading `_config` back — see [Client Setup](/guide/client-setup).

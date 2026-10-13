@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 
 import { createSyncApp } from './index';
+import { MIN_PROTOCOL_VERSION, PROTOCOL_HEADER, PROTOCOL_VERSION } from './protocol';
 import type { Env } from './types';
 
 /**
@@ -48,17 +49,75 @@ function registerEnv(extra: Partial<Env> = {}) {
   return { env, inserts, apps };
 }
 
-function register(env: Env, password: string, body: Record<string, unknown>) {
+function register(
+  env: Env,
+  password: string,
+  body: Record<string, unknown>,
+  protocol: string | null = String(PROTOCOL_VERSION)
+) {
   return createSyncApp().request(
     '/auth/register',
     {
       method: 'POST',
-      headers: { authorization: `Bearer ${password}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${password}`,
+        'content-type': 'application/json',
+        ...(protocol === null ? {} : { [PROTOCOL_HEADER]: protocol }),
+      },
       body: JSON.stringify(body),
     },
     env
   );
 }
+
+describe('protocol version gate', () => {
+  it('advertises the protocol range on /info without a header', async () => {
+    const res = await createSyncApp().request('/info', {}, registerEnv().env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      protocolVersion: PROTOCOL_VERSION,
+      minProtocolVersion: MIN_PROTOCOL_VERSION,
+    });
+  });
+
+  it('refuses a client that declares no protocol, before auth runs', async () => {
+    const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
+    await provision(env, 'app-a', 'pa');
+    const res = await register(env, 'pa', BODY, null);
+    expect(res.status).toBe(426);
+    expect(await res.json()).toMatchObject({
+      code: 'protocol_unsupported',
+      minProtocolVersion: MIN_PROTOCOL_VERSION,
+    });
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('refuses a client below the minimum and one newer than the server', async () => {
+    const { env } = registerEnv();
+    expect((await register(env, 'pa', BODY, String(MIN_PROTOCOL_VERSION - 1))).status).toBe(426);
+    expect((await register(env, 'pa', BODY, String(PROTOCOL_VERSION + 1))).status).toBe(426);
+    expect((await register(env, 'pa', BODY, 'four')).status).toBe(426);
+  });
+
+  it('gates the sync routes too (426 wins over 401)', async () => {
+    const { env } = registerEnv();
+    const app = createSyncApp();
+    const noHeader = await app.request('/sync/pull?cursor=0', {}, env);
+    expect(noHeader.status).toBe(426);
+    const withHeader = await app.request(
+      '/sync/pull?cursor=0',
+      { headers: { [PROTOCOL_HEADER]: String(PROTOCOL_VERSION) } },
+      env
+    );
+    expect(withHeader.status).toBe(401); // past the gate, stopped by auth
+  });
+
+  it('leaves /status and /apps open', async () => {
+    const { env } = registerEnv({ PROVISION_KEY: 'master' });
+    expect((await createSyncApp().request('/status', {}, env)).status).toBe(200);
+    expect((await provision(env, 'app-x', 'px')).status).toBe(201);
+  });
+});
 
 const BODY = { appName: 'app-a', clientId: 'cl-1', clientName: 'Test Device' };
 

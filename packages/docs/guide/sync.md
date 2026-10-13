@@ -1,6 +1,6 @@
 # Sync Protocol
 
-Sync is HTTP: **pull-based for reads, push-based for writes**, with last-write-wins reconciliation throughout. It's deliberately boring — there's no session, no negotiation, no merge protocol. Just upserts and timestamp comparisons.
+Sync is HTTP: **pull-based for reads, push-based for writes**, with conflicts resolved entirely on the client. It's deliberately boring — there's no session, no negotiation, no server-side merge. The server stores one row per (document, client) and hands them all back; every client folds them with the same deterministic rule.
 
 ## The four operations
 
@@ -8,8 +8,8 @@ Sync is HTTP: **pull-based for reads, push-based for writes**, with last-write-w
 |-----------|--------------|
 | optimistic push | Every mutation fire-and-forgets the changed docs to `POST /sync/push`. |
 | `store.pushAll()` | Re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush. |
-| `store.pull(collection)` | Requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp. |
-| `store.pullDocument(collection, id)` | Pulls a single doc (LWW against the local copy). |
+| `store.pull(collection)` | Requests every row written since the app-wide pull cursor (all collections), folds siblings, merges the winners locally, advances the cursor. Returns the docs applied to `collection`. |
+| `store.pullDocument(collection, id)` | Pulls every client's row for one doc, folds them, merges the winner against the local copy. |
 
 With [encryption](/guide/encryption) enabled, the document body in every push/pull is the sealed envelope (base fields + one ciphertext string) — the protocol itself is unchanged, since the server never inspects `data`.
 
@@ -27,29 +27,44 @@ await store.pushAll(); // flush anything that didn't make it out earlier
 The server rejects any document authored by `_local`. Claim an identity and call `reassignLocalAuthor` first — see [Authors & Identity](/guide/authors-identity).
 :::
 
-## Pull: reads flow in by timestamp
+## Pull: reads flow in by cursor
 
-`store.pull(collection)` asks the server for everything in that collection changed since the cursor stored in `_sync_meta`, merges the results, and advances the cursor. Only the delta crosses the wire.
+The pull cursor is **app-wide**: one server `seq` watermark covers every collection, stored in `_sync_meta/_app`. A pull asks for every row written after it, across all collections, folds the results, and advances the cursor. One paged request syncs the whole app; only the delta crosses the wire.
+
+Rows for collections the running build doesn't define are skipped (the cursor still advances past them). When a build registers a collection the stored cursor didn't cover, the cursor restarts from 0 so that collection's history is backfilled — the fold is idempotent, so a re-pull is only bandwidth.
 
 ```ts
 await store.pull('recipes'); // changed since last pull
 await store.pullDocument('recipes', 'r-123'); // one doc, on demand
 ```
 
-## Last-write-wins, both directions
+## Clients resolve conflicts; the server stores siblings
 
-The whole conflict story is one comparison on `updatedAt`:
+The server never decides a winner. Each client owns **its own row** per document (keyed `(collection, id, clientId)`) and a push only ever replaces that row. So two clients that edit the same document concurrently produce two rows — *siblings* — and the server returns both on pull.
 
-- **On pull**, an incoming document older than the local copy is **skipped** — so a not-yet-pushed local edit isn't clobbered by a stale server version.
-- **On the server's upsert**, the same rule, in SQL:
+Every client folds siblings with the same rule, on the cleartext row fields (so sealed envelopes fold without being opened, and only winners are decrypted):
 
-  ```sql
-  ON CONFLICT ... WHERE excluded.updated_at >= documents.updated_at
-  ```
+- **Later `updatedAt` wins.**
+- **An exact tie breaks on `clientId`** (higher wins), so every client folding the same set of siblings picks the same row.
+- The folded winner is then compared with the **local copy**: an incoming document older than it is skipped, so a not-yet-pushed local edit isn't clobbered by a stale server version. That comparison gives ties to the incoming doc.
 
-- **Ties go to the incoming doc** (server copy on pull, the pushed copy on push).
+This is whole-document last-write-wins, computed where the schema lives. Field-level merge and CRDT text fields slot into the fold function later without changing the protocol.
 
-That symmetry is what makes the protocol safe to run in any order, any number of times. Re-pushing or re-pulling is idempotent; a flaky connection just means things converge a little later.
+::: warning Exact ties across separate pulls
+The local-copy comparison doesn't know which client's version it holds, so two documents with the *same* `updatedAt` to the millisecond, pulled on different occasions, can leave two devices disagreeing until the document is next edited. Hybrid logical clocks will close that gap later; today it's rare enough to accept.
+:::
+
+The server makes exactly one comparison of its own, and only ever against the pushing client's **own** row: a push whose `updatedAt` is older than what that client already stored is declined. That keeps a client's row from moving backwards when its pushes land out of order (a full `push()` racing an optimistic drain, or a timed-out request landing after its retry).
+
+### How many siblings?
+
+One row per client that has ever written the document — bounded by the number of clients, not by the number of edits, since each push replaces that client's row. For a small group that's a handful of rows per document. (A pruning step, where a push tells the server which sibling rows it has folded so they can be dropped, is a straightforward later addition; the fold doesn't depend on it.)
+
+Re-pushing or re-pulling is idempotent; a flaky connection just means things converge a little later.
+
+## Protocol version
+
+Client and server each speak a numbered sync protocol (currently **4**). The client sends `X-Pact-Protocol: 4` on every `/auth/*` and `/sync/*` request; the server advertises `protocolVersion` and `minProtocolVersion` on `GET /info` and answers **426** (`code: "protocol_unsupported"`) to anything outside that range, before auth runs. The client surfaces this as the `'protocol'` reason from `sync.register()` and ping, so an app can show "update the app" (or "update the server") instead of a generic sync failure. There is no compatibility window between versions: upgrade clients and server together.
 
 ## When to call what
 
