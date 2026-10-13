@@ -5,7 +5,8 @@ import type { PulledDocument } from './fold';
 interface SyncDocument {
   id: string;
   collection: string;
-  updatedAt: string;
+  // The document body (or its sealed envelope). The server stores it
+  // opaquely; everything needed to fold siblings is inside it.
   data: unknown;
   // Set by the server on pull: whose row this is, and its write sequence.
   // Absent from a pre-sibling server.
@@ -15,7 +16,6 @@ interface SyncDocument {
 
 interface PushResponse {
   accepted: number;
-  skipped: number;
 }
 
 interface PullResponse {
@@ -133,7 +133,6 @@ export class SyncClient {
       docs.map(async (doc) => ({
         id: doc.id,
         collection: key,
-        updatedAt: doc.updatedAt,
         data: this.transform ? await this.transform.toWire(key, doc) : doc,
       }))
     );

@@ -30,15 +30,6 @@ export interface WriterContext extends AppContext {
   clientId: string;
 }
 
-export interface SyncHooks {
-  /**
-   * Transform a stored doc to the server's current schemaVersion before
-   * persisting. Called once per document on the push path. Throw to reject
-   * the push (e.g. the client is newer than this server's schema).
-   */
-  migrate?: (collection: string, data: unknown) => unknown;
-}
-
 /**
  * Sentinel author id used by clients pre-identification. The sync server
  * rejects any pushed doc still tagged with it — the client must reassign to
@@ -50,8 +41,6 @@ const LOCAL_AUTHOR_ID = '_local';
 export interface PushResult {
   /** Docs written — always the whole batch; a client only replaces its own rows. */
   accepted: number;
-  /** Always 0; kept for wire compatibility with pre-sibling clients. */
-  skipped: number;
 }
 
 export type PushOutcome =
@@ -59,7 +48,6 @@ export type PushOutcome =
   | { ok: false; status: number; error: string; code: string };
 
 export interface PushOptions {
-  hooks?: SyncHooks;
   /**
    * If supplied alongside an enabled REALTIME binding, accepted writes
    * broadcast a collection invalidation to connected websocket clients.
@@ -116,23 +104,13 @@ export async function pushDocuments(
     };
   }
 
-  let upgraded: SyncDocument[];
-  try {
-    const migrate = opts.hooks?.migrate;
-    upgraded = migrate ? docs.map((d) => ({ ...d, data: migrate(d.collection, d.data) })) : docs;
-  } catch (err) {
-    return {
-      ok: false,
-      status: 400,
-      error: err instanceof Error ? err.message : 'Migration failed',
-      code: 'migration_failed',
-    };
-  }
-
-  const result = await upsertDocuments(env.DB, app.appName, app.clientId, upgraded);
+  // The body is opaque: no server-side transform of any kind. Migrations run
+  // on the client (migrate-on-read), where the schema lives — the server
+  // couldn't apply them to encrypted docs anyway.
+  const result = await upsertDocuments(env.DB, app.appName, app.clientId, docs);
 
   if (env.ENABLE_REALTIME === 'true' && result.accepted > 0 && opts.waitUntil) {
-    const collections = [...new Set(upgraded.map((d) => d.collection))];
+    const collections = [...new Set(docs.map((d) => d.collection))];
     // One Durable Object per app: the DO's socket set only ever contains this
     // app's clients, so cross-tenant broadcast is impossible by construction.
     const stub = env.REALTIME.get(env.REALTIME.idFromName(app.appName));

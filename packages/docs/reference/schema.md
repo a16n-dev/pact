@@ -13,7 +13,7 @@ CREATE TABLE documents (
   app_name TEXT NOT NULL,
   id TEXT NOT NULL, collection TEXT NOT NULL,
   client_id TEXT NOT NULL,
-  updated_at TEXT NOT NULL, data TEXT NOT NULL,
+  data TEXT NOT NULL,
   seq INTEGER NOT NULL,
   PRIMARY KEY (app_name, collection, id, client_id)
 );
@@ -49,7 +49,7 @@ The dynamically provisioned half of the tenant roster — one row per app create
 
 ## `documents`
 
-The whole document store, for every app: **one row per (document, writing client)**. The server never merges — a push replaces only the calling client's row, and concurrent versions from different clients (siblings) sit side by side; every client folds them on pull (see [Sync](/guide/sync#clients-resolve-conflicts-the-server-stores-siblings)). The full JSON body lives in `data` as text.
+The whole document store, for every app: **one row per (document, writing client)**. The server never merges — a push replaces only the calling client's row, and concurrent versions from different clients (siblings) sit side by side; every client folds them on pull (see [Sync](/guide/sync#clients-resolve-conflicts-the-server-stores-siblings)). The full JSON body lives in `data` as text, and nothing from it is promoted to a column: the server never reads a document to decide anything.
 
 | Column | Purpose |
 |--------|---------|
@@ -57,7 +57,6 @@ The whole document store, for every app: **one row per (document, writing client
 | `id` | Document id. Part of the composite primary key. |
 | `collection` | Collection name. Part of the composite primary key. |
 | `client_id` | The client that wrote this row. Rows migrated from the pre-sibling schema carry `_legacy`. |
-| `updated_at` | The document's `updatedAt`, promoted so clients can fold without parsing `data`. The server doesn't compare it. |
 | `data` | The full document JSON (including the base fields and your domain fields). |
 | `seq` | Server-assigned monotonic write sequence, **per app** — the pull cursor. |
 

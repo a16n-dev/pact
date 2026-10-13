@@ -10,7 +10,6 @@ function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): Sy
   return {
     id,
     collection,
-    updatedAt,
     data: { id, updatedAt, createdBy: by, updatedBy: by },
   };
 }
@@ -72,7 +71,6 @@ describe('pushDocuments', () => {
       {
         id: 'w2',
         collection: 'widgets',
-        updatedAt: 't',
         data: { createdBy: '_local', updatedBy: 'us/1' },
       },
     ]);
@@ -87,7 +85,6 @@ describe('pushDocuments', () => {
       {
         id: 'w1',
         collection: 'widgets',
-        updatedAt: 't',
         data: { createdBy: 'us/1', updatedBy: 'us/1', deletedBy: '_local' },
       },
     ]);
@@ -96,28 +93,12 @@ describe('pushDocuments', () => {
     expect(out.code).toBe('local_author_push_rejected');
   });
 
-  it('runs the migrate hook on each doc', async () => {
-    const migrate = vi.fn((_collection: string, data: unknown) => data);
-    await pushDocuments(fakeEnv().env, APP_A, [doc('w1', 'widgets', 't')], { hooks: { migrate } });
-    expect(migrate).toHaveBeenCalledWith('widgets', expect.objectContaining({ id: 'w1' }));
-  });
-
-  it('fails with migration_failed when the migrate hook throws', async () => {
-    const migrate = () => {
-      throw new Error('schema too new');
-    };
-    const out = await pushDocuments(throwingEnv(), APP_A, [doc('w1', 'widgets', 't')], {
-      hooks: { migrate },
-    });
-    expect(out).toMatchObject({ ok: false, code: 'migration_failed', error: 'schema too new' });
-  });
-
   it('accepts the whole batch — a client only ever replaces its own rows', async () => {
     const out = await pushDocuments(fakeEnv().env, APP_A, [
       doc('a', 'widgets', 't'),
       doc('b', 'widgets', 't'),
     ]);
-    expect(out).toEqual({ ok: true, result: { accepted: 2, skipped: 0 } });
+    expect(out).toEqual({ ok: true, result: { accepted: 2 } });
   });
 
   it('broadcasts to realtime when enabled and waitUntil is provided', async () => {
@@ -167,11 +148,11 @@ describe('upsertDocuments (per-client rows)', () => {
   it("writes each doc into the pushing client's own row", async () => {
     const { db, calls } = recordingDb();
     const result = await upsertDocuments(db, 'app-a', 'cl-a', [doc('a', 'c', 't')]);
-    expect(result).toEqual({ accepted: 1, skipped: 0 });
+    expect(result).toEqual({ accepted: 1 });
     expect(calls).toHaveLength(1);
     expect(calls[0].sql).toContain('INSERT INTO documents');
-    expect(calls[0].sql).not.toContain('WHERE excluded'); // no server-side LWW guard
-    expect(calls[0].args).toEqual(['app-a', 'a', 'c', 'cl-a', 't', expect.any(String)]);
+    expect(calls[0].sql).not.toContain('updated_at'); // body is opaque: nothing promoted
+    expect(calls[0].args).toEqual(['app-a', 'a', 'c', 'cl-a', expect.any(String)]);
   });
 
   it("never touches other clients' rows", async () => {
@@ -268,7 +249,6 @@ describe('getDocumentsSince (pagination)', () => {
             id: `d${i}`,
             collection: 'c',
             client_id: 'cl-x',
-            updated_at: 't',
             data: '{}',
             seq: cursor + i + 1,
           }));

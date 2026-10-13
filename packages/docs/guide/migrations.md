@@ -38,21 +38,9 @@ read recipe r-123 (schemaVersion: 1)
 - **Forward-incompat is loud.** A document at a `schemaVersion` *higher* than the build knows throws ("upgrade the app") rather than silently corrupting data. An old client will refuse to mangle a document written by a newer one.
 - **One chain per collection.** Each collection declares its `current` version and the ordered `from → to` steps to reach it.
 
-## Keeping client and server aligned
+## The server never migrates
 
-The server can run the **same chain** on the push path via the `migrate` hook, so documents are normalized to a known version as they land in D1:
-
-```ts
-import { createSyncApp } from '@a16n/pact-server';
-
-export default createSyncApp({
-  hooks: {
-    migrate: (collection, data) => myMigrator.migrate(collection, data),
-  },
-});
-```
-
-Because the `up` functions are pure, the exact same `Migrator` instance can be shared between client and server builds — there's only ever one definition of how a collection evolves.
+Migrations are a client concern only. The server stores document bodies opaquely — it can't see inside encrypted ones at all — and never transforms them on push. A document at any `schemaVersion` sits on the server as written; whichever client pulls it walks it forward on read. That's what lets clients on different builds coexist: each one migrates what it sees to the version it knows.
 
 ::: tip Versioning workflow
 When you change a collection's shape:

@@ -213,7 +213,7 @@ const migrator = new Migrator({
 - **Migrate-on-read.** Behind-version docs are upgraded on every read and lazily written back, so old shapes drain from local storage over time.
 - **Pure functions.** A migration's `up` can't read other collections or do IO.
 - **Forward-incompat is loud.** A doc at a `schemaVersion` higher than the build knows throws ("upgrade the app") rather than silently corrupting data.
-- The server can run the same chain on push via the `migrate` hook, keeping client and server schemas aligned.
+- The server never migrates. It stores bodies opaquely; whichever client pulls a doc walks it forward on read.
 
 ## Blobs
 
@@ -254,7 +254,6 @@ import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 export { RealtimeDO };  // Durable Object class for realtime fan-out
 
 export default createSyncApp({
-  hooks: { migrate: (collection, data) => myMigrator.migrate(collection, data) },
   info: { mcp: true },  // extra fields merged into GET /info
 });
 ```

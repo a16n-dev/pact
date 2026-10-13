@@ -19,12 +19,11 @@ import type { SyncDocument, BlobRecord } from '../types';
 // index is the backstop: a counter bug fails loudly instead of silently
 // corrupting pull cursors.
 const UPSERT_SQL = `
-  INSERT INTO documents (app_name, id, collection, client_id, updated_at, data, seq)
-  VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+  INSERT INTO documents (app_name, id, collection, client_id, data, seq)
+  VALUES (?1, ?2, ?3, ?4, ?5,
           (SELECT COALESCE(MAX(seq), 0) + 1 FROM documents WHERE app_name = ?1))
   ON CONFLICT (app_name, collection, id, client_id) DO UPDATE
-    SET updated_at = excluded.updated_at,
-        data = excluded.data,
+    SET data = excluded.data,
         seq = excluded.seq
 `;
 
@@ -37,7 +36,7 @@ const UPSERT_SQL = `
 const PULL_PAGE_SIZE = 500;
 
 const PULL_SQL = `
-  SELECT id, collection, client_id, updated_at, data, seq
+  SELECT id, collection, client_id, data, seq
   FROM documents
   WHERE app_name = ?1 AND collection = ?2 AND seq > ?3
   ORDER BY seq ASC
@@ -45,7 +44,7 @@ const PULL_SQL = `
 `;
 
 const PULL_BY_ID_SQL = `
-  SELECT id, collection, client_id, updated_at, data, seq
+  SELECT id, collection, client_id, data, seq
   FROM documents
   WHERE app_name = ?1 AND collection = ?2 AND id = ?3
   ORDER BY seq ASC
@@ -56,7 +55,6 @@ function rowToDocument(row: Record<string, unknown>): SyncDocument {
     id: row.id as string,
     collection: row.collection as string,
     clientId: row.client_id as string,
-    updatedAt: row.updated_at as string,
     data: JSON.parse(row.data as string),
     seq: row.seq as number,
   };
@@ -74,15 +72,13 @@ export async function upsertDocuments(
   appName: string,
   clientId: string,
   docs: SyncDocument[]
-): Promise<{ accepted: number; skipped: number }> {
+): Promise<{ accepted: number }> {
   const statements = docs.map((doc) =>
-    db
-      .prepare(UPSERT_SQL)
-      .bind(appName, doc.id, doc.collection, clientId, doc.updatedAt, JSON.stringify(doc.data))
+    db.prepare(UPSERT_SQL).bind(appName, doc.id, doc.collection, clientId, JSON.stringify(doc.data))
   );
 
   await db.batch(statements);
-  return { accepted: docs.length, skipped: 0 };
+  return { accepted: docs.length };
 }
 
 /**

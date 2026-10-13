@@ -1,7 +1,7 @@
 export interface SyncDocument {
   id: string;
   collection: string;
-  updatedAt: string;
+  /** The full document body. Opaque to the server. */
   data: unknown;
   /**
    * Which client's row this is. Set by the server on every pulled document
@@ -30,9 +30,8 @@ export interface PushRequest {
 }
 
 export interface PushResponse {
+  /** Documents written — always the whole batch. */
   accepted: number;
-  /** Always 0 since per-client rows: kept for wire compatibility. */
-  skipped: number;
 }
 
 export interface PullResponse {

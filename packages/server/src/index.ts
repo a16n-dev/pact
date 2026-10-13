@@ -1,8 +1,7 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { handlePull, makePushHandler } from './sync/handlers';
-import type { SyncHooks } from './sync/api';
+import { handlePull, handlePush } from './sync/handlers';
 import { handleBlobGet, handleBlobList, handleBlobPut } from './sync/blobs';
 import {
   bumpClientLastSeen,
@@ -17,7 +16,6 @@ import { isValidAppName, resolveAppAuth, upsertApp } from './apps';
 type Variables = { client: ClientRow };
 
 export interface CreateSyncAppOptions {
-  hooks?: SyncHooks;
   /**
    * Extra fields merged into the `GET /info` response. The deploy package
    * uses this to advertise capabilities it has wired up on top of the bare
@@ -170,7 +168,7 @@ export function createSyncApp(
     })
   );
 
-  app.post('/sync/push', makePushHandler(options.hooks));
+  app.post('/sync/push', handlePush);
   app.get('/sync/pull', handlePull);
   app.get('/sync/blobs', handleBlobList);
   app.put('/sync/blobs/:hash', handleBlobPut);

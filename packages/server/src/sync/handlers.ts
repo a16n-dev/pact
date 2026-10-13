@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { pushDocuments, pullDocument, pullDocumentsSince, type SyncHooks } from './api';
+import { pushDocuments, pullDocument, pullDocumentsSince } from './api';
 import type { Env, PushRequest, PullResponse } from '../types';
 import type { ClientRow } from '../auth/auth';
 
@@ -13,18 +13,15 @@ function appOf(c: Context<HonoEnv>): { appName: string; clientId: string } {
   return { appName: client.appName, clientId: client.id };
 }
 
-export function makePushHandler(hooks?: SyncHooks) {
-  return async (c: Context<HonoEnv>) => {
-    const body = await c.req.json<PushRequest>();
-    const outcome = await pushDocuments(c.env, appOf(c), body.documents, {
-      hooks,
-      waitUntil: (p) => c.executionCtx.waitUntil(p),
-    });
-    if (!outcome.ok) {
-      return c.json({ error: outcome.error, code: outcome.code }, outcome.status as 400);
-    }
-    return c.json(outcome.result);
-  };
+export async function handlePush(c: Context<HonoEnv>) {
+  const body = await c.req.json<PushRequest>();
+  const outcome = await pushDocuments(c.env, appOf(c), body.documents, {
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+  if (!outcome.ok) {
+    return c.json({ error: outcome.error, code: outcome.code }, outcome.status as 400);
+  }
+  return c.json(outcome.result);
 }
 
 export async function handlePull(c: Context<HonoEnv>) {

@@ -54,8 +54,6 @@ import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 export { RealtimeDO }; // Durable Object class for realtime fan-out
 
 export default createSyncApp({
-  // run your migration chain server-side on the push path (optional)
-  hooks: { migrate: (collection, data) => myMigrator.migrate(collection, data) },
   // extra fields merged into GET /info — advertise capabilities you've wired up
   info: { mcp: true },
 });

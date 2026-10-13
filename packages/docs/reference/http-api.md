@@ -78,7 +78,7 @@ Each returned document carries `clientId` (whose row it is) and `seq`. A respons
 Writes a batch of documents into the **calling client's own rows** (`(app_name, collection, id, client_id)`). There is no server-side conflict rule: a client only ever replaces its own row, so every document in the batch is accepted.
 
 ```json
-{ "documents": [{ "id": "r-1", "collection": "recipes", "updatedAt": "…", "data": { … } }] }
+{ "documents": [{ "id": "r-1", "collection": "recipes", "data": { … } }] }
 ```
 
 Documents authored by `_local` are rejected — claim an identity first (see [Authors & Identity](/guide/authors-identity)). If realtime is enabled, accepted writes broadcast an `invalidate` to connected sockets via `waitUntil`.

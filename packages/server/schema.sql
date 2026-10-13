@@ -18,12 +18,13 @@ CREATE TABLE apps (
 -- push. Concurrent versions of the same document from different clients
 -- ("siblings") coexist; every client folds them with the same rule on pull.
 -- Rows migrated from the pre-sibling schema carry client_id '_legacy'.
+-- `data` is opaque: the server never reads it. Everything a client needs to
+-- fold siblings (updatedAt and the rest of the base fields) is inside it.
 CREATE TABLE documents (
   app_name TEXT NOT NULL,
   id TEXT NOT NULL,
   collection TEXT NOT NULL,
   client_id TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
   data TEXT NOT NULL,
   seq INTEGER NOT NULL,
   PRIMARY KEY (app_name, collection, id, client_id)
