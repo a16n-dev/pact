@@ -16,8 +16,8 @@ interface PushResponse {
 interface PullResponse {
   documents: SyncDocument[];
   cursor: number;
-  // Absent from a pre-pagination server, which returns the whole collection in
-  // one response — treated as no-more-pages, which is correct for that server.
+  // Absent from a pre-pagination server, which returns everything in one
+  // response, so absent correctly means no more pages.
   hasMore?: boolean;
 }
 
@@ -28,12 +28,9 @@ export type RegisterResult =
   | { ok: false; reason: 'url' | 'auth' | 'server' };
 
 /**
- * One-time exchange: trade the app's password for a long-lived per-client
- * access token. `appName` names which app on a (possibly multi-tenant)
- * server this client belongs to; the returned token is bound to that app
- * server-side, so no later request needs to carry it. The clientId is
- * supplied by the caller (persisted locally so it survives retries and
- * reinstalls). Re-registering the same clientId replaces the previous token.
+ * Trades the app password for a long-lived access token bound server-side to
+ * `appName`, so later requests carry only the token. The caller persists
+ * `clientId`; re-registering the same id replaces its previous token.
  */
 export async function registerClient(
   url: string,
@@ -65,9 +62,9 @@ export async function registerClient(
 }
 
 /**
- * Optional wire transform applied to document bodies at the sync boundary —
- * the hook end-to-end encryption uses. `toWire` shapes a local doc into what
- * the server stores; `fromWire` reverses it on pull. Identity when absent.
+ * Rewrites document bodies at the wire boundary (the hook end-to-end
+ * encryption uses). `toWire` runs before push, `fromWire` after pull;
+ * identity when absent.
  */
 export interface SyncTransform {
   toWire(collection: string, doc: BaseDocument): Promise<unknown>;
@@ -96,13 +93,10 @@ export class SyncClient {
     return { Authorization: `Bearer ${this.token}` };
   }
 
-  /**
-   * The wire identity of a collection: its `CollectionDefinition.key` when the
-   * domain aliases it, the name itself otherwise. Applied at each method's
-   * entry so the URL, the per-doc `collection` field, *and* the transform all
-   * see the key — with encryption on, that binds wire envelopes to the same
-   * identity local storage seals against (see `AliasAdapter`).
-   */
+  // A collection travels under its `CollectionDefinition.key`. Resolved at each
+  // method's entry so the URL, the per-doc `collection` field and the transform
+  // all see the key; with encryption on, that binds wire envelopes to the same
+  // identity local storage seals against (see AliasAdapter).
   private toKey(collection: string): string {
     return this.collectionKeys?.get(collection) ?? collection;
   }

@@ -5,11 +5,7 @@ export interface SyncDocument {
   data: unknown;
 }
 
-/**
- * Registry row for a content-addressed blob. The bytes live in R2 keyed by
- * `hash`; this row is the authoritative record that the blob exists, plus
- * metadata (mime/size/createdAt) queryable without fetching the bytes.
- */
+// Authoritative record that a blob exists; the bytes live in R2 under `hash`.
 export interface BlobRecord {
   hash: string;
   mimeType: string;
@@ -21,16 +17,10 @@ export interface PushRequest {
   documents: SyncDocument[];
 }
 
-export interface PushResponse {
-  accepted: number;
-  skipped: number;
-}
-
 export interface PullResponse {
   documents: SyncDocument[];
-  /** Server `seq` high-water mark the client persists as its next pull cursor. */
+  // Server `seq` high-water mark; the client persists it as its next cursor.
   cursor: number;
-  /** Whether documents beyond this page remain; the client re-pulls while true. */
   hasMore: boolean;
 }
 
@@ -39,13 +29,8 @@ import type { RealtimeDO } from './realtime';
 export interface Env {
   DB: D1Database;
   BLOBS: R2Bucket;
-  /**
-   * Master key guarding dynamic app provisioning via `POST /apps` (create an
-   * app or rotate its password). This is the only way apps come into
-   * existence — clients name their app at registration, and everything after
-   * that is scoped by the app recorded on their client row. When unset, the
-   * route is disabled and no apps can be created.
-   */
+  // Guards `POST /apps`, the only way an app comes into existence. Unset
+  // disables the route.
   PROVISION_KEY?: string;
   SERVER_NAME: string;
   ENABLE_REALTIME: string;

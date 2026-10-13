@@ -1,18 +1,10 @@
 import type { BaseDocument } from '../types';
 
 /**
- * Build a `StoreDomain.blobHashes` extractor from a map of collection → the
- * top-level fields that hold blob hashes. Sugar for the common case where
- * references are flat string fields (e.g. `recipes.imageContentHash`): each
- * named field contributes its value when it's a non-empty string, so optional
- * and not-yet-set fields are skipped.
- *
- * ```ts
- * const domain = { blobHashes: blobFields({ recipes: ['imageContentHash'] }) };
- * ```
- *
- * For references nested in arrays or objects, or parsed out of a body, write
- * the `blobHashes` function directly instead.
+ * Builds a `StoreDomain.blobHashes` extractor for the common case where blob
+ * references are flat string fields, e.g. `{ recipes: ['imageContentHash'] }`.
+ * Empty or unset fields are skipped. References nested in arrays or objects
+ * need a hand-written `blobHashes` instead.
  */
 export function blobFields(
   map: Record<string, readonly string[]>

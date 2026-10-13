@@ -1,39 +1,21 @@
 import dayjs from 'dayjs';
 import type { Env } from './types';
 
-/**
- * App names become R2 key prefixes, Durable Object names, and SQL values, so
- * the charset is locked down at the only doors an app name can enter through
- * (register + provisioning). Notably no `/` — that would let one app's blob
- * keys alias into another's prefix.
- */
+// App names become R2 key prefixes, Durable Object names, and SQL values.
+// No `/`: it would let one app's blob keys alias into another's R2 prefix.
 const APP_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export function isValidAppName(name: string): boolean {
   return APP_NAME_RE.test(name);
 }
 
-// --- Table-provisioned apps -------------------------------------------------
-//
-// Apps are created at runtime via `POST /apps` (guarded by the PROVISION_KEY
-// secret) into the D1 `apps` table. Passwords are human-chosen and stored
-// only as PBKDF2 hashes, so a database leak doesn't expose reusable
-// credentials.
-
-/**
- * PBKDF2 work factor. Native WebCrypto keeps this cheap in absolute terms,
- * and it only runs on register/claim (never on token-authed requests), so it
- * costs nothing on the hot path. Encoded into each stored hash, so it can be
- * raised later without invalidating existing rows.
- */
+// Only runs on register/provision, never on token-authed requests. Encoded
+// into each stored hash, so raising it does not invalidate existing rows.
 const PBKDF2_ITERATIONS = 50_000;
 
-/**
- * Verified against when the requested app exists nowhere, so an unknown app
- * costs the same PBKDF2 derivation as a real one and the uniform 401 can't
- * be used to probe which app names are provisioned. Never matches: the
- * result for a missing row is discarded (see `resolveAppAuth`).
- */
+// Verified against when the app does not exist, so an unknown app costs the
+// same derivation as a real one and the uniform 401 cannot be used to probe
+// which names are provisioned. Its result is always discarded.
 const DUMMY_HASH = `pbkdf2$${PBKDF2_ITERATIONS}$${'0'.repeat(32)}$${'0'.repeat(64)}`;
 
 function hex(bytes: Uint8Array): string {
@@ -66,14 +48,12 @@ async function deriveBits(
   return new Uint8Array(bits);
 }
 
-/** `pbkdf2$<iterations>$<salt-hex>$<hash-hex>` with a fresh random salt. */
 export async function hashAppPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await deriveBits(password, salt, PBKDF2_ITERATIONS);
   return `pbkdf2$${PBKDF2_ITERATIONS}$${hex(salt)}$${hex(hash)}`;
 }
 
-/** Constant-time verify of a password against a stored `pbkdf2$…` string. */
 export async function verifyAppPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split('$');
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
@@ -83,17 +63,12 @@ export async function verifyAppPassword(password: string, stored: string): Promi
   const expected = unhex(parts[3]!);
   const actual = await deriveBits(password, salt, iterations);
   if (actual.length !== expected.length) return false;
+  // Constant-time compare: no early-out on the first differing byte.
   let diff = 0;
   for (let i = 0; i < actual.length; i += 1) diff |= actual[i]! ^ expected[i]!;
   return diff === 0;
 }
 
-/**
- * The single register-time credential check. Unknown apps still burn a full
- * PBKDF2 comparison (dummy hash) and return plain `false`, indistinguishable
- * from a wrong password — so the uniform 401 can't be used to probe which app
- * names are provisioned.
- */
 export async function resolveAppAuth(
   env: Env,
   appName: string,
@@ -102,15 +77,14 @@ export async function resolveAppAuth(
   const row = await env.DB.prepare(`SELECT password_hash FROM apps WHERE app_name = ?1`)
     .bind(appName)
     .first();
+  // Always derive, even for a missing row, so unknown app and wrong password
+  // are indistinguishable in both timing and response.
   const matched = await verifyAppPassword(password, (row?.password_hash as string) ?? DUMMY_HASH);
   return row !== null && matched;
 }
 
-/**
- * Create an app or rotate its password (`POST /apps` body). Rotation doesn't
- * touch existing client rows — tokens are app-bound independently of the
- * password, so already-registered clients keep working.
- */
+// Rotating the password leaves client rows alone: tokens are bound to the
+// app, not the password, so registered clients keep working.
 export async function upsertApp(
   db: D1Database,
   appName: string,

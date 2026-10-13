@@ -18,13 +18,8 @@ function mkDoc(id: string, name: string): Widget {
   };
 }
 
-/**
- * The behavior every `DatabaseAdapter` must have, as a reusable vitest
- * suite. Point it at a factory for your adapter and you've tested the
- * contract the `Store` relies on. Note what is NOT here: adapters never
- * filter tombstones, never validate, never migrate — they store documents
- * verbatim and the Store does the rest.
- */
+// Adapters store documents verbatim: no tombstone filtering, validation, or
+// migration. The Store does all of that, so none of it is tested here.
 export function describeAdapterContract(
   name: string,
   factory: () => Promise<{ adapter: DatabaseAdapter; cleanup?: () => void | Promise<void> }>

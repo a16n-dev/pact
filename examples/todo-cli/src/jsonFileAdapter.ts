@@ -4,14 +4,6 @@ import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
 
 type FileShape = Record<string, Record<string, BaseDocument>>;
 
-/**
- * `DatabaseAdapter` backed by a single JSON file — for Node CLIs, scripts,
- * and small tools where "the database" being a human-readable file you can
- * `cat` is a feature. Loads the whole file into memory on first access and
- * rewrites it after every mutation (atomically: temp file + rename), so it's
- * for small datasets and a single process; use the `node:sqlite` recipe when
- * either stops being true.
- */
 export class JsonFileAdapter implements DatabaseAdapter {
   private data: FileShape | null = null;
   private readonly filePath: string;
@@ -20,6 +12,8 @@ export class JsonFileAdapter implements DatabaseAdapter {
     this.filePath = filePath;
   }
 
+  // The file is read once and cached, so a second process writing the same
+  // file is not seen. Single-process use only.
   private async load(): Promise<FileShape> {
     if (this.data) return this.data;
     try {
@@ -31,6 +25,7 @@ export class JsonFileAdapter implements DatabaseAdapter {
     return this.data;
   }
 
+  // Write to a temp file and rename so a crash mid-write cannot truncate the data file.
   private async save(): Promise<void> {
     const tmpPath = `${this.filePath}.tmp`;
     await mkdir(dirname(this.filePath), { recursive: true });
@@ -65,7 +60,7 @@ export class JsonFileAdapter implements DatabaseAdapter {
     const data = await this.load();
     const col = (data[collection] ??= {});
     for (const doc of docs) col[doc.id] = doc;
-    await this.save(); // one rewrite for the whole batch
+    await this.save();
   }
 
   async delete(collection: string, id: string): Promise<void> {

@@ -3,9 +3,6 @@ import { pushDocuments, pullDocument, pullDocumentsSince, type SyncHooks } from 
 import type { Env, PushRequest, PullResponse } from '../types';
 import type { ClientRow } from '../auth/auth';
 
-// These handlers run behind `requireAuth`, which stores the authenticated
-// client row; its `appName` (recorded at registration, never client-supplied)
-// is the tenant scope for every operation here.
 type HonoEnv = { Bindings: Env; Variables: { client: ClientRow } };
 
 function appOf(c: Context<HonoEnv>): { appName: string } {

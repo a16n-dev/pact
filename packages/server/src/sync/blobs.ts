@@ -3,29 +3,18 @@ import { getBlob, listBlobs, putBlob } from './api';
 import type { Env } from '../types';
 import type { ClientRow } from '../auth/auth';
 
-// Runs behind `requireAuth`; the client row's appName scopes every blob op.
 type HonoEnv = { Bindings: Env; Variables: { client: ClientRow } };
 
 function appOf(c: Context<HonoEnv>): { appName: string } {
   return { appName: c.get('client').appName };
 }
 
-/**
- * Content-addressed blob storage, namespaced per app. Bytes are keyed by
- * `<appName>/<sha-256 hex>`, so within an app the bucket is effectively a
- * CAS — duplicate puts collapse, and `GET /sync/blobs` returns the
- * authoritative set of stored hashes for clients to diff against their
- * local cache.
- */
-
 export async function handleBlobPut(c: Context<HonoEnv>) {
   const hash = c.req.param('hash')!;
   const contentType = c.req.header('content-type') ?? 'application/octet-stream';
   const body = await c.req.arrayBuffer();
-  // Content-addressing is the whole integrity model (dedupe, idempotency,
-  // "same hash ⇒ same bytes"). Verify it server-side rather than trusting the
-  // client's key, so a buggy or hostile client can't store wrong bytes under a
-  // hash other documents reference.
+  // Content-addressing is the integrity model: a client must not be able to
+  // store other bytes under a hash that documents already reference.
   const actual = await sha256Hex(body);
   if (actual !== hash) {
     return c.json({ error: 'blob hash does not match content', code: 'hash_mismatch' }, 400);

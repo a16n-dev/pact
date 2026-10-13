@@ -3,33 +3,22 @@ import type { DatabaseAdapter } from './adapter';
 import type { DocCipher } from '../crypto/types';
 import { encryptDoc, decryptDoc, tryDecryptDoc } from '../crypto/docCrypto';
 
-/** How reads treat an envelope the cipher cannot open. */
 export interface EncryptedAdapterOptions {
   /**
-   * `'throw'` (default): a wrong key is fatal — the single-key model.
-   * `'hide'`: undecryptable docs read as missing (`get` → null, `getMany`/
-   * `getAll` filter them out), so any key opens the store and each key sees
-   * only the subset it sealed. Rows stay intact at rest either way.
+   * `'throw'` (default): an envelope this key cannot open is fatal.
+   * `'hide'`: such docs read as missing (`get` is null, `getMany` and `getAll`
+   * omit them), so any key opens the store and sees only what it sealed.
+   * Rows stay intact at rest either way.
    */
   onUndecryptable?: 'throw' | 'hide';
 }
 
 /**
- * The at-rest encryption seam: wraps any DatabaseAdapter so documents are
- * sealed on write and opened on read — the underlying storage only ever
- * holds base sync fields plus one ciphertext string, and plaintext exists
- * only in memory. Everything above this wrapper (migrations, validation,
- * LWW merge, blob-reference extraction, backups) keeps seeing plaintext.
- *
- * Internal `_`-prefixed collections (credentials, cursors, outbox) pass
- * through unencrypted: they never sync, and encrypting them would make the
- * key-check value depend on the key that guards it. Non-envelope rows in
- * regular collections also read through unchanged, so enabling encryption on
- * an existing install degrades gracefully (see `Store.encryptLocalData`).
- *
- * In `'hide'` mode, undecryptable envelopes never surface above this wrapper
- * — the layers above (migrator especially) must only ever see plaintext, or
- * a migration would run against a doc with no domain fields.
+ * Seals domain fields on write and opens them on read, so storage below holds
+ * only base fields plus one ciphertext string while every layer above
+ * (migrations, validation, LWW merge, blob extraction, backups) sees
+ * plaintext. In `'hide'` mode an unopenable envelope must never surface
+ * upward: a migration run against a doc with no domain fields would corrupt it.
  */
 export class EncryptedAdapter implements DatabaseAdapter {
   private readonly inner: DatabaseAdapter;
@@ -42,6 +31,8 @@ export class EncryptedAdapter implements DatabaseAdapter {
     this.hideUndecryptable = options?.onUndecryptable === 'hide';
   }
 
+  // Internal `_*` collections (credentials, cursors, outbox) never sync, and
+  // encrypting them would make the key-check value depend on the key it guards.
   private isPassthrough(collection: string): boolean {
     return collection.startsWith('_');
   }

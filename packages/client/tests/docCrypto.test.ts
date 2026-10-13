@@ -28,7 +28,6 @@ describe('encryptDoc / decryptDoc', () => {
 
   it('round-trips a doc, keeping base fields cleartext and domain fields sealed', async () => {
     const sealed = await encryptDoc(cipher, 'widgets', widget());
-    // Base fields visible, domain fields gone, envelope present.
     expect(sealed.id).toBe('w1');
     expect(sealed.updatedAt).toBe('2026-01-02T00:00:00.000Z');
     expect(sealed.enc).toMatch(/^pactenc\$1\$/);

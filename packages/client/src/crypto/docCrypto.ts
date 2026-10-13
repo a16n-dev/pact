@@ -2,18 +2,13 @@ import type { BaseDocument } from '../types';
 import { ENVELOPE_PREFIX, type DocCipher } from './types';
 
 /**
- * A document whose domain fields have been folded into one sealed string.
- * This single shape is both what an encrypted Store persists locally and
- * what goes over the sync wire — the base sync/audit fields stay cleartext
- * (LWW merge, author reassignment, and audit need them), everything else is
- * ciphertext.
+ * The one shape an encrypted Store both persists locally and sends over the
+ * wire. Base fields stay cleartext because LWW merge, author reassignment,
+ * and audit need them; every other field is inside `enc`.
  */
 export type EncryptedDoc = BaseDocument & { enc: string };
 
-/**
- * The BaseDocument fields that stay cleartext on an encrypted doc. Everything
- * NOT in this set is a domain field and gets sealed.
- */
+// Must match the keys of `BaseDocumentSchema`; anything else is sealed.
 const BASE_FIELDS = new Set([
   'id',
   'schemaVersion',
@@ -34,7 +29,8 @@ export function isEncryptedDoc(doc: unknown): doc is EncryptedDoc {
   );
 }
 
-/** Authenticated context binding an envelope to its document identity. */
+// Binding the envelope to collection and id means a ciphertext moved onto a
+// different document fails to open.
 function aadFor(collection: string, id: string): string {
   return `${collection}/${id}`;
 }
@@ -43,9 +39,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Seal a doc's domain fields into an `enc` envelope, keeping base fields
- * cleartext. Already-encrypted docs pass through unchanged (never
- * double-wrapped — e.g. a raw envelope being re-put during a restore).
+ * An already-sealed doc is returned as is rather than double-wrapped, which
+ * is what lets a restore re-put raw envelopes.
  */
 export async function encryptDoc<T extends BaseDocument>(
   cipher: DocCipher,
@@ -64,10 +59,9 @@ export async function encryptDoc<T extends BaseDocument>(
 }
 
 /**
- * Open an encrypted doc back into its plaintext shape. Non-envelope docs pass
- * through unchanged, so stores with mixed plaintext/encrypted history (or
- * encryption newly enabled) read cleanly. Throws on a wrong key or a
- * tampered/transplanted envelope.
+ * A non-envelope doc is returned unchanged, so a store with mixed plaintext
+ * and encrypted history reads cleanly. Throws on a wrong key or a tampered or
+ * transplanted envelope.
  */
 export async function decryptDoc<T extends BaseDocument>(
   cipher: DocCipher,
@@ -82,12 +76,10 @@ export async function decryptDoc<T extends BaseDocument>(
 }
 
 /**
- * `decryptDoc`, but an envelope this cipher cannot open returns `null`
- * instead of throwing — the multi-key (`onUndecryptable: 'hide'`) read path,
- * where a doc sealed under a different key is simply invisible. AES-GCM
- * cannot distinguish a wrong key from tampering, so both hide. A JSON parse
- * failure *after* successful authentication is real corruption and still
- * throws.
+ * Like `decryptDoc`, but an envelope this cipher cannot open yields `null`
+ * (the `onUndecryptable: 'hide'` path). AES-GCM cannot tell a wrong key from
+ * tampering, so both hide; a JSON parse failure after authentication is real
+ * corruption and still throws.
  */
 export async function tryDecryptDoc<T extends BaseDocument>(
   cipher: DocCipher,

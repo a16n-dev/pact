@@ -2,11 +2,8 @@ import { nanoid } from 'nanoid';
 import dayjs from 'dayjs';
 
 export interface ClientRow {
-  /**
-   * Tenant the client registered under. Recorded once at registration and
-   * thereafter the sole source of a request's app scope — never a
-   * client-supplied header.
-   */
+  // Recorded once at registration; the sole source of a request's app scope.
+  // Never taken from a client-supplied header.
   appName: string;
   id: string;
   name: string;
@@ -14,25 +11,19 @@ export interface ClientRow {
   lastSeenAt: string;
 }
 
-export function generateClientToken(): string {
+function generateClientToken(): string {
   return `pact_${nanoid(32)}`;
 }
 
-/**
- * SHA-256 hex of a token. Access tokens are stored hashed, never in plaintext,
- * so a database leak doesn't expose usable credentials. Tokens are
- * high-entropy random, so a plain digest (no salt/KDF) is sufficient.
- */
+// Tokens are stored only as this digest. They are high-entropy random, so a
+// plain hash without salt or KDF is enough.
 async function hashToken(token: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * Constant-time string equality via SHA-256 digests. Avoids leaking how many
- * leading bytes matched (a timing side-channel on the server password): the
- * digest compare is fixed-length with no early-out.
- */
+// Compares fixed-length digests with no early-out, so timing does not leak
+// how many leading bytes of the secret matched.
 export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const [da, db] = await Promise.all([
@@ -61,10 +52,9 @@ export async function registerClient(
   const token = generateClientToken();
   const tokenHash = await hashToken(token);
   const now = dayjs().toISOString();
-  // Persist only the hash; the raw token is returned to the caller once and
-  // never stored server-side. (The `token` column holds the hash.) Client ids
-  // are only unique per app — the same id under a different app is a
-  // different client, never an overwrite.
+  // The `token` column holds the hash; the raw token is returned once and
+  // never stored. Client ids are unique per app, so the same id under another
+  // app is a different row, not an overwrite.
   await db
     .prepare(
       `INSERT INTO clients (app_name, id, name, token, created_at, last_seen_at)
@@ -79,14 +69,13 @@ export async function registerClient(
   return { token };
 }
 
+// Tokens are globally unique, so the token alone resolves the client and its
+// app. This is where every authenticated request acquires its tenant scope.
 export async function lookupClientByToken(
   db: D1Database,
   token: string
 ): Promise<ClientRow | null> {
   const tokenHash = await hashToken(token);
-  // Tokens are globally unique (high-entropy random, UNIQUE column), so the
-  // token alone resolves both the client and its app — this lookup is where
-  // every authenticated request acquires its tenant scope.
   const row = await db
     .prepare(
       `SELECT app_name, id, name, created_at, last_seen_at

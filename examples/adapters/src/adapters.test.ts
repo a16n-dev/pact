@@ -1,7 +1,3 @@
-// Every runnable recipe is held to the same contract suite. The browser
-// recipes run against stand-ins (an in-memory Storage stub, fake-indexeddb);
-// the expo-sqlite recipe runs against node:sqlite through a thin shim that
-// implements its structural database interface — same SQL, different driver.
 import 'fake-indexeddb/auto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -59,8 +55,8 @@ describeAdapterContract('NodeSqliteAdapter', async () => {
   return { adapter, cleanup: () => adapter.close() };
 });
 
-// node:sqlite wrapped in expo-sqlite's async surface, so the ExpoSqliteAdapter
-// SQL runs for real without an Expo runtime.
+// Wraps node:sqlite in expo-sqlite's async surface so the adapter's SQL runs
+// for real without an Expo runtime.
 function expoShim(db: DatabaseSync): ExpoSqliteDatabase {
   return {
     async execAsync(source) {

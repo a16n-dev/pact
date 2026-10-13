@@ -3,7 +3,6 @@ import { pushDocuments, wipeAllBlobsViaApi, putBlob, getBlob } from './api';
 import { getDocumentsSince, upsertDocuments, ALL_SQL } from './db';
 import type { Env, SyncDocument } from '../types';
 
-/** The tenant most tests act as. */
 const APP_A = { appName: 'app-a' };
 
 function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): SyncDocument {
@@ -15,7 +14,7 @@ function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): Sy
   };
 }
 
-/** Env whose DB throws if touched — proves a code path short-circuits before SQL. */
+// Proves a code path returns before touching SQL.
 function throwingEnv(): Env {
   return {
     DB: {
@@ -30,11 +29,8 @@ function throwingEnv(): Env {
   } as unknown as Env;
 }
 
-/**
- * Env with a fake DB whose batch reports `changes` per statement. The fake
- * REALTIME namespace records which DO name each broadcast targeted, so tests
- * can assert per-app rooms.
- */
+// `changes` is reported per batch statement; `doNames` records which DO each
+// broadcast targeted.
 function fakeEnv(
   opts: { changes?: number[]; enableRealtime?: boolean; broadcast?: () => void } = {}
 ): { env: Env; doNames: string[] } {
@@ -169,7 +165,7 @@ describe('tenant isolation tripwire', () => {
 });
 
 describe('blob storage isolation', () => {
-  /** Fake R2 bucket over a Map, honouring the `prefix` list option. */
+  // Honours the `prefix` list option, which the wipe relies on.
   function fakeBucket(initial: Record<string, string> = {}) {
     const objects = new Map<string, string>(Object.entries(initial));
     return {
@@ -232,8 +228,8 @@ describe('blob storage isolation', () => {
 });
 
 describe('getDocumentsSince (pagination)', () => {
-  // Fake D1 that returns `available` synthetic rows capped at the bound limit,
-  // and records the limit it was asked for (the peek-ahead is limit+1).
+  // Returns `available` rows capped at the bound limit and records that limit
+  // (the implementation peeks limit+1).
   function pagingDb(available: number): { db: D1Database; boundLimit: () => number } {
     let asked = 0;
     const db = {

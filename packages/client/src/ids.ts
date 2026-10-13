@@ -1,13 +1,10 @@
 import { customAlphabet } from 'nanoid';
 
-// Alphanumerics only — deliberately excludes nanoid's default `_` and `-` so
-// that `-` can serve as the prefix separator in the id scheme (`r-AbCd12XY`)
-// without ever appearing in the random part. Every character here is an
-// RFC-3986 unreserved char, so ids drop into URL paths and query strings
-// untouched (no percent-encoding).
+// Drops nanoid's default `_` and `-` so `-` is free to separate prefix from
+// body in document ids; every remaining character is RFC 3986 unreserved, so
+// ids need no percent-encoding in URLs.
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
 const generate = customAlphabet(ALPHABET, 10);
 
-/** A random, URL-safe id body of `length` characters (default 10). */
 export const randomId = (length = 10): string => generate(length);

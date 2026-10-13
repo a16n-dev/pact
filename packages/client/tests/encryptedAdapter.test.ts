@@ -79,7 +79,6 @@ describe('EncryptedAdapter', () => {
     expect(await hiding.getMany<Widget>('widgets', ['wa'])).toEqual([]);
     expect(await hiding.getAll<Widget>('widgets')).toEqual([]);
 
-    // The row itself is untouched — keyA still reads it.
     const readerA = new EncryptedAdapter(inner, keyA, { onUndecryptable: 'hide' });
     expect((await readerA.get<Widget>('widgets', 'wa'))?.name).toBe('A Secret');
   });

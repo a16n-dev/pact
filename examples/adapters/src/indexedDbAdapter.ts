@@ -15,17 +15,6 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
-/**
- * `DatabaseAdapter` backed by IndexedDB — the right default for web apps:
- * async, no practical size limit, available in every browser and in web
- * workers. Zero dependencies (raw IndexedDB, no wrapper library).
- *
- * Layout: a single `documents` object store keyed `[collection, id]`, with
- * an index on `collection` for `getAll`/`listCollections`.
- *
- * Construction is async (IndexedDB opens with a request), so use the
- * factory: `const adapter = await IndexedDbAdapter.open('my-app')`.
- */
 export class IndexedDbAdapter implements DatabaseAdapter {
   private readonly db: IDBDatabase;
 
@@ -49,11 +38,12 @@ export class IndexedDbAdapter implements DatabaseAdapter {
     return new IndexedDbAdapter(db);
   }
 
-  /** Close the underlying connection (e.g. before deleting the database). */
   close(): void {
     this.db.close();
   }
 
+  // An IndexedDB transaction auto-commits once no requests are pending, so it
+  // cannot be held across an await. Every call opens its own.
   private store(mode: IDBTransactionMode): IDBObjectStore {
     return this.db.transaction(STORE, mode).objectStore(STORE);
   }
@@ -85,7 +75,7 @@ export class IndexedDbAdapter implements DatabaseAdapter {
   }
 
   async putMany<T extends BaseDocument>(collection: string, docs: T[]): Promise<void> {
-    // One transaction for the batch: all-or-nothing, one commit.
+    // All puts are issued synchronously on one transaction, so the batch is atomic.
     const store = this.store('readwrite');
     await Promise.all(docs.map((doc) => request(store.put({ collection, id: doc.id, doc }))));
   }
@@ -99,11 +89,10 @@ export class IndexedDbAdapter implements DatabaseAdapter {
   }
 
   async listCollections(): Promise<string[]> {
-    // Walk the collection index with unique keys only — one hop per
-    // distinct collection rather than one per document.
     const index = this.store('readonly').index('byCollection');
     const collections: string[] = [];
     await new Promise<void>((resolve, reject) => {
+      // 'nextunique' visits each distinct collection once instead of every document.
       const req = index.openKeyCursor(null, 'nextunique');
       req.onsuccess = () => {
         const cursor = req.result;
