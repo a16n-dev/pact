@@ -32,8 +32,17 @@ export type EncryptionCheckDoc = BaseDocument & { check: string };
 /** `_seeds/current`: which seed payload version has been applied. */
 export type SeedMarkerDoc = BaseDocument & { version: string };
 
-/** `_sync_meta/<collection>`: the pull cursor + last-synced wall clock. */
-export type SyncMetaDoc = BaseDocument & { cursor: number; syncedAt: string };
+/**
+ * `_sync_meta/_app`: the app-wide pull cursor, the last-synced wall clock,
+ * and the registered collections the cursor covers — a build that adds a
+ * collection restarts from 0 so the new collection's history is pulled.
+ */
+export type SyncMetaDoc = BaseDocument & {
+  cursor: number;
+  syncedAt: string;
+  collections?: string[];
+};
+export const SYNC_META_APP = '_app';
 
 // The internal, never-synced collection of pending document pushes. One entry
 // per locally-written doc, keyed `${collection}/${docId}`, holding just a

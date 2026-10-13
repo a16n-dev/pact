@@ -54,8 +54,6 @@ import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 export { RealtimeDO }; // Durable Object class for realtime fan-out
 
 export default createSyncApp({
-  // run your migration chain server-side on the push path (optional)
-  hooks: { migrate: (collection, data) => myMigrator.migrate(collection, data) },
   // extra fields merged into GET /info — advertise capabilities you've wired up
   info: { mcp: true },
 });
@@ -150,6 +148,12 @@ wrangler deploy
 
 The canonical DDL ships as `schema.sql` inside the `@a16n/pact-server` package; the [D1 Schema reference](/reference/schema) documents every table and index.
 
+::: warning Upgrading an existing deployment to protocol v4
+Databases created before documents were stored one row per client need a one-off table rebuild: `wrangler d1 execute <db> --remote --file migrations/001-per-client-rows.sql`. Existing rows keep their `seq` and are tagged `client_id = '_legacy'`.
+
+Deploy the v4 Worker and run the script **back to back** — the old Worker can't write the new table and the new Worker can't read the old one, so there's a short window where pushes and pulls fail (clients retry them). Run the script **once**: it isn't idempotent. Then upgrade every app to the v4 client; the Worker answers `426` to anything older.
+:::
+
 ## Verify
 
 ```bash
@@ -157,7 +161,7 @@ curl https://my-household-sync.<subdomain>.workers.dev/status
 # → { "status": "ok" }
 
 curl https://my-household-sync.<subdomain>.workers.dev/info
-# → { "name": "Our Household", "protocolVersion": 3, "realtime": true, "mcp": true }
+# → { "name": "Our Household", "protocolVersion": 4, "minProtocolVersion": 4, "realtime": true, "mcp": true }
 ```
 
 A client then [registers](/server/auth) with the server URL, its `appName`, and that app's password from the roster you set in step 3.

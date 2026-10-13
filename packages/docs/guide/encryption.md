@@ -66,7 +66,7 @@ await store.encryption.encryptLocal(); // rewrite local rows as ciphertext
 await store.sync.push(); // overwrite the server's plaintext copies
 ```
 
-`sync.push()` works because the server's last-write-wins guard accepts equal `updatedAt` — each plaintext row on the server is replaced by its encrypted twin.
+`sync.push()` replaces **this client's** server rows with their encrypted twins. It does not touch other clients' rows for the same documents — nor rows tagged `_legacy` by a schema migration — so any plaintext those hold stays on the server until each of those clients runs the same conversion (or the rows are removed out-of-band). Until then the operator can still read that plaintext; plan the rollout accordingly if that matters to you.
 
 ## Threat model — what this does and doesn't hide
 

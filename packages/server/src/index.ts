@@ -1,8 +1,7 @@
 import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env } from './types';
-import { handlePull, makePushHandler } from './sync/handlers';
-import type { SyncHooks } from './sync/api';
+import { handlePull, handlePush } from './sync/handlers';
 import { handleBlobGet, handleBlobList, handleBlobPut } from './sync/blobs';
 import {
   bumpClientLastSeen,
@@ -13,16 +12,17 @@ import {
   type ClientRow,
 } from './auth/auth';
 import { isValidAppName, resolveAppAuth, upsertApp } from './apps';
+import { MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, requireProtocol } from './protocol';
 
 type Variables = { client: ClientRow };
 
 export interface CreateSyncAppOptions {
-  hooks?: SyncHooks;
   /**
    * Extra fields merged into the `GET /info` response. The deploy package
    * uses this to advertise capabilities it has wired up on top of the bare
    * sync server (e.g. `{ mcp: true }`). Reserved keys (`name`,
-   * `protocolVersion`, `realtime`) cannot be overridden.
+   * `protocolVersion`, `minProtocolVersion`, `realtime`) cannot be
+   * overridden.
    */
   info?: Record<string, unknown>;
 }
@@ -54,10 +54,18 @@ export function createSyncApp(
     c.json({
       ...options.info,
       name: c.env.SERVER_NAME,
-      protocolVersion: 3,
+      protocolVersion: PROTOCOL_VERSION,
+      minProtocolVersion: MIN_PROTOCOL_VERSION,
       realtime: c.env.ENABLE_REALTIME === 'true',
     })
   );
+
+  // Every route a client talks to after reading /info declares its protocol
+  // version; a mismatch is refused before any auth or data work. /info,
+  // /status, /apps (operator) and /realtime (notifier only; a mismatched
+  // client's pulls are refused anyway) stay open.
+  app.use('/auth/*', requireProtocol);
+  app.use('/sync/*', requireProtocol);
 
   app.post('/auth/register', async (c) => {
     const password = extractBearerToken(c.req.header('authorization'));
@@ -170,7 +178,7 @@ export function createSyncApp(
     })
   );
 
-  app.post('/sync/push', makePushHandler(options.hooks));
+  app.post('/sync/push', handlePush);
   app.get('/sync/pull', handlePull);
   app.get('/sync/blobs', handleBlobList);
   app.put('/sync/blobs/:hash', handleBlobPut);

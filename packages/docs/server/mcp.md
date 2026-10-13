@@ -40,7 +40,7 @@ export default createSyncApp({ info: { mcp: true } });
 
 ```json
 // GET /info
-{ "name": "Our Household", "protocolVersion": 3, "realtime": true, "mcp": true }
+{ "name": "Our Household", "protocolVersion": 4, "minProtocolVersion": 4, "realtime": true, "mcp": true }
 ```
 
-Reserved keys (`name`, `protocolVersion`, `realtime`) can't be overridden; everything else in `info` is yours to advertise.
+Reserved keys (`name`, `protocolVersion`, `minProtocolVersion`, `realtime`) can't be overridden; everything else in `info` is yours to advertise.

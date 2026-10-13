@@ -40,7 +40,7 @@ The two packages are independent — the server has no dependency on the client.
    agent / MCP Worker (also @a16n/pact-client)
 ```
 
-Every mutation is written locally first and pushed in the background. The server reconciles with last-write-wins and (optionally) broadcasts a lightweight invalidation so other clients pull what changed.
+Every mutation is written locally first and pushed in the background. The server stores each client's version, clients reconcile with last-write-wins, and the server (optionally) broadcasts a lightweight invalidation so other clients pull what changed.
 
 ## Where to go next
 

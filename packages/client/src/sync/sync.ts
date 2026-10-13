@@ -1,31 +1,56 @@
 import type { BaseDocument } from '../types';
 import { fetchWithTimeout } from './http';
+import { foldSiblings, type PulledDocument } from './fold';
+
+/**
+ * The sync protocol this client speaks, sent on every request. The server
+ * advertises its own range on `GET /info` and refuses (426) anything
+ * outside it; see `PingResult`'s `'protocol'` reason. v4: per-client
+ * document rows folded on the client, app-wide pull cursor.
+ */
+export const PROTOCOL_VERSION = 4;
+const PROTOCOL_HEADER = 'x-pact-protocol';
 
 interface SyncDocument {
   id: string;
   collection: string;
+  // The document's own updatedAt, repeated outside the (possibly sealed)
+  // body so siblings fold without opening envelopes, and so the server can
+  // keep this client's own row from moving backwards.
   updatedAt: string;
+  // The document body (or its sealed envelope). Opaque to the server.
   data: unknown;
+  // Set by the server on pull: whose row this is, and its write sequence.
+  clientId?: string;
+  seq?: number;
 }
 
 interface PushResponse {
   accepted: number;
-  skipped: number;
 }
 
 interface PullResponse {
   documents: SyncDocument[];
   cursor: number;
-  // Absent from a pre-pagination server, which returns the whole collection in
-  // one response — treated as no-more-pages, which is correct for that server.
-  hasMore?: boolean;
+  hasMore: boolean;
 }
 
-export type PingResult = { ok: true } | { ok: false; reason: 'url' | 'auth' | 'server' };
+/**
+ * `'protocol'`: the server refused this client's protocol version (426) —
+ * one side needs upgrading. Surfaced as its own reason so apps can show an
+ * "update the app" message rather than a generic sync failure.
+ */
+export type PingResult =
+  | { ok: true }
+  | { ok: false; reason: 'url' | 'auth' | 'server' | 'protocol' };
 
 export type RegisterResult =
   | { ok: true; token: string }
-  | { ok: false; reason: 'url' | 'auth' | 'server' };
+  | { ok: false; reason: 'url' | 'auth' | 'server' | 'protocol' };
+
+function protocolHeaders(): Record<string, string> {
+  return { [PROTOCOL_HEADER]: String(PROTOCOL_VERSION) };
+}
 
 /**
  * One-time exchange: trade the app's password for a long-lived per-client
@@ -50,6 +75,7 @@ export async function registerClient(
       headers: {
         Authorization: `Bearer ${password}`,
         'Content-Type': 'application/json',
+        ...protocolHeaders(),
       },
       body: JSON.stringify({ appName, clientId, clientName }),
     });
@@ -57,6 +83,7 @@ export async function registerClient(
     console.warn(`Client register failed for ${endpoint}:`, err);
     return { ok: false, reason: 'url' };
   }
+  if (res.status === 426) return { ok: false, reason: 'protocol' };
   if (res.status === 401) return { ok: false, reason: 'auth' };
   if (!res.ok) return { ok: false, reason: 'server' };
   const json = (await res.json().catch(() => null)) as { token?: unknown } | null;
@@ -79,6 +106,8 @@ export class SyncClient {
   private readonly token: string;
   private readonly transform: SyncTransform | null;
   private readonly collectionKeys: ReadonlyMap<string, string> | null;
+  // Reverse of `collectionKeys`: wire key → local name, for rows coming back.
+  private readonly collectionNames: ReadonlyMap<string, string> | null;
 
   constructor(
     endpoint: string,
@@ -90,10 +119,13 @@ export class SyncClient {
     this.token = token;
     this.transform = transform;
     this.collectionKeys = collectionKeys;
+    this.collectionNames = collectionKeys
+      ? new Map(Array.from(collectionKeys, ([name, key]) => [key, name]))
+      : null;
   }
 
   private authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${this.token}` };
+    return { Authorization: `Bearer ${this.token}`, ...protocolHeaders() };
   }
 
   /**
@@ -117,10 +149,12 @@ export class SyncClient {
       return { ok: false, reason: 'url' };
     }
     if (res.ok) return { ok: true };
+    if (res.status === 426) return { ok: false, reason: 'protocol' };
     if (res.status === 401) return { ok: false, reason: 'auth' };
     return { ok: false, reason: 'server' };
   }
 
+  /** Write `docs` into this client's own server rows. */
   async push(collection: string, docs: BaseDocument[]): Promise<PushResponse> {
     const key = this.toKey(collection);
     const syncDocs: SyncDocument[] = await Promise.all(
@@ -145,12 +179,36 @@ export class SyncClient {
     return res.json() as Promise<PushResponse>;
   }
 
+  /**
+   * Fold a response's rows to one winner per document, *then* decode only
+   * the winners. The fold runs on the cleartext row fields (`updatedAt`,
+   * `clientId`), so a losing sibling sealed under a key this device can't
+   * open never reaches the transform — in strict encryption mode that would
+   * throw and wedge the pull on a row that was going to lose anyway.
+   */
+  private async decodeWinners<T extends BaseDocument>(
+    rows: SyncDocument[]
+  ): Promise<PulledDocument<T>[]> {
+    return Promise.all(
+      foldSiblings(rows).map(async (row) => {
+        // The row names its collection by wire key; the transform speaks keys
+        // too, so decode under the key and only then translate to the local name.
+        const key = row.collection;
+        const doc = (this.transform ? await this.transform.fromWire(key, row.data) : row.data) as T;
+        const collection = this.collectionNames?.get(key) ?? key;
+        return { doc, collection, clientId: row.clientId, seq: row.seq };
+      })
+    );
+  }
+
+  /**
+   * One page of the app's rows written after `cursor`, across every
+   * collection, folded to one winner per document (see `fold.ts`).
+   */
   async pull<T extends BaseDocument>(
-    collection: string,
     cursor: number
-  ): Promise<{ documents: T[]; cursor: number; hasMore: boolean }> {
-    const key = this.toKey(collection);
-    const params = new URLSearchParams({ collection: key, cursor: String(cursor) });
+  ): Promise<{ documents: PulledDocument<T>[]; cursor: number; hasMore: boolean }> {
+    const params = new URLSearchParams({ cursor: String(cursor) });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
       headers: this.authHeaders(),
     });
@@ -161,17 +219,17 @@ export class SyncClient {
 
     const result = (await res.json()) as PullResponse;
     return {
-      documents: await Promise.all(
-        result.documents.map(async (d) =>
-          this.transform ? ((await this.transform.fromWire(key, d.data)) as T) : (d.data as T)
-        )
-      ),
+      documents: await this.decodeWinners<T>(result.documents),
       cursor: result.cursor,
-      hasMore: result.hasMore ?? false,
+      hasMore: result.hasMore,
     };
   }
 
-  async pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+  /** The winning row for one document, folded from its siblings; null if unknown. */
+  async pullDocument<T extends BaseDocument>(
+    collection: string,
+    id: string
+  ): Promise<PulledDocument<T> | null> {
     const key = this.toKey(collection);
     const params = new URLSearchParams({ collection: key, id });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
@@ -183,8 +241,6 @@ export class SyncClient {
     }
 
     const result = (await res.json()) as PullResponse;
-    if (!result.documents[0]) return null;
-    const data = result.documents[0].data;
-    return (this.transform ? await this.transform.fromWire(key, data) : data) as T;
+    return (await this.decodeWinners<T>(result.documents))[0] ?? null;
   }
 }

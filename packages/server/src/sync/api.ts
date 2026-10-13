@@ -1,7 +1,7 @@
 import dayjs from 'dayjs';
 import {
   upsertDocuments,
-  getDocumentById,
+  getDocumentSiblings,
   getDocumentsSince,
   wipeAllDocuments,
   upsertBlob,
@@ -20,13 +20,14 @@ export interface AppContext {
   appName: string;
 }
 
-export interface SyncHooks {
-  /**
-   * Transform a stored doc to the server's current schemaVersion before
-   * persisting. Called once per document on the push path. Throw to reject
-   * the push (e.g. the client is newer than this server's schema).
-   */
-  migrate?: (collection: string, data: unknown) => unknown;
+/**
+ * `AppContext` plus the identity of the writing client — what a push needs,
+ * since each client owns its own row per document. HTTP handlers take it
+ * from the authenticated client row; an in-Worker writer picks a stable id
+ * of its own (it's just the row's owner, not a registered client).
+ */
+export interface WriterContext extends AppContext {
+  clientId: string;
 }
 
 /**
@@ -38,10 +39,8 @@ export interface SyncHooks {
 const LOCAL_AUTHOR_ID = '_local';
 
 export interface PushResult {
-  /** Docs inserted or updated. */
+  /** Docs written — always the whole batch; a client only replaces its own rows. */
   accepted: number;
-  /** Docs the last-write-wins guard skipped (stored copy newer-or-equal). */
-  skipped: number;
 }
 
 export type PushOutcome =
@@ -49,7 +48,6 @@ export type PushOutcome =
   | { ok: false; status: number; error: string; code: string };
 
 export interface PushOptions {
-  hooks?: SyncHooks;
   /**
    * If supplied alongside an enabled REALTIME binding, accepted writes
    * broadcast a collection invalidation to connected websocket clients.
@@ -60,11 +58,11 @@ export interface PushOptions {
 /**
  * Programmatic equivalent of `POST /sync/push`. The HTTP handler is a thin
  * shell over this; in-Worker callers can write the same way without an HTTP
- * round trip.
+ * round trip. Each doc lands in `app.clientId`'s own row.
  */
 export async function pushDocuments(
   env: Env,
-  app: AppContext,
+  app: WriterContext,
   docs: SyncDocument[],
   opts: PushOptions = {}
 ): Promise<PushOutcome> {
@@ -106,23 +104,13 @@ export async function pushDocuments(
     };
   }
 
-  let upgraded: SyncDocument[];
-  try {
-    const migrate = opts.hooks?.migrate;
-    upgraded = migrate ? docs.map((d) => ({ ...d, data: migrate(d.collection, d.data) })) : docs;
-  } catch (err) {
-    return {
-      ok: false,
-      status: 400,
-      error: err instanceof Error ? err.message : 'Migration failed',
-      code: 'migration_failed',
-    };
-  }
-
-  const result = await upsertDocuments(env.DB, app.appName, upgraded);
+  // The body is opaque: no server-side transform of any kind. Migrations run
+  // on the client (migrate-on-read), where the schema lives — the server
+  // couldn't apply them to encrypted docs anyway.
+  const result = await upsertDocuments(env.DB, app.appName, app.clientId, docs);
 
   if (env.ENABLE_REALTIME === 'true' && result.accepted > 0 && opts.waitUntil) {
-    const collections = [...new Set(upgraded.map((d) => d.collection))];
+    const collections = [...new Set(docs.map((d) => d.collection))];
     // One Durable Object per app: the DO's socket set only ever contains this
     // app's clients, so cross-tenant broadcast is impossible by construction.
     const stub = env.REALTIME.get(env.REALTIME.idFromName(app.appName));
@@ -132,22 +120,27 @@ export async function pushDocuments(
   return { ok: true, result };
 }
 
+/**
+ * Every stored row for one document — one per client that has pushed it. The
+ * caller folds them with the client-side merge rule; the server doesn't pick
+ * a winner. Empty when the document is unknown.
+ */
 export async function pullDocument(
   env: Env,
   app: AppContext,
   collection: string,
   id: string
-): Promise<SyncDocument | null> {
-  return getDocumentById(env.DB, app.appName, collection, id);
+): Promise<SyncDocument[]> {
+  return getDocumentSiblings(env.DB, app.appName, collection, id);
 }
 
+/** One page of rows written after `cursor`, across the whole app. */
 export async function pullDocumentsSince(
   env: Env,
   app: AppContext,
-  collection: string,
   cursor: number
 ): Promise<{ documents: SyncDocument[]; cursor: number; hasMore: boolean }> {
-  return getDocumentsSince(env.DB, app.appName, collection, cursor);
+  return getDocumentsSince(env.DB, app.appName, cursor);
 }
 
 export async function wipeAllDocumentsViaApi(env: Env, app: AppContext): Promise<void> {
