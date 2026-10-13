@@ -10,9 +10,16 @@ import {
   OUTBOX,
   outboxKey,
   READ_PULL_THROTTLE_MS,
+  SYNC_META_APP,
   type OutboxDoc,
   type SyncMetaDoc,
 } from './types';
+
+/** A document a pull landed locally, tagged with the collection it went to. */
+interface AppliedDocument {
+  collection: string;
+  doc: BaseDocument;
+}
 
 // Docs still authored by the pre-identity `_local` placeholder must never be
 // pushed. The server also rejects them — but only when it can read the
@@ -53,11 +60,19 @@ export interface SyncEngineDeps {
 /**
  * Owns everything that moves documents between local storage and a sync server:
  * the durable push outbox and its drain loop, paged pulls that fold sibling
- * rows with last-write-wins, push-all, and the per-collection pull cursor.
+ * rows with last-write-wins, push-all, and the app-wide pull cursor.
  *
  * Conflict resolution is entirely client-side. The server keeps one row per
  * (document, client) and never picks a winner; every client folds the rows it
- * pulls with the same deterministic rule (`fold.ts`). Constructed and held by
+ * pulls with the same deterministic rule (`fold.ts`).
+ *
+ * The pull cursor is app-wide: one server `seq` watermark covers every
+ * collection, so a sync is one paged request, not one per collection. Rows
+ * for collections this build doesn't register are skipped (the cursor still
+ * advances past them); a build that later registers such a collection
+ * restarts the cursor from 0 so it backfills — see `getLastSyncCursor`.
+ *
+ * Constructed and held by
  * the `Store`, which feeds it live views of its author id and `change` emitter
  * and swaps the `SyncClient` in/out as credentials are registered or cleared.
  */
@@ -71,8 +86,12 @@ export class SyncEngine {
   private readonly persist: (collection: string, doc: BaseDocument) => Promise<void>;
 
   private syncClient: SyncClient | null = null;
-  private readonly lastReadPullAt = new Map<string, number>();
-  private readonly inFlightReadPulls = new Set<string>();
+  private lastReadPullAt = 0;
+  // Coalesces concurrent pulls the same way `drainTask`/`drainPending` do for
+  // the outbox: one paged pull in flight, callers await it, and a request made
+  // mid-flight (e.g. a realtime invalidation) earns one more pass.
+  private pullTask: Promise<AppliedDocument[]> | null = null;
+  private pullPending = false;
   // Coalesces concurrent outbox drains: `drainTask` is the in-flight drain, so
   // callers await the same one; `drainPending` flags that another drain was
   // requested mid-flight, making the runner take one more pass (a write enqueued
@@ -97,26 +116,19 @@ export class SyncEngine {
 
   /**
    * Fire-and-forget background pull triggered by a read. A no-op without sync
-   * credentials. Deduped while a pull for the collection is in flight and
-   * throttled to `READ_PULL_THROTTLE_MS` so re-renders don't spray requests.
-   * The applied docs emit `change`, which the UI layer turns into a refetch —
-   * and that refetch is throttled out here, so there's no read→pull→read loop.
+   * credentials. Skipped while a pull is in flight and throttled to
+   * `READ_PULL_THROTTLE_MS` so re-renders don't spray requests. The applied
+   * docs emit `change`, which the UI layer turns into a refetch — and that
+   * refetch is throttled out here, so there's no read→pull→read loop.
    */
   triggerReadPull(collection: string): void {
     if (!this.syncClient) return;
     if (collection.startsWith('_')) return;
-    if (this.inFlightReadPulls.has(collection)) return;
+    if (this.pullTask) return;
     const now = dayjs().valueOf();
-    if (now - (this.lastReadPullAt.get(collection) ?? 0) < READ_PULL_THROTTLE_MS) return;
-    this.lastReadPullAt.set(collection, now);
-    this.inFlightReadPulls.add(collection);
-    void this.pull(collection)
-      .catch(() => {})
-      .finally(() => this.inFlightReadPulls.delete(collection));
-  }
-
-  async pullRegisteredCollections(): Promise<void> {
-    await Promise.all(this.collections.map((c) => this.pull(c).catch(() => {})));
+    if (now - this.lastReadPullAt < READ_PULL_THROTTLE_MS) return;
+    this.lastReadPullAt = now;
+    void this.pull().catch(() => {});
   }
 
   async pushAll(): Promise<void> {
@@ -278,20 +290,57 @@ export class SyncEngine {
     return entries.length;
   }
 
-  async pull<T extends BaseDocument>(collection: string): Promise<T[]> {
+  /**
+   * Pull everything written since the app-wide cursor and merge it in. With
+   * `collection`, returns only the docs applied to that collection (the pull
+   * itself still covers all of them). Concurrent calls coalesce onto one
+   * in-flight pull; a call made mid-flight gets one more pass afterwards so a
+   * change that landed during the pull isn't missed until the next trigger.
+   */
+  async pull<T extends BaseDocument>(collection?: string): Promise<T[]> {
     if (!this.syncClient) return [];
-    const applied: T[] = [];
+    this.pullPending = true;
+    if (!this.pullTask) this.pullTask = this.runPull();
+    const applied = await this.pullTask;
+    return applied
+      .filter((a) => collection === undefined || a.collection === collection)
+      .map((a) => a.doc as T);
+  }
+
+  private async runPull(): Promise<AppliedDocument[]> {
+    const applied: AppliedDocument[] = [];
+    try {
+      while (this.pullPending) {
+        this.pullPending = false;
+        applied.push(...(await this.pullOnce()));
+      }
+      return applied;
+    } finally {
+      this.pullTask = null;
+    }
+  }
+
+  private async pullOnce(): Promise<AppliedDocument[]> {
+    const registered = new Set(this.collections);
+    const applied: AppliedDocument[] = [];
+    const touched = new Set<string>();
     // Pull is paged server-side; drain from the stored cursor until the server
     // reports no more pages. Each page's cursor is persisted as it lands, so an
     // interrupted drain (offline, crash) resumes mid-stream instead of
-    // restarting the whole collection.
-    let cursor = await this.getLastSyncCursor(collection);
+    // restarting from scratch.
+    let cursor = await this.getLastSyncCursor();
     for (;;) {
-      const page = await this.syncClient.pull<T>(collection, cursor);
+      const page = await this.syncClient!.pull(cursor);
       // A page can carry several clients' rows for one document. Fold them
-      // to one winner per id first (deterministic: `updatedAt`, then
+      // to one winner per document first (deterministic: `updatedAt`, then
       // `clientId`), then reconcile each winner against the local copy.
-      for (const { doc: wireDoc } of foldSiblings(page.documents)) {
+      for (const { doc: wireDoc, collection } of foldSiblings(page.documents)) {
+        // Rows for collections this build doesn't define — a newer app's
+        // collection, or another party's `_`-prefixed bookkeeping — are
+        // skipped. The cursor advances past them regardless; a build that
+        // later registers the collection restarts from 0 (see
+        // `getLastSyncCursor`).
+        if (!collection || !registered.has(collection)) continue;
         // Last-write-wins: skip an incoming doc that's older than the local
         // copy, so a not-yet-pushed local edit isn't clobbered by a stale
         // server version. Ties go to the incoming doc. The cursor still
@@ -311,19 +360,20 @@ export class SyncEngine {
           await this.rawAdapter.put(collection, wireDoc);
           continue;
         }
-        const doc = this.migrator.migrate<T>(collection, wireDoc);
+        const doc = this.migrator.migrate<BaseDocument>(collection, wireDoc);
         const local = await this.rawAdapter.get<BaseDocument>(collection, doc.id);
         if (local && local.updatedAt > doc.updatedAt) continue;
         await this.persist(collection, doc);
-        applied.push(doc);
+        applied.push({ collection, doc });
+        touched.add(collection);
       }
-      await this.setLastSyncCursor(collection, page.cursor);
+      await this.setLastSyncCursor(page.cursor);
       // hasMore implies a full page, so the cursor strictly advanced; the
       // no-progress check is a backstop against a misbehaving server.
       if (!page.hasMore || page.cursor === cursor) break;
       cursor = page.cursor;
     }
-    if (applied.length > 0) this.emit(collection);
+    for (const collection of touched) this.emit(collection);
     return applied;
   }
 
@@ -357,34 +407,42 @@ export class SyncEngine {
     return upgraded;
   }
 
-  async getLastSyncedAt(collections: string[]): Promise<Date | null> {
-    if (collections.length === 0) return null;
-    const metas = await Promise.all(
-      collections.map((c) => this.adapter.get<SyncMetaDoc>('_sync_meta', c))
-    );
-    const times = metas.map((m) => m?.syncedAt).filter((t): t is string => typeof t === 'string');
-    if (times.length === 0) return null;
-    const latest = times.reduce((a, b) => (a > b ? a : b));
-    return dayjs(latest).toDate();
+  async getLastSyncedAt(): Promise<Date | null> {
+    const meta = await this.adapter.get<SyncMetaDoc>('_sync_meta', SYNC_META_APP);
+    return meta ? dayjs(meta.syncedAt).toDate() : null;
   }
 
-  // The pull cursor is a server-assigned `seq` high-water mark, not a
-  // timestamp — see `pull` / the server's db.ts. Stored alongside `syncedAt`
-  // (this device's wall clock at last pull) which drives the human-facing
-  // "last synced" display only. A client upgrading from the old
-  // timestamp-cursor scheme has no `cursor` field yet, so this returns 0 and
-  // the collection re-pulls from the start once — which also backfills any
-  // writes the old clock-based cursor had skipped.
-  private async getLastSyncCursor(collection: string): Promise<number> {
-    const meta = await this.adapter.get<SyncMetaDoc>('_sync_meta', collection);
-    return meta?.cursor ?? 0;
+  /**
+   * The app-wide pull cursor: a server-assigned `seq` high-water mark, not a
+   * timestamp. Returns 0 (re-pull everything; idempotent) when the stored
+   * cursor doesn't cover every registered collection — this build added one
+   * since the last pull, and its earlier rows were skipped as unknown.
+   *
+   * With no app-wide meta at all, bootstraps from the per-collection cursors
+   * an earlier build left behind: every row at or below the *lowest* of them
+   * has been pulled for every registered collection, so that's a safe start
+   * that spares an upgraded device a full re-pull. A collection with no
+   * cursor (never pulled, or a pre-cursor timestamp scheme) pins it to 0.
+   */
+  private async getLastSyncCursor(): Promise<number> {
+    const meta = await this.adapter.get<SyncMetaDoc>('_sync_meta', SYNC_META_APP);
+    if (meta) {
+      const covered = new Set(meta.collections ?? []);
+      return this.collections.every((c) => covered.has(c)) ? meta.cursor : 0;
+    }
+    let floor = Infinity;
+    for (const collection of this.collections) {
+      const legacy = await this.adapter.get<SyncMetaDoc>('_sync_meta', collection);
+      floor = Math.min(floor, legacy?.cursor ?? 0);
+    }
+    return Number.isFinite(floor) ? floor : 0;
   }
 
-  private async setLastSyncCursor(collection: string, cursor: number): Promise<void> {
+  private async setLastSyncCursor(cursor: number): Promise<void> {
     const authorId = this.getAuthorId();
     const now = dayjs().toISOString();
     await this.adapter.put<SyncMetaDoc>('_sync_meta', {
-      id: collection,
+      id: SYNC_META_APP,
       schemaVersion: this.migrator.currentVersion('_sync_meta'),
       createdAt: now,
       updatedAt: now,
@@ -393,7 +451,10 @@ export class SyncEngine {
       deletedAt: null,
       deletedBy: null,
       cursor,
+      // `syncedAt` is this device's wall clock at the pull — it drives the
+      // human-facing "last synced" display only.
       syncedAt: now,
+      collections: [...this.collections],
     });
   }
 }

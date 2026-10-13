@@ -10,7 +10,7 @@ Every data function takes an **`AppContext`** (`{ appName }`) right after `env` 
 |----------|---------|---------|
 | `pushDocuments` | `POST /sync/push` | Write a batch into the writer's own rows. |
 | `pullDocument` | `GET /sync/pull?…&id=` | Every client's row for one document (the caller folds them). |
-| `pullDocumentsSince` | `GET /sync/pull?…&cursor=` | One page of rows in a collection written after a `seq` cursor. |
+| `pullDocumentsSince` | `GET /sync/pull?cursor=` | One page of the app's rows written after a `seq` cursor (optionally narrowed to a collection). |
 
 ## Blobs
 

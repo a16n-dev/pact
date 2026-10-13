@@ -8,7 +8,7 @@ Sync is HTTP: **pull-based for reads, push-based for writes**, with conflicts re
 |-----------|--------------|
 | optimistic push | Every mutation fire-and-forgets the changed docs to `POST /sync/push`. |
 | `store.pushAll()` | Re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush. |
-| `store.pull(collection)` | Requests rows written since this collection's pull cursor, folds siblings, merges the winners locally, advances the cursor. |
+| `store.pull(collection)` | Requests every row written since the app-wide pull cursor (all collections), folds siblings, merges the winners locally, advances the cursor. Returns the docs applied to `collection`. |
 | `store.pullDocument(collection, id)` | Pulls every client's row for one doc, folds them, merges the winner against the local copy. |
 
 With [encryption](/guide/encryption) enabled, the document body in every push/pull is the sealed envelope (base fields + one ciphertext string) — the protocol itself is unchanged, since the server never inspects `data`.
@@ -29,7 +29,9 @@ The server rejects any document authored by `_local`. Claim an identity and call
 
 ## Pull: reads flow in by cursor
 
-`store.pull(collection)` asks the server for every row in that collection written since the cursor stored in `_sync_meta`, folds the results, and advances the cursor. Only the delta crosses the wire.
+The pull cursor is **app-wide**: one server `seq` watermark covers every collection, stored in `_sync_meta/_app`. A pull asks for every row written after it, across all collections, folds the results, and advances the cursor. One paged request syncs the whole app; only the delta crosses the wire.
+
+Rows for collections the running build doesn't define are skipped (the cursor still advances past them). When a build registers a collection the stored cursor didn't cover, the cursor restarts from 0 so that collection's history is backfilled — the fold is idempotent, so a re-pull is only bandwidth.
 
 ```ts
 await store.pull('recipes'); // changed since last pull

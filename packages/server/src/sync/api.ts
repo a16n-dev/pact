@@ -134,13 +134,17 @@ export async function pullDocument(
   return getDocumentSiblings(env.DB, app.appName, collection, id);
 }
 
+/**
+ * One page of rows written after `cursor`, across the whole app. Pass a
+ * `collection` only to serve a client that keeps per-collection cursors.
+ */
 export async function pullDocumentsSince(
   env: Env,
   app: AppContext,
-  collection: string,
-  cursor: number
+  cursor: number,
+  collection: string | null = null
 ): Promise<{ documents: SyncDocument[]; cursor: number; hasMore: boolean }> {
-  return getDocumentsSince(env.DB, app.appName, collection, cursor);
+  return getDocumentsSince(env.DB, app.appName, cursor, collection);
 }
 
 export async function wipeAllDocumentsViaApi(env: Env, app: AppContext): Promise<void> {

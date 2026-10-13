@@ -220,7 +220,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       drain: () => this.syncEngine.drainOutbox(),
       pending: () => this.syncEngine.pendingPushCount(),
       resync: () => this.resyncFromScratch(),
-      lastSyncedAt: (collections) => this.syncEngine.getLastSyncedAt(collections),
+      lastSyncedAt: () => this.syncEngine.getLastSyncedAt(),
       register: (url, password, appName, clientName) =>
         this.registerClient(url, password, appName, clientName),
       registration: () => this.getClientRegistration(),
@@ -277,18 +277,15 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.realtime = new RealtimeConnection({
       url,
       token,
-      // Internal `_`-prefixed collections are per-store bookkeeping (e.g. the
-      // `_seeds` marker); pulling another party's copy would clobber ours.
-      // The server broadcasts physical keys (that's all it ever sees), so
-      // aliased domains translate back to the name the pull path speaks.
-      onInvalidate: (collection) => {
-        const name = this.collectionNames?.get(collection) ?? collection;
-        if (!name.startsWith('_')) void this.syncEngine.pull(name);
-      },
+      // The pull cursor is app-wide, so an invalidation for any collection
+      // is just "something changed": one pull picks up everything. Rows for
+      // collections this build doesn't register (including other parties'
+      // `_`-prefixed bookkeeping) are skipped by the engine.
+      onInvalidate: () => void this.syncEngine.pull().catch(() => {}),
       onReconnect: () => {
         // Regained connectivity: pull others' changes and flush any writes
         // whose push failed while we were offline.
-        void this.syncEngine.pullRegisteredCollections();
+        void this.syncEngine.pull().catch(() => {});
         void this.syncEngine.drainOutbox().catch(() => {});
       },
     });
@@ -1222,7 +1219,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.emit(collection);
   }
 
-  /** Fetch every remote change for the collection (cursor-paged) and merge it in. */
+  /**
+   * Pull every remote change (the cursor is app-wide, so this lands changes
+   * for all collections) and return the docs applied to `collection`.
+   */
   private pullAll<T extends BaseDocument>(collection: string): Promise<T[]> {
     this.assertDefined(collection);
     return this.syncEngine.pull<T>(collection);
@@ -1254,7 +1254,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         this.emit(collection);
       }
     }
-    await this.syncEngine.pullRegisteredCollections();
+    await this.syncEngine.pull().catch(() => {});
   }
 
   // Backup / restore — a self-contained, server-independent snapshot.

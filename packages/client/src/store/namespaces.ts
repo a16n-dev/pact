@@ -26,8 +26,8 @@ export interface StoreSync {
    * One-off recovery for when the server's docs were rewritten out-of-band.
    */
   resync(): Promise<void>;
-  /** When this device last completed a pull covering all named collections. */
-  lastSyncedAt(collections: string[]): Promise<Date | null>;
+  /** When this device last completed a pull (the cursor is app-wide). */
+  lastSyncedAt(): Promise<Date | null>;
   /**
    * Trade the app's password for a long-lived access token bound to this
    * client. The clientId persists across calls, so re-registering (to rotate

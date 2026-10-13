@@ -35,7 +35,20 @@ const UPSERT_SQL = `
 // no row can slip between pages.
 const PULL_PAGE_SIZE = 500;
 
+// The pull cursor is app-wide: one `seq` watermark covers every collection,
+// so a client syncs in one paged request rather than one per collection.
 const PULL_SQL = `
+  SELECT id, collection, client_id, data, seq
+  FROM documents
+  WHERE app_name = ?1 AND seq > ?2
+  ORDER BY seq ASC
+  LIMIT ?3
+`;
+
+// Collection-filtered variant, kept for clients that still keep a cursor per
+// collection (pre app-wide-cursor builds). Their cursor only covers the
+// named collection, so handing them other collections' rows would be wrong.
+const PULL_COLLECTION_SQL = `
   SELECT id, collection, client_id, data, seq
   FROM documents
   WHERE app_name = ?1 AND collection = ?2 AND seq > ?3
@@ -107,27 +120,28 @@ export async function wipeAllBlobRecords(db: D1Database, appName: string): Promi
 }
 
 /**
- * One page of document rows in `collection` written after `cursor` (a server
- * `seq`), oldest first. A page may carry several rows for the same document
- * id (siblings) — the client folds them. Returns the new cursor to persist
- * (the highest `seq` in the page, or the input cursor unchanged when the
- * page is empty) and `hasMore` — whether rows beyond this page remain. The
- * caller drains by re-pulling from the returned cursor while `hasMore` is
- * true.
+ * One page of the app's document rows written after `cursor` (a server
+ * `seq`), oldest first, across every collection — or only `collection` when
+ * one is given. A page may carry several rows for the same document id
+ * (siblings) — the client folds them. Returns the new cursor to persist (the
+ * highest `seq` in the page, or the input cursor unchanged when the page is
+ * empty) and `hasMore` — whether rows beyond this page remain. The caller
+ * drains by re-pulling from the returned cursor while `hasMore` is true.
  */
 export async function getDocumentsSince(
   db: D1Database,
   appName: string,
-  collection: string,
   cursor: number,
+  collection: string | null = null,
   limit: number = PULL_PAGE_SIZE
 ): Promise<{ documents: SyncDocument[]; cursor: number; hasMore: boolean }> {
   // Fetch one extra row to learn whether more remain without a second COUNT
   // query, then drop it from the page.
-  const result = await db
-    .prepare(PULL_SQL)
-    .bind(appName, collection, cursor, limit + 1)
-    .all();
+  const stmt =
+    collection === null
+      ? db.prepare(PULL_SQL).bind(appName, cursor, limit + 1)
+      : db.prepare(PULL_COLLECTION_SQL).bind(appName, collection, cursor, limit + 1);
+  const result = await stmt.all();
   const hasMore = result.results.length > limit;
   const rows = hasMore ? result.results.slice(0, limit) : result.results;
 
@@ -174,6 +188,7 @@ export async function listBlobHashes(db: D1Database, appName: string): Promise<s
 export const ALL_SQL: readonly string[] = [
   UPSERT_SQL,
   PULL_SQL,
+  PULL_COLLECTION_SQL,
   PULL_BY_ID_SQL,
   UPSERT_BLOB_SQL,
   LIST_BLOBS_SQL,

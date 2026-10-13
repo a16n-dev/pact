@@ -49,6 +49,6 @@ Documents live in named collections (`recipes`, `users`, …). Collection names 
 | Collection | Holds |
 |------------|-------|
 | `_config` | The `client` doc (clientId, clientName, sync url, token) and the `author` doc (current author id). |
-| `_sync_meta` | Per-collection "last pulled at" timestamp, used to request only what's changed. |
+| `_sync_meta` | The app-wide pull cursor (a server `seq`), used to request only what's changed. |
 
 Because these never sync and never leave the device, restoring a client's identity across restarts is just reading `_config` back — see [Client Setup](/guide/client-setup).

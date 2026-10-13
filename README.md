@@ -72,7 +72,7 @@ Key consequences of this shape:
 Documents live in named collections (`recipes`, `users`, …). Collection names prefixed with `_` are reserved for Pact's internal bookkeeping and are never synced:
 
 - `_config` — the `client` doc (clientId, clientName, sync url, token) and the `author` doc (current author id).
-- `_sync_meta` — per-collection "last pulled at" timestamp, used to request only what's changed.
+- `_sync_meta` — the app-wide pull cursor (a server `seq`), used to request only what's changed.
 
 ## Examples
 
@@ -171,7 +171,7 @@ Sync is HTTP, pull-based for reads and push-based for writes. Conflicts are reso
 |-----------|--------------|
 | optimistic push | every mutation fire-and-forgets the changed docs to `POST /sync/push` |
 | `store.pushAll()` | re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush |
-| `store.pull(collection)` | requests rows written since this collection's pull cursor, folds siblings, LWW-merges the winners locally, advances the cursor |
+| `store.pull(collection)` | requests every row written since the app-wide pull cursor, folds siblings, LWW-merges the winners locally, advances the cursor; returns the docs applied to `collection` |
 | `store.pullDocument(c, id)` | pulls every client's row for one doc, folds them, LWW against the local copy |
 
 **Clients resolve conflicts.** Each client owns its own server row per document; a push only replaces that row, so concurrent edits from two clients become two rows (siblings). On pull a client folds siblings deterministically (later `updatedAt` wins, ties break on `clientId`), then skips the winner if it's older than the local copy (so a not-yet-pushed local edit isn't clobbered). Siblings are bounded by the number of clients, since each push replaces that client's row.
@@ -283,7 +283,7 @@ interface Env {
 | GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
 | GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
 | POST | `/sync/push` | Bearer **token** | write documents into the caller's own rows |
-| GET | `/sync/pull?collection=&cursor=` | Bearer **token** | rows written after a `seq` cursor (may include siblings) |
+| GET | `/sync/pull?cursor=` | Bearer **token** | rows across all collections written after a `seq` cursor (may include siblings); `&collection=` narrows |
 | GET | `/sync/pull?collection=&id=` | Bearer **token** | every client's row for one doc |
 | GET | `/sync/blobs` | Bearer **token** | authoritative set of stored blob hashes |
 | PUT | `/sync/blobs/:hash` | Bearer **token** | upload blob bytes (hash = SHA-256 of body) |

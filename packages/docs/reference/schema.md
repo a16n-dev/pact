@@ -62,7 +62,7 @@ The whole document store, for every app: **one row per (document, writing client
 
 - **Primary key `(app_name, collection, id, client_id)`** — the same id can exist in different collections, different apps can use identical ids and collection names, and different clients hold independent rows for one document.
 - **`idx_documents_app_seq (app_name, seq)` — UNIQUE** — `seq` is assigned as `MAX(seq)+1` within the app; the unique index makes any counter bug a hard failure instead of a silently corrupted pull cursor.
-- **`idx_documents_pull (app_name, collection, seq)`** — the index that makes `GET /sync/pull?collection=&cursor=` a range scan rather than a table scan. Pull is the hot path; this is the index that keeps it cheap.
+- **`idx_documents_pull (app_name, collection, seq)`** — serves the collection-narrowed pull (`GET /sync/pull?cursor=&collection=`) as a range scan. The app-wide pull current clients use runs on `idx_documents_app_seq`.
 
 The server treats `data` as opaque — it never parses your domain fields. Different apps can (and do) store completely different schemas in the same table. This is the SQL embodiment of [schemas being owned by the consumer](/guide/concepts#schemas-are-owned-by-the-consumer).
 

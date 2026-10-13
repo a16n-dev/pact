@@ -8,6 +8,8 @@ import type { BaseDocument } from '../types';
  */
 export interface PulledDocument<T extends BaseDocument = BaseDocument> {
   doc: T;
+  /** Local collection name the row belongs to (an app-wide pull spans them all). */
+  collection?: string;
   clientId?: string;
   seq?: number;
 }
@@ -27,8 +29,8 @@ export function compareSiblings(a: PulledDocument, b: PulledDocument): number {
 }
 
 /**
- * Collapse a pulled page to one winning row per document id, preserving the
- * order in which ids first appeared. Siblings of the same document arrive in
+ * Collapse a pulled page to one winning row per document (collection + id),
+ * preserving the order in which documents first appeared. Siblings of the same document arrive in
  * the same page or across pages; across pages the earlier winner is already
  * local by the time the later sibling is compared against it, so the result
  * is the same either way.
@@ -38,8 +40,9 @@ export function foldSiblings<T extends BaseDocument>(
 ): PulledDocument<T>[] {
   const winners = new Map<string, PulledDocument<T>>();
   for (const row of rows) {
-    const current = winners.get(row.doc.id);
-    if (!current || compareSiblings(row, current) > 0) winners.set(row.doc.id, row);
+    const key = `${row.collection ?? ''}/${row.doc.id}`;
+    const current = winners.get(key);
+    if (!current || compareSiblings(row, current) > 0) winners.set(key, row);
   }
   return [...winners.values()];
 }

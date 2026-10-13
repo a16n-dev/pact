@@ -13,7 +13,7 @@ The complete route table exposed by `createSyncApp`. Every route's logic is also
 | `GET` | `/auth/check` | Bearer **token** | Validate a token → `{ ok, client }`. |
 | `GET` | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes. |
 | `POST` | `/sync/push` | Bearer **token** | Write documents into the calling client's own rows. |
-| `GET` | `/sync/pull?collection=&cursor=` | Bearer **token** | Rows written after a server `seq` cursor (may include siblings). |
+| `GET` | `/sync/pull?cursor=` | Bearer **token** | Rows across all collections written after a server `seq` cursor (may include siblings). `&collection=` narrows it, for clients that still cursor per collection. |
 | `GET` | `/sync/pull?collection=&id=` | Bearer **token** | Every client's row for one document. |
 | `GET` | `/sync/blobs` | Bearer **token** | Authoritative set of stored blob hashes. |
 | `PUT` | `/sync/blobs/:hash` | Bearer **token** | Upload blob bytes (`:hash` = SHA-256 of body). |
@@ -68,7 +68,7 @@ Dynamic app provisioning, guarded by the `PROVISION_KEY` master secret (the rout
 
 Two modes, selected by query params (both require a `collection`):
 
-- `?collection=recipes&cursor=<seq>` — one page of rows written after the server `seq` cursor, oldest first, with the next `cursor` and `hasMore`.
+- `?cursor=<seq>` — one page of the app's rows written after the server `seq` cursor, oldest first across every collection, with the next `cursor` and `hasMore`. Adding `&collection=recipes` narrows it to one collection; current clients don't, since their cursor is app-wide.
 - `?collection=recipes&id=r-123` — every stored row for one document.
 
 Each returned document carries `clientId` (whose row it is) and `seq`. A response may hold several rows with the same `id` — siblings from different clients — which the client folds; see [Sync](/guide/sync#clients-resolve-conflicts-the-server-stores-siblings).

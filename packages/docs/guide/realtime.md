@@ -10,7 +10,7 @@ A message on the wire looks like this:
 { "type": "invalidate", "collections": ["recipes", "groceryItems"] }
 ```
 
-On receiving one, the client **pulls the named collections** (the same [pull](/guide/sync) path as everything else). The WebSocket is a *notification channel*, not a data channel — bodies always travel over plain HTTP with last-write-wins. This keeps the realtime layer tiny and means a missed message is never a missed write: the next pull reconciles it.
+On receiving one, the client **pulls** (the same [pull](/guide/sync) path as everything else — the cursor is app-wide, so one pull lands whatever changed, named or not). The WebSocket is a *notification channel*, not a data channel — bodies always travel over plain HTTP with last-write-wins. This keeps the realtime layer tiny and means a missed message is never a missed write: the next pull reconciles it.
 
 ```
 client A writes recipe ──▶ POST /sync/push ──▶ server upserts into D1
@@ -31,11 +31,11 @@ The client connection:
 
 - **Probes `GET /info` first** and silently no-ops if the server hasn't enabled realtime. Turning realtime off server-side is safe — clients just stop opening sockets.
 - **Reconnects with exponential backoff**, capped at 30s.
-- **On (re)connect, pulls all registered collections** to backfill anything missed while offline.
+- **On (re)connect, pulls** to backfill anything missed while offline.
 - **Authenticates via `?token=` query param** — browser WebSocket APIs can't set an `Authorization` header. Native clients can use either the query param or a Bearer header.
 
 ::: tip Backfill on reconnect is the safety net
-Because every reconnect triggers a full pull of registered collections, the realtime channel can drop messages, hibernate, or disconnect for an hour and the client still converges the moment it reconnects. Realtime makes convergence *fast*; pull makes it *correct*.
+Because every reconnect triggers a pull from the stored cursor, the realtime channel can drop messages, hibernate, or disconnect for an hour and the client still converges the moment it reconnects. Realtime makes convergence *fast*; pull makes it *correct*.
 :::
 
 ## Server side: one Durable Object

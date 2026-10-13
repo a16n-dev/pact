@@ -84,6 +84,8 @@ export class SyncClient {
   private readonly token: string;
   private readonly transform: SyncTransform | null;
   private readonly collectionKeys: ReadonlyMap<string, string> | null;
+  // Reverse of `collectionKeys`: wire key → local name, for rows coming back.
+  private readonly collectionNames: ReadonlyMap<string, string> | null;
 
   constructor(
     endpoint: string,
@@ -95,6 +97,9 @@ export class SyncClient {
     this.token = token;
     this.transform = transform;
     this.collectionKeys = collectionKeys;
+    this.collectionNames = collectionKeys
+      ? new Map(Array.from(collectionKeys, ([name, key]) => [key, name]))
+      : null;
   }
 
   private authHeaders(): Record<string, string> {
@@ -150,25 +155,24 @@ export class SyncClient {
     return res.json() as Promise<PushResponse>;
   }
 
-  private async fromWireRow<T extends BaseDocument>(
-    key: string,
-    row: SyncDocument
-  ): Promise<PulledDocument<T>> {
+  private async fromWireRow<T extends BaseDocument>(row: SyncDocument): Promise<PulledDocument<T>> {
+    // The row names its collection by wire key; the transform speaks keys
+    // too, so decrypt under the key and only then translate to the local name.
+    const key = row.collection;
     const doc = (this.transform ? await this.transform.fromWire(key, row.data) : row.data) as T;
-    return { doc, clientId: row.clientId, seq: row.seq };
+    const collection = this.collectionNames?.get(key) ?? key;
+    return { doc, collection, clientId: row.clientId, seq: row.seq };
   }
 
   /**
-   * One page of rows written after `cursor`. A page can hold several rows
-   * for the same document id — one per client that has written it — which
-   * the caller folds (see `fold.ts`).
+   * One page of the app's rows written after `cursor`, across every
+   * collection. A page can hold several rows for the same document — one per
+   * client that has written it — which the caller folds (see `fold.ts`).
    */
   async pull<T extends BaseDocument>(
-    collection: string,
     cursor: number
   ): Promise<{ documents: PulledDocument<T>[]; cursor: number; hasMore: boolean }> {
-    const key = this.toKey(collection);
-    const params = new URLSearchParams({ collection: key, cursor: String(cursor) });
+    const params = new URLSearchParams({ cursor: String(cursor) });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
       headers: this.authHeaders(),
     });
@@ -179,7 +183,7 @@ export class SyncClient {
 
     const result = (await res.json()) as PullResponse;
     return {
-      documents: await Promise.all(result.documents.map((d) => this.fromWireRow<T>(key, d))),
+      documents: await Promise.all(result.documents.map((d) => this.fromWireRow<T>(d))),
       cursor: result.cursor,
       hasMore: result.hasMore ?? false,
     };
@@ -201,6 +205,6 @@ export class SyncClient {
     }
 
     const result = (await res.json()) as PullResponse;
-    return Promise.all(result.documents.map((d) => this.fromWireRow<T>(key, d)));
+    return Promise.all(result.documents.map((d) => this.fromWireRow<T>(d)));
   }
 }

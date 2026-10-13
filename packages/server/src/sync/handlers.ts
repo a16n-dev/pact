@@ -24,14 +24,16 @@ export async function handlePush(c: Context<HonoEnv>) {
   return c.json(outcome.result);
 }
 
+// Two modes: `?cursor=` pages the whole app's rows after a seq (optionally
+// narrowed with `&collection=`, for clients that still cursor per collection);
+// `?collection=&id=` returns one document's sibling rows.
 export async function handlePull(c: Context<HonoEnv>) {
-  const collection = c.req.query('collection');
+  const collection = c.req.query('collection') ?? null;
   const id = c.req.query('id');
   const cursorRaw = c.req.query('cursor');
 
-  if (!collection) return c.json({ error: 'collection is required' }, 400);
-
   if (id) {
+    if (!collection) return c.json({ error: 'collection is required with id' }, 400);
     // All of the document's sibling rows; the client folds them.
     const documents = await pullDocument(c.env, appOf(c), collection, id);
     return c.json({ documents, cursor: 0, hasMore: false } satisfies PullResponse);
@@ -47,6 +49,6 @@ export async function handlePull(c: Context<HonoEnv>) {
     documents,
     cursor: nextCursor,
     hasMore,
-  } = await pullDocumentsSince(c.env, appOf(c), collection, cursor);
+  } = await pullDocumentsSince(c.env, appOf(c), cursor, collection);
   return c.json({ documents, cursor: nextCursor, hasMore } satisfies PullResponse);
 }

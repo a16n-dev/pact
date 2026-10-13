@@ -238,11 +238,20 @@ describe('blob storage isolation', () => {
 describe('getDocumentsSince (pagination)', () => {
   // Fake D1 that returns `available` synthetic rows capped at the bound limit,
   // and records the limit it was asked for (the peek-ahead is limit+1).
-  function pagingDb(available: number): { db: D1Database; boundLimit: () => number } {
+  function pagingDb(available: number): {
+    db: D1Database;
+    boundLimit: () => number;
+    boundArgs: () => unknown[];
+  } {
     let asked = 0;
+    let args: unknown[] = [];
     const db = {
       prepare: () => ({
-        bind: (_appName: string, _collection: string, cursor: number, limit: number) => {
+        bind: (...bound: unknown[]) => {
+          args = bound;
+          // App-wide: (app, cursor, limit); filtered: (app, collection, cursor, limit).
+          const cursor = bound[bound.length - 2] as number;
+          const limit = bound[bound.length - 1] as number;
           asked = limit;
           const n = Math.min(available, limit);
           const results = Array.from({ length: n }, (_v, i) => ({
@@ -256,13 +265,14 @@ describe('getDocumentsSince (pagination)', () => {
         },
       }),
     } as unknown as D1Database;
-    return { db, boundLimit: () => asked };
+    return { db, boundLimit: () => asked, boundArgs: () => args };
   }
 
   it('peeks one past the page and reports hasMore when the page is full', async () => {
-    const { db, boundLimit } = pagingDb(10);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 0, 3);
+    const { db, boundLimit, boundArgs } = pagingDb(10);
+    const page = await getDocumentsSince(db, 'app-a', 0, null, 3);
     expect(boundLimit()).toBe(4); // limit + 1
+    expect(boundArgs()).toEqual(['app-a', 0, 4]); // app-wide: no collection bound
     expect(page.documents).toHaveLength(3); // the extra peeked row is dropped
     expect(page.hasMore).toBe(true);
     expect(page.cursor).toBe(3); // max seq of the kept page
@@ -272,7 +282,7 @@ describe('getDocumentsSince (pagination)', () => {
 
   it('reports no more pages and the advanced cursor on the final partial page', async () => {
     const { db } = pagingDb(2);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 5, 3);
+    const page = await getDocumentsSince(db, 'app-a', 5, null, 3);
     expect(page.documents).toHaveLength(2);
     expect(page.hasMore).toBe(false);
     expect(page.cursor).toBe(7); // 5 + 2
@@ -280,9 +290,15 @@ describe('getDocumentsSince (pagination)', () => {
 
   it('leaves the cursor unchanged when nothing matches', async () => {
     const { db } = pagingDb(0);
-    const page = await getDocumentsSince(db, 'app-a', 'c', 42, 3);
+    const page = await getDocumentsSince(db, 'app-a', 42, null, 3);
     expect(page.documents).toHaveLength(0);
     expect(page.hasMore).toBe(false);
     expect(page.cursor).toBe(42);
+  });
+
+  it('narrows to one collection when asked (per-collection-cursor clients)', async () => {
+    const { db, boundArgs } = pagingDb(1);
+    await getDocumentsSince(db, 'app-a', 9, 'c', 3);
+    expect(boundArgs()).toEqual(['app-a', 'c', 9, 4]);
   });
 });
