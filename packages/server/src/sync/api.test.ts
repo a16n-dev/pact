@@ -3,8 +3,8 @@ import { pushDocuments, wipeAllBlobsViaApi, putBlob, getBlob } from './api';
 import { getDocumentsSince, upsertDocuments, ALL_SQL } from './db';
 import type { Env, SyncDocument } from '../types';
 
-/** The tenant most tests act as. */
-const APP_A = { appName: 'app-a' };
+/** The tenant (and writing client) most tests act as. */
+const APP_A = { appName: 'app-a', clientId: 'cl-a' };
 
 function doc(id: string, collection: string, updatedAt: string, by = 'us/1'): SyncDocument {
   return {
@@ -112,12 +112,12 @@ describe('pushDocuments', () => {
     expect(out).toMatchObject({ ok: false, code: 'migration_failed', error: 'schema too new' });
   });
 
-  it('returns accepted/skipped from the upsert', async () => {
-    const out = await pushDocuments(fakeEnv({ changes: [1, 0] }).env, APP_A, [
+  it('accepts the whole batch — a client only ever replaces its own rows', async () => {
+    const out = await pushDocuments(fakeEnv().env, APP_A, [
       doc('a', 'widgets', 't'),
       doc('b', 'widgets', 't'),
     ]);
-    expect(out).toEqual({ ok: true, result: { accepted: 1, skipped: 1 } });
+    expect(out).toEqual({ ok: true, result: { accepted: 2, skipped: 0 } });
   });
 
   it('broadcasts to realtime when enabled and waitUntil is provided', async () => {
@@ -131,7 +131,7 @@ describe('pushDocuments', () => {
 
   it("broadcasts to the pushing app's DO room, not a shared one", async () => {
     const { env, doNames } = fakeEnv({ enableRealtime: true, changes: [1] });
-    await pushDocuments(env, { appName: 'app-b' }, [doc('w1', 'widgets', 't')], {
+    await pushDocuments(env, { appName: 'app-b', clientId: 'cl-b' }, [doc('w1', 'widgets', 't')], {
       waitUntil: vi.fn(),
     });
     expect(doNames).toEqual(['app-b']);
@@ -145,17 +145,40 @@ describe('pushDocuments', () => {
   });
 });
 
-describe('upsertDocuments', () => {
-  it('counts applied rows as accepted and the rest as skipped', async () => {
+describe('upsertDocuments (per-client rows)', () => {
+  /** Fake D1 recording each statement's SQL and bound values, in batch order. */
+  function recordingDb() {
+    const calls: { sql: string; args: unknown[] }[] = [];
     const db = {
-      prepare: () => ({ bind: () => ({}) }),
-      batch: async () => [{ meta: { changes: 1 } }, { meta: { changes: 0 } }],
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => {
+          const stmt = { sql, args };
+          return stmt;
+        },
+      }),
+      batch: async (stmts: { sql: string; args: unknown[] }[]) => {
+        calls.push(...stmts);
+        return stmts.map(() => ({ meta: { changes: 1 } }));
+      },
     } as unknown as D1Database;
-    const result = await upsertDocuments(db, APP_A.appName, [
-      doc('a', 'c', 't'),
-      doc('b', 'c', 't'),
-    ]);
-    expect(result).toEqual({ accepted: 1, skipped: 1 });
+    return { db, calls };
+  }
+
+  it("writes each doc into the pushing client's own row", async () => {
+    const { db, calls } = recordingDb();
+    const result = await upsertDocuments(db, 'app-a', 'cl-a', [doc('a', 'c', 't')]);
+    expect(result).toEqual({ accepted: 1, skipped: 0 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain('INSERT INTO documents');
+    expect(calls[0].sql).not.toContain('WHERE excluded'); // no server-side LWW guard
+    expect(calls[0].args).toEqual(['app-a', 'a', 'c', 'cl-a', 't', expect.any(String)]);
+  });
+
+  it("never touches other clients' rows", async () => {
+    const { db, calls } = recordingDb();
+    await upsertDocuments(db, 'app-a', 'cl-a', [doc('a', 'c', 't'), doc('b', 'c', 't')]);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call.sql).not.toContain('DELETE');
   });
 });
 
@@ -244,6 +267,7 @@ describe('getDocumentsSince (pagination)', () => {
           const results = Array.from({ length: n }, (_v, i) => ({
             id: `d${i}`,
             collection: 'c',
+            client_id: 'cl-x',
             updated_at: 't',
             data: '{}',
             seq: cursor + i + 1,
@@ -262,6 +286,8 @@ describe('getDocumentsSince (pagination)', () => {
     expect(page.documents).toHaveLength(3); // the extra peeked row is dropped
     expect(page.hasMore).toBe(true);
     expect(page.cursor).toBe(3); // max seq of the kept page
+    // Siblings are folded client-side, so every row carries its owner + seq.
+    expect(page.documents[0]).toMatchObject({ id: 'd0', clientId: 'cl-x', seq: 1 });
   });
 
   it('reports no more pages and the advanced cursor on the final partial page', async () => {

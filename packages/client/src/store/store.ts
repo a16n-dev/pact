@@ -1398,7 +1398,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
   }
 
-  /** Fetch one doc fresh from the server and merge it in (last-write-wins). */
+  /** Fetch one doc fresh from the server (folding its siblings) and merge it in. */
   private pull<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
     this.assertDefined(collection);
     return this.syncEngine.pullDocument<T>(collection, id);

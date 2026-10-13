@@ -64,7 +64,7 @@ interface BaseDocument {
 Key consequences of this shape:
 
 - **Soft deletes only.** `delete` writes a tombstone (`deletedAt` set) rather than removing the row, so the deletion can sync. Reads (`get`, `list`, `getMany`) filter tombstones out; `getIncludingDeleted` returns them (seeding uses this to tell "author deleted this seed" from "never existed").
-- **`updatedAt` is the conflict clock.** Both client and server resolve conflicts by keeping the higher `updatedAt`; ties go to the incoming/server copy.
+- **`updatedAt` is the conflict clock.** Clients resolve conflicts by keeping the higher `updatedAt` (ties between clients' versions break on `clientId`); the server stores every client's version and never merges.
 - **`schemaVersion` drives migrations.** New writes are stamped with the collection's current version; older docs are walked forward on read (see [Migrations](#migrations)).
 
 ### Collections
@@ -165,16 +165,16 @@ await store.reassignLocalAuthor('us-alice'); // rewrites _local docs to a real i
 
 ## Sync
 
-Sync is HTTP, pull-based for reads and push-based for writes, with last-write-wins reconciliation throughout.
+Sync is HTTP, pull-based for reads and push-based for writes. Conflicts are resolved on the client: the server stores one row per (document, client) and never merges.
 
 | Operation | What it does |
 |-----------|--------------|
 | optimistic push | every mutation fire-and-forgets the changed docs to `POST /sync/push` |
 | `store.pushAll()` | re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush |
-| `store.pull(collection)` | requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp |
-| `store.pullDocument(c, id)` | pulls a single doc (LWW against the local copy) |
+| `store.pull(collection)` | requests rows written since this collection's pull cursor, folds siblings, LWW-merges the winners locally, advances the cursor |
+| `store.pullDocument(c, id)` | pulls every client's row for one doc, folds them, LWW against the local copy |
 
-**Last-write-wins, both directions.** On pull, an incoming doc older than the local copy is skipped (so a not-yet-pushed local edit isn't clobbered by a stale server version). The server's upsert mirrors this: `ON CONFLICT … WHERE excluded.updated_at >= documents.updated_at`. Ties go to the incoming doc.
+**Clients resolve conflicts.** Each client owns its own server row per document; a push only replaces that row, so concurrent edits from two clients become two rows (siblings). On pull a client folds siblings deterministically (later `updatedAt` wins, ties break on `clientId`), then skips the winner if it's older than the local copy (so a not-yet-pushed local edit isn't clobbered). Siblings are bounded by the number of clients, since each push replaces that client's row.
 
 ## Realtime
 
@@ -283,9 +283,9 @@ interface Env {
 | POST | `/apps` | Bearer **PROVISION_KEY** | body `{ appName, password }` — create an app or rotate its password (404 when `PROVISION_KEY` unset) |
 | GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
 | GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
-| POST | `/sync/push` | Bearer **token** | upsert documents (LWW) |
-| GET | `/sync/pull?collection=&since=` | Bearer **token** | docs changed since a timestamp |
-| GET | `/sync/pull?collection=&id=` | Bearer **token** | a single doc by id |
+| POST | `/sync/push` | Bearer **token** | write documents into the caller's own rows |
+| GET | `/sync/pull?collection=&cursor=` | Bearer **token** | rows written after a `seq` cursor (may include siblings) |
+| GET | `/sync/pull?collection=&id=` | Bearer **token** | every client's row for one doc |
 | GET | `/sync/blobs` | Bearer **token** | authoritative set of stored blob hashes |
 | PUT | `/sync/blobs/:hash` | Bearer **token** | upload blob bytes (hash = SHA-256 of body) |
 | GET | `/sync/blobs/:hash` | Bearer **token** | download blob bytes |

@@ -9,7 +9,7 @@ npm install @a16n/pact-client
 Pact deliberately trades generality for simplicity:
 
 - **A small, high-trust group.** One server per app group (e.g. a household). Auth is one shared app password traded for per-client tokens; there's no per-document access control.
-- **Last-write-wins is good enough.** Conflicts resolve by `updatedAt`. No CRDTs, no merge UIs.
+- **Last-write-wins is good enough.** Conflicts resolve on the client by `updatedAt`; the server stores each client's version and never merges. No CRDTs, no merge UIs.
 - **Schemas are required, and owned by you.** The collection definitions you hand the store _are_ the set of collections that exist — writes validate against them, and undefined collections are rejected.
 
 ## What you definitely need to know

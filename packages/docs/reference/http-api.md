@@ -12,9 +12,9 @@ The complete route table exposed by `createSyncApp`. Every route's logic is also
 | `POST` | `/apps` | Bearer **PROVISION_KEY** | Body `{ appName, password }` — create an app or rotate its password. `404` when `PROVISION_KEY` isn't configured. |
 | `GET` | `/auth/check` | Bearer **token** | Validate a token → `{ ok, client }`. |
 | `GET` | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes. |
-| `POST` | `/sync/push` | Bearer **token** | Upsert documents (last-write-wins). |
-| `GET` | `/sync/pull?collection=&since=` | Bearer **token** | Documents changed since a timestamp. |
-| `GET` | `/sync/pull?collection=&id=` | Bearer **token** | A single document by id. |
+| `POST` | `/sync/push` | Bearer **token** | Write documents into the calling client's own rows. |
+| `GET` | `/sync/pull?collection=&cursor=` | Bearer **token** | Rows written after a server `seq` cursor (may include siblings). |
+| `GET` | `/sync/pull?collection=&id=` | Bearer **token** | Every client's row for one document. |
 | `GET` | `/sync/blobs` | Bearer **token** | Authoritative set of stored blob hashes. |
 | `PUT` | `/sync/blobs/:hash` | Bearer **token** | Upload blob bytes (`:hash` = SHA-256 of body). |
 | `GET` | `/sync/blobs/:hash` | Bearer **token** | Download blob bytes. |
@@ -68,18 +68,17 @@ Dynamic app provisioning, guarded by the `PROVISION_KEY` master secret (the rout
 
 Two modes, selected by query params (both require a `collection`):
 
-- `?collection=recipes&since=<iso>` — every document in the collection changed at or after the timestamp.
-- `?collection=recipes&id=r-123` — a single document by id.
+- `?collection=recipes&cursor=<seq>` — one page of rows written after the server `seq` cursor, oldest first, with the next `cursor` and `hasMore`.
+- `?collection=recipes&id=r-123` — every stored row for one document.
 
-Incoming documents are reconciled client-side with [last-write-wins](/guide/sync#last-write-wins-both-directions).
+Each returned document carries `clientId` (whose row it is) and `seq`. A response may hold several rows with the same `id` — siblings from different clients — which the client folds; see [Sync](/guide/sync#clients-resolve-conflicts-the-server-stores-siblings).
 
 ## `POST /sync/push`
 
-Upserts a batch of documents into D1. The server applies last-write-wins per document:
+Writes a batch of documents into the **calling client's own rows** (`(app_name, collection, id, client_id)`). There is no server-side conflict rule: a client only ever replaces its own row, so every document in the batch is accepted.
 
-```sql
-ON CONFLICT (app_name, collection, id)
-  DO UPDATE SET ... WHERE excluded.updated_at >= documents.updated_at
+```json
+{ "documents": [{ "id": "r-1", "collection": "recipes", "updatedAt": "…", "data": { … } }] }
 ```
 
 Documents authored by `_local` are rejected — claim an identity first (see [Authors & Identity](/guide/authors-identity)). If realtime is enabled, accepted writes broadcast an `invalidate` to connected sockets via `waitUntil`.

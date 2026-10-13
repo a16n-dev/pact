@@ -66,7 +66,7 @@ await store.encryption.encryptLocal(); // rewrite local rows as ciphertext
 await store.sync.push(); // overwrite the server's plaintext copies
 ```
 
-`sync.push()` works because the server's last-write-wins guard accepts equal `updatedAt` — each plaintext row on the server is replaced by its encrypted twin.
+`sync.push()` works because a push always replaces this client's own server row — each plaintext row is replaced by its encrypted twin.
 
 ## Threat model — what this does and doesn't hide
 

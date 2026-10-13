@@ -1,7 +1,7 @@
 import dayjs from 'dayjs';
 import {
   upsertDocuments,
-  getDocumentById,
+  getDocumentSiblings,
   getDocumentsSince,
   wipeAllDocuments,
   upsertBlob,
@@ -18,6 +18,16 @@ import type { Env, SyncDocument } from '../types';
  */
 export interface AppContext {
   appName: string;
+}
+
+/**
+ * `AppContext` plus the identity of the writing client — what a push needs,
+ * since each client owns its own row per document. HTTP handlers take it
+ * from the authenticated client row; an in-Worker writer picks a stable id
+ * of its own (it's just the row's owner, not a registered client).
+ */
+export interface WriterContext extends AppContext {
+  clientId: string;
 }
 
 export interface SyncHooks {
@@ -38,9 +48,9 @@ export interface SyncHooks {
 const LOCAL_AUTHOR_ID = '_local';
 
 export interface PushResult {
-  /** Docs inserted or updated. */
+  /** Docs written — always the whole batch; a client only replaces its own rows. */
   accepted: number;
-  /** Docs the last-write-wins guard skipped (stored copy newer-or-equal). */
+  /** Always 0; kept for wire compatibility with pre-sibling clients. */
   skipped: number;
 }
 
@@ -60,11 +70,11 @@ export interface PushOptions {
 /**
  * Programmatic equivalent of `POST /sync/push`. The HTTP handler is a thin
  * shell over this; in-Worker callers can write the same way without an HTTP
- * round trip.
+ * round trip. Each doc lands in `app.clientId`'s own row.
  */
 export async function pushDocuments(
   env: Env,
-  app: AppContext,
+  app: WriterContext,
   docs: SyncDocument[],
   opts: PushOptions = {}
 ): Promise<PushOutcome> {
@@ -119,7 +129,7 @@ export async function pushDocuments(
     };
   }
 
-  const result = await upsertDocuments(env.DB, app.appName, upgraded);
+  const result = await upsertDocuments(env.DB, app.appName, app.clientId, upgraded);
 
   if (env.ENABLE_REALTIME === 'true' && result.accepted > 0 && opts.waitUntil) {
     const collections = [...new Set(upgraded.map((d) => d.collection))];
@@ -132,13 +142,18 @@ export async function pushDocuments(
   return { ok: true, result };
 }
 
+/**
+ * Every stored row for one document — one per client that has pushed it. The
+ * caller folds them with the client-side merge rule; the server doesn't pick
+ * a winner. Empty when the document is unknown.
+ */
 export async function pullDocument(
   env: Env,
   app: AppContext,
   collection: string,
   id: string
-): Promise<SyncDocument | null> {
-  return getDocumentById(env.DB, app.appName, collection, id);
+): Promise<SyncDocument[]> {
+  return getDocumentSiblings(env.DB, app.appName, collection, id);
 }
 
 export async function pullDocumentsSince(

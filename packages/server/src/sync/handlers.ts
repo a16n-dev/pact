@@ -8,8 +8,9 @@ import type { ClientRow } from '../auth/auth';
 // is the tenant scope for every operation here.
 type HonoEnv = { Bindings: Env; Variables: { client: ClientRow } };
 
-function appOf(c: Context<HonoEnv>): { appName: string } {
-  return { appName: c.get('client').appName };
+function appOf(c: Context<HonoEnv>): { appName: string; clientId: string } {
+  const client = c.get('client');
+  return { appName: client.appName, clientId: client.id };
 }
 
 export function makePushHandler(hooks?: SyncHooks) {
@@ -34,12 +35,9 @@ export async function handlePull(c: Context<HonoEnv>) {
   if (!collection) return c.json({ error: 'collection is required' }, 400);
 
   if (id) {
-    const doc = await pullDocument(c.env, appOf(c), collection, id);
-    return c.json({
-      documents: doc ? [doc] : [],
-      cursor: 0,
-      hasMore: false,
-    } satisfies PullResponse);
+    // All of the document's sibling rows; the client folds them.
+    const documents = await pullDocument(c.env, appOf(c), collection, id);
+    return c.json({ documents, cursor: 0, hasMore: false } satisfies PullResponse);
   }
 
   if (cursorRaw === undefined) return c.json({ error: 'cursor is required' }, 400);

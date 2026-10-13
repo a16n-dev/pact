@@ -2,15 +2,15 @@
 
 Every HTTP route's logic is also exported as a named function, so code composed into the sync Worker (a custom route in your deploy package, an operator script) can call it directly — no HTTP loopback, one source of truth with the sync surface.
 
-Every data function takes an **`AppContext`** (`{ appName }`) right after `env` — the server is [multi-tenant](/server/auth), and app scoping is a required argument rather than a convention, so no in-Worker caller can accidentally read or write across apps. HTTP handlers build it from the authenticated client row; your in-Worker code passes the app it's acting for.
+Every data function takes an **`AppContext`** (`{ appName }`) right after `env` — the server is [multi-tenant](/server/auth), and app scoping is a required argument rather than a convention, so no in-Worker caller can accidentally read or write across apps. HTTP handlers build it from the authenticated client row; your in-Worker code passes the app it's acting for. `pushDocuments` takes a **`WriterContext`** (`{ appName, clientId }`): writes land in the named client's own rows, so an in-Worker writer picks a stable id of its own.
 
 ## Sync
 
 | Function | Mirrors | Purpose |
 |----------|---------|---------|
-| `pushDocuments` | `POST /sync/push` | Upsert a batch of documents (last-write-wins). |
-| `pullDocument` | `GET /sync/pull?…&id=` | Fetch a single document by id. |
-| `pullDocumentsSince` | `GET /sync/pull?…&since=` | Fetch documents in a collection changed since a timestamp. |
+| `pushDocuments` | `POST /sync/push` | Write a batch into the writer's own rows. |
+| `pullDocument` | `GET /sync/pull?…&id=` | Every client's row for one document (the caller folds them). |
+| `pullDocumentsSince` | `GET /sync/pull?…&cursor=` | One page of rows in a collection written after a `seq` cursor. |
 
 ## Blobs
 

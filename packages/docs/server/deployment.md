@@ -150,6 +150,10 @@ wrangler deploy
 
 The canonical DDL ships as `schema.sql` inside the `@a16n/pact-server` package; the [D1 Schema reference](/reference/schema) documents every table and index.
 
+::: tip Upgrading an existing deployment to per-client rows
+Servers created before documents were stored one row per client need a one-off table rebuild: `wrangler d1 execute <db> --remote --file migrations/001-per-client-rows.sql`. Existing rows keep their `seq` and are tagged `client_id = '_legacy'`; connected clients, old or new, keep working throughout.
+:::
+
 ## Verify
 
 ```bash

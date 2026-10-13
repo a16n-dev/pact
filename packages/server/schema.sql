@@ -13,14 +13,20 @@ CREATE TABLE apps (
   created_at TEXT NOT NULL
 );
 
+-- One row per (document, writing client). The server never merges: each
+-- client owns its own row for a document and overwrites only that row on
+-- push. Concurrent versions of the same document from different clients
+-- ("siblings") coexist; every client folds them with the same rule on pull.
+-- Rows migrated from the pre-sibling schema carry client_id '_legacy'.
 CREATE TABLE documents (
   app_name TEXT NOT NULL,
   id TEXT NOT NULL,
   collection TEXT NOT NULL,
+  client_id TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   data TEXT NOT NULL,
   seq INTEGER NOT NULL,
-  PRIMARY KEY (app_name, collection, id)
+  PRIMARY KEY (app_name, collection, id, client_id)
 );
 -- seq is assigned as MAX(seq)+1 per app; unique so any counter bug fails
 -- loudly instead of silently corrupting pull cursors.

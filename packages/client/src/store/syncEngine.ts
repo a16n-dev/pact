@@ -3,6 +3,7 @@ import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BaseDocument } from '../types';
 import type { Migrator } from '../migrator';
 import { SyncClient } from '../sync/sync';
+import { foldSiblings, type PulledDocument } from '../sync/fold';
 import { isEncryptedDoc } from '../crypto/docCrypto';
 import { LOCAL_AUTHOR_ID } from '../system';
 import {
@@ -51,8 +52,12 @@ export interface SyncEngineDeps {
 
 /**
  * Owns everything that moves documents between local storage and a sync server:
- * the durable push outbox and its drain loop, paged pulls with last-write-wins
- * merge, push-all, and the per-collection pull cursor. Constructed and held by
+ * the durable push outbox and its drain loop, paged pulls that fold sibling
+ * rows with last-write-wins, push-all, and the per-collection pull cursor.
+ *
+ * Conflict resolution is entirely client-side. The server keeps one row per
+ * (document, client) and never picks a winner; every client folds the rows it
+ * pulls with the same deterministic rule (`fold.ts`). Constructed and held by
  * the `Store`, which feeds it live views of its author id and `change` emitter
  * and swaps the `SyncClient` in/out as credentials are registered or cleared.
  */
@@ -283,14 +288,17 @@ export class SyncEngine {
     let cursor = await this.getLastSyncCursor(collection);
     for (;;) {
       const page = await this.syncClient.pull<T>(collection, cursor);
-      for (const wireDoc of page.documents) {
+      // A page can carry several clients' rows for one document. Fold them
+      // to one winner per id first (deterministic: `updatedAt`, then
+      // `clientId`), then reconcile each winner against the local copy.
+      for (const { doc: wireDoc } of foldSiblings(page.documents)) {
         // Last-write-wins: skip an incoming doc that's older than the local
         // copy, so a not-yet-pushed local edit isn't clobbered by a stale
-        // server version. Mirrors the server's upsert guard (db.ts); ties go
-        // to the incoming doc. The cursor still advances past it — the local
-        // copy is newer and will be pushed, so re-pulling the server's is
-        // moot. The raw read suffices (`updatedAt` is cleartext on
-        // envelopes) and sees local rows sealed under other keys too.
+        // server version. Ties go to the incoming doc. The cursor still
+        // advances past it — the local copy is newer and will be pushed, so
+        // re-pulling the server's is moot. The raw read suffices
+        // (`updatedAt` is cleartext on envelopes) and sees local rows sealed
+        // under other keys too.
         //
         // A doc still sealed after the wire transform is another key's
         // (multi-key mode): store the envelope raw — no migration,
@@ -321,8 +329,10 @@ export class SyncEngine {
 
   async pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
     if (!this.syncClient) return null;
-    const doc = await this.syncClient.pullDocument<T>(collection, id);
-    if (!doc) return null;
+    const siblings: PulledDocument<T>[] = await this.syncClient.pullDocument<T>(collection, id);
+    const winner = foldSiblings(siblings)[0];
+    if (!winner) return null;
+    const doc = winner.doc;
     // Still sealed after the wire transform: another key's doc (multi-key
     // mode). Store the envelope raw and report it as missing — it's
     // invisible to this key (see `pull`).

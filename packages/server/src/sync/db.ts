@@ -5,24 +5,27 @@ import type { SyncDocument, BlobRecord } from '../types';
 // another app's rows through this module, and a test asserts every SQL
 // constant names the column (see the tripwire test in api.test.ts).
 //
+// Documents are stored one row per (document, client): the server never
+// merges, it only ever replaces the pushing client's own row. Concurrent
+// versions from different clients ("siblings") sit side by side and every
+// client folds them with the same deterministic rule on pull. The server
+// stays schema-free — it never reads `data` to decide anything.
+//
 // `seq` is the server-assigned monotonic write sequence, per app (see the
 // schema in the README). It's computed here, on the server, so the pull
-// cursor never depends on a client's wall clock. A skipped last-write-wins
-// update (the WHERE rejects it) leaves the stored row — and its seq —
-// untouched, so it stays where it was in the pull order. Within a D1 `batch`,
+// cursor never depends on a client's wall clock. Within a D1 `batch`,
 // statements run sequentially in one transaction, so each `MAX(seq)+1`
 // already sees the prior statement's insert. The unique `(app_name, seq)`
 // index is the backstop: a counter bug fails loudly instead of silently
 // corrupting pull cursors.
 const UPSERT_SQL = `
-  INSERT INTO documents (app_name, id, collection, updated_at, data, seq)
-  VALUES (?1, ?2, ?3, ?4, ?5,
+  INSERT INTO documents (app_name, id, collection, client_id, updated_at, data, seq)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6,
           (SELECT COALESCE(MAX(seq), 0) + 1 FROM documents WHERE app_name = ?1))
-  ON CONFLICT (app_name, collection, id) DO UPDATE
+  ON CONFLICT (app_name, collection, id, client_id) DO UPDATE
     SET updated_at = excluded.updated_at,
         data = excluded.data,
         seq = excluded.seq
-    WHERE excluded.updated_at >= documents.updated_at
 `;
 
 // Max documents one pull page returns. The client drains by re-pulling from
@@ -34,7 +37,7 @@ const UPSERT_SQL = `
 const PULL_PAGE_SIZE = 500;
 
 const PULL_SQL = `
-  SELECT id, collection, updated_at, data, seq
+  SELECT id, collection, client_id, updated_at, data, seq
   FROM documents
   WHERE app_name = ?1 AND collection = ?2 AND seq > ?3
   ORDER BY seq ASC
@@ -42,48 +45,58 @@ const PULL_SQL = `
 `;
 
 const PULL_BY_ID_SQL = `
-  SELECT id, collection, updated_at, data
+  SELECT id, collection, client_id, updated_at, data, seq
   FROM documents
   WHERE app_name = ?1 AND collection = ?2 AND id = ?3
+  ORDER BY seq ASC
 `;
 
+function rowToDocument(row: Record<string, unknown>): SyncDocument {
+  return {
+    id: row.id as string,
+    collection: row.collection as string,
+    clientId: row.client_id as string,
+    updatedAt: row.updated_at as string,
+    data: JSON.parse(row.data as string),
+    seq: row.seq as number,
+  };
+}
+
+/**
+ * Write `docs` as `clientId`'s rows, replacing that client's previous row
+ * for each document. Every doc is accepted: there's no server-side conflict
+ * rule to decline a write, since a client only ever overwrites its own row.
+ * Other clients' rows for the same document are left alone (siblings are
+ * bounded by the number of clients that have written the document).
+ */
 export async function upsertDocuments(
   db: D1Database,
   appName: string,
+  clientId: string,
   docs: SyncDocument[]
 ): Promise<{ accepted: number; skipped: number }> {
   const statements = docs.map((doc) =>
     db
       .prepare(UPSERT_SQL)
-      .bind(appName, doc.id, doc.collection, doc.updatedAt, JSON.stringify(doc.data))
+      .bind(appName, doc.id, doc.collection, clientId, doc.updatedAt, JSON.stringify(doc.data))
   );
 
-  const results = await db.batch(statements);
-
-  // `meta.changes` is 1 when a row was inserted or updated, 0 when the
-  // last-write-wins guard (`excluded.updated_at >= documents.updated_at`)
-  // declined the write because the stored copy is newer-or-equal. The latter
-  // is a benign no-op, not a failure — hence `skipped`, not `rejected`. A
-  // client re-pushing already-synced docs expects a high `skipped` count.
-  const accepted = results.reduce((sum, r) => sum + (r.meta.changes ?? 0), 0);
-
-  return { accepted, skipped: docs.length - accepted };
+  await db.batch(statements);
+  return { accepted: docs.length, skipped: 0 };
 }
 
-export async function getDocumentById(
+/**
+ * Every client's row for one document (its siblings), oldest write first.
+ * Empty when no client has pushed it.
+ */
+export async function getDocumentSiblings(
   db: D1Database,
   appName: string,
   collection: string,
   id: string
-): Promise<SyncDocument | null> {
-  const row = await db.prepare(PULL_BY_ID_SQL).bind(appName, collection, id).first();
-  if (!row) return null;
-  return {
-    id: row.id as string,
-    collection: row.collection as string,
-    updatedAt: row.updated_at as string,
-    data: JSON.parse(row.data as string),
-  };
+): Promise<SyncDocument[]> {
+  const result = await db.prepare(PULL_BY_ID_SQL).bind(appName, collection, id).all();
+  return result.results.map((row) => rowToDocument(row as Record<string, unknown>));
 }
 
 const WIPE_DOCUMENTS_SQL = `DELETE FROM documents WHERE app_name = ?1`;
@@ -98,11 +111,13 @@ export async function wipeAllBlobRecords(db: D1Database, appName: string): Promi
 }
 
 /**
- * One page of documents in `collection` written after `cursor` (a server
- * `seq`), oldest first. Returns the new cursor to persist (the highest `seq`
- * in the page, or the input cursor unchanged when the page is empty) and
- * `hasMore` — whether rows beyond this page remain. The caller drains by
- * re-pulling from the returned cursor while `hasMore` is true.
+ * One page of document rows in `collection` written after `cursor` (a server
+ * `seq`), oldest first. A page may carry several rows for the same document
+ * id (siblings) — the client folds them. Returns the new cursor to persist
+ * (the highest `seq` in the page, or the input cursor unchanged when the
+ * page is empty) and `hasMore` — whether rows beyond this page remain. The
+ * caller drains by re-pulling from the returned cursor while `hasMore` is
+ * true.
  */
 export async function getDocumentsSince(
   db: D1Database,
@@ -122,14 +137,9 @@ export async function getDocumentsSince(
 
   let nextCursor = cursor;
   const documents = rows.map((row) => {
-    const seq = row.seq as number;
-    if (seq > nextCursor) nextCursor = seq;
-    return {
-      id: row.id as string,
-      collection: row.collection as string,
-      updatedAt: row.updated_at as string,
-      data: JSON.parse(row.data as string),
-    };
+    const doc = rowToDocument(row as Record<string, unknown>);
+    if (doc.seq! > nextCursor) nextCursor = doc.seq!;
+    return doc;
   });
 
   return { documents, cursor: nextCursor, hasMore };

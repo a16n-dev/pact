@@ -1,11 +1,16 @@
 import type { BaseDocument } from '../types';
 import { fetchWithTimeout } from './http';
+import type { PulledDocument } from './fold';
 
 interface SyncDocument {
   id: string;
   collection: string;
   updatedAt: string;
   data: unknown;
+  // Set by the server on pull: whose row this is, and its write sequence.
+  // Absent from a pre-sibling server.
+  clientId?: string;
+  seq?: number;
 }
 
 interface PushResponse {
@@ -121,6 +126,7 @@ export class SyncClient {
     return { ok: false, reason: 'server' };
   }
 
+  /** Write `docs` into this client's own server rows. */
   async push(collection: string, docs: BaseDocument[]): Promise<PushResponse> {
     const key = this.toKey(collection);
     const syncDocs: SyncDocument[] = await Promise.all(
@@ -145,10 +151,23 @@ export class SyncClient {
     return res.json() as Promise<PushResponse>;
   }
 
+  private async fromWireRow<T extends BaseDocument>(
+    key: string,
+    row: SyncDocument
+  ): Promise<PulledDocument<T>> {
+    const doc = (this.transform ? await this.transform.fromWire(key, row.data) : row.data) as T;
+    return { doc, clientId: row.clientId, seq: row.seq };
+  }
+
+  /**
+   * One page of rows written after `cursor`. A page can hold several rows
+   * for the same document id — one per client that has written it — which
+   * the caller folds (see `fold.ts`).
+   */
   async pull<T extends BaseDocument>(
     collection: string,
     cursor: number
-  ): Promise<{ documents: T[]; cursor: number; hasMore: boolean }> {
+  ): Promise<{ documents: PulledDocument<T>[]; cursor: number; hasMore: boolean }> {
     const key = this.toKey(collection);
     const params = new URLSearchParams({ collection: key, cursor: String(cursor) });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
@@ -161,17 +180,17 @@ export class SyncClient {
 
     const result = (await res.json()) as PullResponse;
     return {
-      documents: await Promise.all(
-        result.documents.map(async (d) =>
-          this.transform ? ((await this.transform.fromWire(key, d.data)) as T) : (d.data as T)
-        )
-      ),
+      documents: await Promise.all(result.documents.map((d) => this.fromWireRow<T>(key, d))),
       cursor: result.cursor,
       hasMore: result.hasMore ?? false,
     };
   }
 
-  async pullDocument<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
+  /** Every server row for one document (its siblings); empty if unknown. */
+  async pullDocument<T extends BaseDocument>(
+    collection: string,
+    id: string
+  ): Promise<PulledDocument<T>[]> {
     const key = this.toKey(collection);
     const params = new URLSearchParams({ collection: key, id });
     const res = await fetchWithTimeout(`${this.endpoint}/sync/pull?${params}`, {
@@ -183,8 +202,6 @@ export class SyncClient {
     }
 
     const result = (await res.json()) as PullResponse;
-    if (!result.documents[0]) return null;
-    const data = result.documents[0].data;
-    return (this.transform ? await this.transform.fromWire(key, data) : data) as T;
+    return Promise.all(result.documents.map((d) => this.fromWireRow<T>(key, d)));
   }
 }

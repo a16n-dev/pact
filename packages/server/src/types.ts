@@ -3,6 +3,14 @@ export interface SyncDocument {
   collection: string;
   updatedAt: string;
   data: unknown;
+  /**
+   * Which client's row this is. Set by the server on every pulled document
+   * (clients fold siblings by it); ignored on push, where the authenticated
+   * client is always the owner.
+   */
+  clientId?: string;
+  /** Server write sequence of this row. Set on pull; ignored on push. */
+  seq?: number;
 }
 
 /**
@@ -23,10 +31,15 @@ export interface PushRequest {
 
 export interface PushResponse {
   accepted: number;
+  /** Always 0 since per-client rows: kept for wire compatibility. */
   skipped: number;
 }
 
 export interface PullResponse {
+  /**
+   * May hold several rows with the same `id` (siblings from different
+   * clients); the client folds them with its merge rule.
+   */
   documents: SyncDocument[];
   /** Server `seq` high-water mark the client persists as its next pull cursor. */
   cursor: number;

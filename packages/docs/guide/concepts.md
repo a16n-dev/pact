@@ -12,7 +12,7 @@ One server per group (e.g. a household). Authentication is a single shared serve
 
 ### Last-write-wins is good enough
 
-Conflicts resolve by comparing `updatedAt` timestamps. There are **no CRDTs, vector clocks, or merge UIs**. For a small group editing mostly-disjoint data this is rarely felt; for high-contention concurrent edits to the same field it isn't the right tool.
+Conflicts resolve on the client by comparing `updatedAt` timestamps (the server stores each client's version and never merges). There are **no CRDTs, vector clocks, or merge UIs**. For a small group editing mostly-disjoint data this is rarely felt; for high-contention concurrent edits to the same field it isn't the right tool.
 
 ### Schemas are owned by the consumer
 
@@ -40,6 +40,6 @@ Multi-tenant SaaS, untrusted users, per-row permissions, or workflows where two 
 
 ## The data flow in one paragraph
 
-You call `recipes.create(...)`. The Store validates the doc, stamps its `schemaVersion`, writes it to the local adapter, emits a `change` event so your UI re-reads, then fire-and-forgets a push to the server. The server upserts it into D1 with last-write-wins and — if realtime is on — broadcasts an `invalidate` to every connected client. Those clients pull the named collection and merge the change in, again last-write-wins. Nothing in that chain blocks on the network: the write was durable the instant it hit local storage.
+You call `recipes.create(...)`. The Store validates the doc, stamps its `schemaVersion`, writes it to the local adapter, emits a `change` event so your UI re-reads, then fire-and-forgets a push to the server. The server writes it into your client's own D1 row and — if realtime is on — broadcasts an `invalidate` to every connected client. Those clients pull the named collection, fold any sibling rows, and merge the winner in with last-write-wins. Nothing in that chain blocks on the network: the write was durable the instant it hit local storage.
 
 Read on: [The Document Model](/guide/document-model) makes the `BaseDocument` shape and its consequences concrete.

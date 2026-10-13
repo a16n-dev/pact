@@ -419,6 +419,112 @@ describe('Store pull (last-write-wins)', () => {
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('server');
   });
 
+  it('folds sibling rows of one document to the clientId tiebreak winner on a tie', async () => {
+    const { store } = setup({}, SYNC);
+    const t = '2026-05-05T00:00:00.000Z';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 1,
+              updatedAt: t,
+              data: mkDoc('w1', 'from-b', t),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 2,
+              updatedAt: t,
+              data: mkDoc('w1', 'from-a', t),
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        })
+      )
+    );
+
+    const applied = await store.collection<Widget>('widgets').pullAll();
+    // One document, not two applications; the higher clientId wins the tie
+    // even though its row arrived second.
+    expect(applied.map((w) => w.name)).toEqual(['from-b']);
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('from-b');
+  });
+
+  it('folds siblings by updatedAt before comparing with the local copy', async () => {
+    const { adapter, store } = setup({}, SYNC);
+    await adapter.put('widgets', mkDoc('w1', 'local', '2026-03-01T00:00:00.000Z'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            // Newer than local — but loses to its sibling below.
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 1,
+              updatedAt: '2026-04-01T00:00:00.000Z',
+              data: mkDoc('w1', 'april', '2026-04-01T00:00:00.000Z'),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 2,
+              updatedAt: '2026-05-01T00:00:00.000Z',
+              data: mkDoc('w1', 'may', '2026-05-01T00:00:00.000Z'),
+            },
+          ],
+          cursor: 2,
+          hasMore: false,
+        })
+      )
+    );
+    await store.collection<Widget>('widgets').pullAll();
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('may');
+  });
+
+  it('pullDocument folds the siblings the server returns', async () => {
+    const { store } = setup({}, SYNC);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          documents: [
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-a',
+              seq: 1,
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              data: mkDoc('w1', 'old', '2026-01-01T00:00:00.000Z'),
+            },
+            {
+              id: 'w1',
+              collection: 'widgets',
+              clientId: 'cl-b',
+              seq: 2,
+              updatedAt: '2026-02-01T00:00:00.000Z',
+              data: mkDoc('w1', 'new', '2026-02-01T00:00:00.000Z'),
+            },
+          ],
+          cursor: 0,
+          hasMore: false,
+        })
+      )
+    );
+    const doc = await store.collection<Widget>('widgets').pull('w1');
+    expect(doc?.name).toBe('new');
+  });
+
   it('drains every page, advancing the cursor until hasMore is false', async () => {
     const { store } = setup({}, SYNC);
     const pageFor = (cursor: number) => {

@@ -36,7 +36,7 @@ interface Recipe extends BaseDocument {
 
 ### `updatedAt` is the conflict clock
 
-Both client and server resolve conflicts by keeping the higher `updatedAt`. Ties go to the incoming / server copy. This single rule is the whole conflict-resolution story — see [Sync](/guide/sync) for how it plays out in both directions.
+Clients resolve conflicts by keeping the higher `updatedAt`; an exact tie between two clients' versions breaks on `clientId`. The server never compares it — it stores every client's version and lets the clients fold. See [Sync](/guide/sync) for the full story.
 
 ### `schemaVersion` drives migrations
 
