@@ -2,6 +2,8 @@
 
 Pact is an intentionally simple client/server architecture for building local-first apps designed to be used by a small group of individuals and agents collaborating in real-time in a high trust environment.
 
+> Pact 2 is being built in `packages/server-2` (spec in its `doc.md`). The Pact 1 client, server, docs and examples described below live in `deprecated/` until it replaces them.
+
 ## Features
 
 - [x] **Offline first** — clients function fully offline; sync is optional and additive
@@ -76,10 +78,10 @@ Documents live in named collections (`recipes`, `users`, …). Collection names 
 
 ## Examples
 
-[`examples/`](./examples) holds working, tested reference material:
+[`deprecated/examples/`](./deprecated/examples) holds working, tested reference material:
 
-- [`examples/todo-cli`](./examples/todo-cli) — a complete client app (Node CLI TODO list): domain definition, storage adapter, typed CRUD, optional sync.
-- [`examples/adapters`](./examples/adapters) — copy-paste `DatabaseAdapter` recipes (localStorage, IndexedDB, JSON file, `node:sqlite`, `expo-sqlite`) plus a reusable adapter contract test.
+- [`deprecated/examples/todo-cli`](./deprecated/examples/todo-cli) — a complete client app (Node CLI TODO list): domain definition, storage adapter, typed CRUD, optional sync.
+- [`deprecated/examples/adapters`](./deprecated/examples/adapters) — copy-paste `DatabaseAdapter` recipes (localStorage, IndexedDB, JSON file, `node:sqlite`, `expo-sqlite`) plus a reusable adapter contract test.
 
 ## The Store (client)
 

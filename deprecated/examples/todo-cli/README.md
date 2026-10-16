@@ -12,7 +12,7 @@ The point to notice: the CRUD code is identical with and without a server. Sync 
 
 ```bash
 pnpm install   # repo root
-cd examples/todo-cli
+cd deprecated/examples/todo-cli
 
 pnpm todo add Buy milk
 pnpm todo add Water the plants
@@ -26,7 +26,7 @@ Data lives in `.pact-todo.json` in your working directory (override with `PACT_T
 
 ## Add sync (optional)
 
-With a [pact server](../../packages/docs/server/deployment.md) deployed:
+With a [pact server](../../docs/server/deployment.md) deployed:
 
 ```bash
 pnpm todo register https://sync.example.com <appPassword> myapp "Alex's laptop"

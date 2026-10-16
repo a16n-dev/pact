@@ -30,7 +30,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # Workspace-wide: client, server, and examples.
+      # Workspace-wide: the Pact 2 server plus the deprecated Pact 1 packages.
       - name: Typecheck
         run: pnpm tc
 

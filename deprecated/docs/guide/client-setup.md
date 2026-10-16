@@ -50,7 +50,7 @@ interface DatabaseAdapter {
 | `InMemoryAdapter` | `@a16n/pact-client` | Tests, CLIs, ephemeral scratch stores. |
 | SQLite-backed | Your app | Real persistence on device (mobile / desktop). |
 
-You don't have to write one from scratch: the repo's [`examples/adapters`](https://github.com/a16n-dev/pact/tree/main/examples/adapters) directory has tested, copy-paste implementations for localStorage, IndexedDB, a JSON file, `node:sqlite`, and `expo-sqlite`, plus a reusable contract test for rolling your own. A complete app wired up end-to-end lives in [`examples/todo-cli`](https://github.com/a16n-dev/pact/tree/main/examples/todo-cli).
+You don't have to write one from scratch: the repo's [`examples/adapters`](https://github.com/a16n-dev/pact/tree/main/deprecated/examples/adapters) directory has tested, copy-paste implementations for localStorage, IndexedDB, a JSON file, `node:sqlite`, and `expo-sqlite`, plus a reusable contract test for rolling your own. A complete app wired up end-to-end lives in [`examples/todo-cli`](https://github.com/a16n-dev/pact/tree/main/deprecated/examples/todo-cli).
 
 ## The domain
 
