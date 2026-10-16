@@ -2,6 +2,8 @@
 
 A Cloudflare-deployable server that provides opaque document and blob storage for a set of registered apps, plus authentication against a server-wide registry of users. Intended for personal use and small groups of family and friends.
 
+The client-facing contract is in [`api.md`](./api.md); this document is the server design and build spec.
+
 ## Out of scope
 
 - Access control: all of an app's data is shared by everyone signed in to it, and any user can sign in to any app.
