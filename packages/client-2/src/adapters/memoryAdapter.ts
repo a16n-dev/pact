@@ -31,8 +31,10 @@ export class InMemoryAdapter implements DatabaseAdapter {
     return Array.from(this.col(collection), ([id, record]) => ({ id, record }));
   }
 
+  // Cloned so the store's later mutations never reach the stored copy, as
+  // with any adapter that serialises.
   async put(collection: string, id: string, record: AdapterRecord): Promise<void> {
-    this.col(collection).set(id, record);
+    this.col(collection).set(id, structuredClone(record));
   }
 
   async delete(collection: string, id: string): Promise<void> {
