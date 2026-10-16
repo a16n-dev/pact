@@ -1,0 +1,66 @@
+{
+  "name": "@a16n/pact-client",
+  "version": "2.0.0",
+  "description": "Local-first document store with sync, realtime, blobs, migrations, collaborative text and end-to-end encryption: the client half of Pact.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a16n-dev/pact.git",
+    "directory": "packages/client-2"
+  },
+  "homepage": "https://github.com/a16n-dev/pact#readme",
+  "bugs": "https://github.com/a16n-dev/pact/issues",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./yjs": "./src/yjs/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./yjs": {
+        "types": "./dist/yjs/index.d.ts",
+        "default": "./dist/yjs/index.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tc": "tsc --noEmit -p tsconfig.test.json",
+    "check": "eslint . && prettier --check .",
+    "format": "eslint --fix . && prettier --write ."
+  },
+  "dependencies": {
+    "nanoid": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "yjs": "^13"
+  },
+  "peerDependenciesMeta": {
+    "yjs": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "yjs": "catalog:"
+  }
+}
