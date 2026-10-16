@@ -24,3 +24,4 @@ export function outboxKey(collectionKey: string, docId: string): string {
 }
 
 export const MAX_DOCUMENT_BYTES = 1_000_000;
+export const TEXT_PUSH_DEBOUNCE_MS = 1_000;

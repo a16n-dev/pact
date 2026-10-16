@@ -99,3 +99,74 @@ export type StoreEncryption = {
    */
   encryptLocal(): Promise<{ rewritten: number }>;
 };
+
+export type SignInStart = {
+  /** The Pact server origin, e.g. `https://sync.example.com`. */
+  url: string;
+  appId: string;
+  /** Shown to the user and the admin, 1–100 chars. */
+  deviceName: string;
+  /** Must be registered for the app on the server. */
+  redirectUri: string;
+};
+
+export type SignInResult =
+  | { ok: true }
+  | { ok: false; reason: 'state' | 'code' | 'network' | 'server' };
+
+export type Registration = { url: string; appId: string; deviceId: string; deviceName: string };
+
+export type Session = { appId: string; user: string | null; deviceName: string };
+
+export type PullResult = {
+  applied: number;
+  skipped: { drift: number; sealed: number };
+  held: number;
+};
+
+export type StoreSync = {
+  /**
+   * Starts OAuth sign-in: fetches the server's discovery document, generates
+   * PKCE material and persists it, and returns the URL to open in a browser.
+   * Finish with `completeSignIn` once the browser lands on `redirectUri`.
+   */
+  beginSignIn(start: SignInStart): Promise<{ authorizeUrl: string; state: string }>;
+  /** Exchanges the code from the redirect for a token and starts syncing. */
+  completeSignIn(input: { code: string; state: string }): Promise<SignInResult>;
+  /** Tells the server, forgets the token and closes realtime. Local data is kept. */
+  signOut(): Promise<void>;
+  /** Asks the server about the stored token; null when not signed in. */
+  session(): Promise<Session | null>;
+  /** The persisted registration, no network; null before the first sign-in. */
+  registration(): Promise<Registration | null>;
+  /**
+   * Origin and token for direct HTTP calls, such as pointing an
+   * OpenAI-compatible SDK at `<url>/ai`. Null when not signed in.
+   */
+  credentials(): Promise<{ url: string; token: string } | null>;
+  /** Pulls every version after the local cursor and merges it in. */
+  pull(): Promise<PullResult>;
+  /** Fetches every writer's version of one document and merges them all. Does not move the cursor. */
+  pullDocument(collection: string, id: string): Promise<void>;
+  /**
+   * Drains the outbox only: retries the writes the server has not yet
+   * accepted. Cost scales with the backlog, so this is what "sync now" paths
+   * (app foreground, pull-to-refresh) want. Throws when a chunk fails.
+   */
+  drain(): Promise<void>;
+  /**
+   * Drains the outbox, then pushes every record in every synced collection.
+   * Cost scales with the database; routine sync paths should use `drain()`.
+   */
+  push(): Promise<void>;
+  /** Documents written locally but not yet accepted by the server. */
+  pending(): Promise<number>;
+  /**
+   * Drops all local state except `_config`, including the outbox, resets
+   * the cursor and pulls everything again. Callers with unsynced writes that
+   * matter must `push()` first.
+   */
+  resync(): Promise<PullResult>;
+  /** When this device last completed a full pull. */
+  lastSyncedAt(): Promise<Date | null>;
+};
