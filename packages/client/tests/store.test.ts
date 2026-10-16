@@ -16,8 +16,8 @@ type Widget = BaseDocument & { name: string; upgraded?: boolean };
 
 const SYNC = { syncUrl: 'https://sync.test', syncToken: 'tok' };
 
-// The tests' one domain collection. `id` is loosened from the prefix-dash
-// convention because fixtures use short literal ids ('w1', 'w-seed', …).
+// `id` is loosened from the prefix-dash convention so fixtures can use short
+// literal ids ('w1', 'w-seed').
 const widgetsDef = defineCollection({
   name: 'widgets',
   idPrefix: 'w',
@@ -110,17 +110,14 @@ describe('Store CRUD + tombstones', () => {
   it('upsert creates when absent, updates when present, revives tombstones', async () => {
     const { store } = setup();
     await store.author.set('us/1');
-    // Absent → create.
     const created = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Alpha' });
     expect(created).toMatchObject({ id: 'w1', name: 'Alpha', createdBy: 'us/1' });
-    // Present → update: createdAt/createdBy survive, editor bumps.
     await store.author.set('us/2');
     const updated = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Beta' });
     expect(updated.name).toBe('Beta');
     expect(updated.createdAt).toBe(created.createdAt);
     expect(updated.createdBy).toBe('us/1');
     expect(updated.updatedBy).toBe('us/2');
-    // Soft-deleted → revived as a fresh doc.
     await store.collection('widgets').delete('w1');
     const revived = await store.collection<Widget>('widgets').upsert({ id: 'w1', name: 'Gamma' });
     expect(revived.deletedAt).toBeNull();
@@ -151,7 +148,6 @@ describe('Store collection registry (schemas define collections)', () => {
   it('rejects access to collections with no definition', async () => {
     const { store } = setup();
     await store.author.set('us/1');
-    // The handle is the only doc entry point, and it throws at creation.
     expect(() => store.collection('gadgets' as never)).toThrow(/Unknown collection/);
     expect(() => store.collection<Widget>('gadgets')).toThrow(/Unknown collection/);
   });
@@ -168,16 +164,14 @@ describe('Store collection registry (schemas define collections)', () => {
 
   it('still allows internal _* bookkeeping collections without definitions', async () => {
     const { adapter, store } = setup();
-    await store.author.set('us/1'); // writes _config/author
+    await store.author.set('us/1');
     expect(await adapter.get('_config', 'author')).toMatchObject({ authorId: 'us/1' });
   });
 
   it('rejects reserved and duplicate collection names at construction', () => {
-    // A reserved name now fails at definition time (the key defaults to it) …
     expect(() => defineCollection({ name: '_secret', idPrefix: 'x', schema: (b) => b })).toThrow(
       /reserved/
     );
-    // … and the Store still rejects a hand-built definition that sneaks one in.
     const internal = { ...widgetsDef, name: '_secret', key: 'ok' };
     expect(() => new Store({ adapter: new InMemoryAdapter(), collections: [internal] })).toThrow(
       /reserved/
@@ -219,7 +213,7 @@ describe('Store migrate-on-read', () => {
     expect(got?.schemaVersion).toBe(2);
     expect(got?.upgraded).toBe(true);
 
-    // write-back is fire-and-forget; let the microtask flush.
+    // the upgraded doc is written back fire-and-forget
     await new Promise((r) => setTimeout(r, 0));
     const raw = await adapter.get<Widget>('widgets', 'w1');
     expect(raw?.schemaVersion).toBe(2);
@@ -250,7 +244,7 @@ describe('Store read-time validation', () => {
 
   it('coerces a stored ISO string back to a Date on read (round-trips any adapter)', async () => {
     const { adapter, store } = setup({ collections: [eventsDef] });
-    // Simulate what a serializing adapter/sync wire holds: the date as a string.
+    // what a serializing adapter or the sync wire actually holds
     await adapter.put('events', rawEvent('ev1', '2026-03-04T05:06:07.000Z') as never);
 
     const got = await store.collection<Event>('events').get('ev1');
@@ -279,7 +273,6 @@ describe('Store read-time validation', () => {
 
   it('reads a schema-violating doc as null rather than throwing', async () => {
     const { adapter, store } = setup();
-    // name should be a string; a serializing bug wrote a number.
     await adapter.put('widgets', {
       ...mkDoc('w1', 'X', '2026-01-01T00:00:00.000Z'),
       name: 123,
@@ -323,7 +316,7 @@ describe('Store author flow', () => {
     const w = await store.collection<Widget>('widgets').create({ id: 'w1', name: 'X' });
     expect(w.createdBy).toBe(LOCAL_AUTHOR_ID);
     await store.collection<Widget>('widgets').create({ id: 'w2', name: 'Y' });
-    await store.collection('widgets').delete('w2'); // soft-deleted while local: deletedBy === _local
+    await store.collection('widgets').delete('w2'); // tombstone with deletedBy === _local
 
     await store.author.reassignLocal('us/9');
 
@@ -422,7 +415,6 @@ describe('Store pull (last-write-wins)', () => {
   it('drains every page, advancing the cursor until hasMore is false', async () => {
     const { store } = setup({}, SYNC);
     const pageFor = (cursor: number) => {
-      // Two full pages (w1@cursor 0 -> 1, w2@cursor 1 -> 2) then an empty tail.
       if (cursor === 0) {
         return {
           documents: [
@@ -461,7 +453,6 @@ describe('Store pull (last-write-wins)', () => {
 
     const applied = await store.collection<Widget>('widgets').pullAll();
     expect(applied.map((w) => w.id)).toEqual(['w1', 'w2']);
-    // One request per page; the loop stopped once hasMore was false.
     const pullCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'));
     expect(pullCalls).toHaveLength(2);
     expect(String(pullCalls[0][0])).toContain('cursor=0');
@@ -488,14 +479,11 @@ describe('Store pull-on-read', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    // The read resolves immediately against local state...
     expect((await store.collection<Widget>('widgets').list())[0].name).toBe('old');
-    // ...while the background pull lands the newer server copy.
     await vi.waitFor(async () => {
       expect((await adapter.get<Widget>('widgets', 'w1'))?.name).toBe('new');
     });
 
-    // A second read inside the throttle window must not pull again.
     await store.collection<Widget>('widgets').list();
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'))).toHaveLength(1);
   });
@@ -514,9 +502,6 @@ describe('Store pull-on-read', () => {
 
 describe('Store realtime enablement', () => {
   it('opens a realtime socket after registering on a fresh store', async () => {
-    // Realtime is server-driven: registering on a fresh install (no client doc
-    // yet) must open a socket as soon as the server advertises realtime via
-    // /info, without waiting for an app restart.
     class FakeWebSocket {
       static instances: FakeWebSocket[] = [];
       url: string;
@@ -631,9 +616,7 @@ describe('Store.seed', () => {
     const before = await adapter.get<Widget>('widgets', 'w-seed');
     const { written } = await store.seed(seedSet('v2'));
     expect(written).toBe(0);
-    // No timestamp churn: the doc was not rewritten just to bump updatedAt.
     expect(await adapter.get<Widget>('widgets', 'w-seed')).toEqual(before);
-    // ...but the marker advanced, so the next call is a single read again.
     expect((await store.seed(seedSet('v2'))).written).toBe(0);
   });
 
@@ -668,9 +651,9 @@ describe('Store.seed', () => {
 
     expect(written).toBe(1);
     const doc = await store.collection<Enriched>('widgets').get('w-seed');
-    expect(doc?.name).toBe('Mine'); // user's value kept
-    expect(doc?.note).toBe('Allium'); // previously-undefined field filled
-    expect(doc?.updatedBy).toBe('us/1'); // still author-touched for future seeds
+    expect(doc?.name).toBe('Mine');
+    expect(doc?.note).toBe('Allium');
+    expect(doc?.updatedBy).toBe('us/1');
   });
 
   it('does not fill fields an author explicitly set to null', async () => {
@@ -706,8 +689,7 @@ describe('Store.seed', () => {
 });
 
 describe('Store outbox (durable push retry)', () => {
-  // A fetch mock whose push leg fails until `online` flips true; pull always
-  // returns an empty page. Records each pushed batch body for assertions.
+  // Push fails until `online` flips true; pull always returns an empty page.
   function syncMock(state: { online: boolean }) {
     const pushedBatches: { documents: { data: Widget }[] }[] = [];
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
@@ -730,16 +712,15 @@ describe('Store outbox (durable push retry)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
-    // The local write survives and is queued even though the push failed.
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
     expect(await store.sync.pending()).toBe(1);
 
-    // Back online: a drain flushes the queue and clears it.
     state.online = true;
     await store.sync.push();
     expect(await store.sync.pending()).toBe(0);
     const pushCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'));
-    expect(pushCalls.length).toBeGreaterThanOrEqual(2); // initial failure + drain success
+    // the initial failed push plus the drain
+    expect(pushCalls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('clears the queue immediately when the push succeeds online', async () => {
@@ -749,7 +730,7 @@ describe('Store outbox (durable push retry)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
-    // The mutation's own drain is fire-and-forget; wait for it to settle.
+    // the mutation's own drain is fire-and-forget
     await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
   });
 
@@ -762,26 +743,23 @@ describe('Store outbox (durable push retry)', () => {
 
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'v1' });
     await store.collection<Widget>('widgets').update('w1', { name: 'v2' });
-    // One entry for the doc, not one per edit.
     expect(await store.sync.pending()).toBe(1);
 
     state.online = true;
     await store.sync.push();
     expect(await store.sync.pending()).toBe(0);
-    // The drained push carried the latest version.
     const lastBatch = pushedBatches[pushedBatches.length - 1];
     expect(lastBatch.documents[0].data.name).toBe('v2');
   });
 
   it('leaves writes queued until an identity is claimed', async () => {
+    // no author set, so docs carry the local placeholder the server rejects
     const { store } = setup({}, SYNC);
-    // No setAuthor: still the local-author placeholder, which the server rejects.
     const { fetchMock } = syncMock({ online: true });
     vi.stubGlobal('fetch', fetchMock);
 
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     await store.sync.push();
-    // Drain is a no-op pre-claim; the write stays queued and no push is attempted.
     expect(await store.sync.pending()).toBe(1);
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/push'))).toHaveLength(0);
   });
@@ -795,8 +773,7 @@ describe('Store outbox (durable push retry)', () => {
 });
 
 describe('Store resyncFromScratch', () => {
-  // A registered _config/client doc: the credentials + identity that must
-  // survive the reset (unlike wipe, the install stays registered).
+  // Registered install; unlike wipe, a resync must leave it registered.
   function clientDoc() {
     return {
       ...mkDoc('client', '', '2026-01-01T00:00:00.000Z'),
@@ -809,7 +786,6 @@ describe('Store resyncFromScratch', () => {
 
   it('drops all local synced data and re-pulls from a fresh cursor, keeping _config', async () => {
     const { adapter, store } = setup({}, SYNC);
-    // Stale local world + sync bookkeeping that the reset must clear.
     await adapter.put('widgets', mkDoc('w1', 'stale', '2026-01-01T00:00:00.000Z'));
     await adapter.put('widgets', mkDoc('w2', 'gone-on-server', '2026-01-01T00:00:00.000Z'));
     await adapter.put('_sync_meta', {
@@ -841,16 +817,11 @@ describe('Store resyncFromScratch', () => {
 
     await store.sync.resync();
 
-    // Local world is now exactly what the server returned — the stale local
-    // docs are gone, not merged.
     expect((await adapter.getAll<Widget>('widgets')).map((w) => w.id)).toEqual(['w3']);
-    // The cursor was reset: the re-pull started from 0, not the stale 5.
     const pullCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/sync/pull'));
     expect(pullCalls).toHaveLength(1);
     expect(String(pullCalls[0][0])).toContain('cursor=0');
-    // The outbox is dropped, not drained (its entries target old ids).
     expect(await adapter.getAll('_outbox')).toHaveLength(0);
-    // _config survives, so the install stays registered + identified.
     expect(await adapter.get('_config', 'client')).toMatchObject({ clientId: 'cl-1' });
   });
 
@@ -864,8 +835,6 @@ describe('Store resyncFromScratch', () => {
     });
     await adapter.put('_config', clientDoc());
 
-    // The immediate re-pull fails (offline): resyncFromScratch must still
-    // resolve and leave the store in a re-pullable state.
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -874,13 +843,10 @@ describe('Store resyncFromScratch', () => {
     );
     await expect(store.sync.resync()).resolves.toBeUndefined();
 
-    // Local data was dropped and the stale cursor cleared; _config kept.
     expect(await adapter.getAll('widgets')).toHaveLength(0);
     expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
     expect(await adapter.get('_config', 'client')).toMatchObject({ clientId: 'cl-1' });
 
-    // The reset cursor means the next foreground sync re-pulls from 0 and
-    // backfills the rewritten world — no data lost to the offline failure.
     const fetchMock = vi.fn(async (_url: unknown) =>
       jsonResponse({
         documents: [
@@ -938,7 +904,7 @@ describe('store.blobs write/read surface', () => {
     store.on('change', onChange);
 
     const hash = await store.blobs.write(Uint8Array.from([1, 2, 3]), 'image/png');
-    expect(hash).toMatch(/^[0-9a-f]{64}$/); // sha-256 of the bytes
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(await store.blobs.has(hash)).toBe(true);
     expect(store.blobs.uri(hash)).toBe(`mem://${hash}`);
     expect(onChange).toHaveBeenCalledWith('_blobs');
@@ -967,8 +933,7 @@ describe('Store backup/restore', () => {
     await source.author.set('us/1');
     await source.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     await source.collection<Widget>('widgets').create({ id: 'w2', name: 'Beta' });
-    await source.collection('widgets').delete('w2'); // tombstone — must travel
-    // Device-specific bookkeeping that must NOT end up in a portable backup.
+    await source.collection('widgets').delete('w2');
     await srcAdapter.put('_config', { ...mkDoc('client', '', '2026-01-01T00:00:00.000Z') });
     await srcAdapter.put('_sync_meta', {
       ...mkDoc('widgets', '', '2026-01-01T00:00:00.000Z'),
@@ -983,31 +948,30 @@ describe('Store backup/restore', () => {
 
     expect(result).toMatchObject({ mode: 'merge', collections: ['widgets'], docsWritten: 2 });
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('Alpha');
-    expect(await store.collection<Widget>('widgets').get('w2')).toBeNull(); // hidden (deleted)...
+    expect(await store.collection<Widget>('widgets').get('w2')).toBeNull();
     expect(
       (await store.collection<Widget>('widgets').get('w2', { includeDeleted: true }))?.deletedAt
     ).not.toBeNull();
-    // Internal collections never crossed over.
     expect(await adapter.get('_config', 'client')).toBeNull();
     expect(await adapter.get('_sync_meta', 'widgets')).toBeNull();
   });
 
   it('merge keeps a newer local doc and overwrites an older one (last-write-wins)', async () => {
-    // Build the backup directly via the adapter so the timestamps are explicit.
+    // written through the adapter so the timestamps are explicit
     const { adapter: sa, store: src } = setup();
     await sa.put('widgets', mkDoc('w1', 'backup-1', '2026-01-01T00:00:00.000Z'));
     await sa.put('widgets', mkDoc('w2', 'backup-2', '2026-06-01T00:00:00.000Z'));
     const archive = await src.backup.create({ blobs: false });
 
     const { adapter, store } = setup();
-    await adapter.put('widgets', mkDoc('w1', 'local-1', '2026-03-01T00:00:00.000Z')); // newer
-    await adapter.put('widgets', mkDoc('w2', 'local-2', '2026-01-01T00:00:00.000Z')); // older
+    await adapter.put('widgets', mkDoc('w1', 'local-1', '2026-03-01T00:00:00.000Z'));
+    await adapter.put('widgets', mkDoc('w2', 'local-2', '2026-01-01T00:00:00.000Z'));
 
     const result = await store.backup.restore(archive, { mode: 'merge' });
 
     expect(result).toMatchObject({ docsWritten: 1, docsSkipped: 1 });
-    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('local-1'); // kept
-    expect((await store.collection<Widget>('widgets').get('w2'))?.name).toBe('backup-2'); // overwritten
+    expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('local-1');
+    expect((await store.collection<Widget>('widgets').get('w2'))?.name).toBe('backup-2');
   });
 
   it('replace clears the carried collections then loads the backup verbatim', async () => {
@@ -1022,8 +986,6 @@ describe('Store backup/restore', () => {
     const result = await store.backup.restore(archive, { mode: 'replace' });
 
     expect(result).toMatchObject({ mode: 'replace', docsWritten: 1, docsSkipped: 0 });
-    // Even though local w1 was newer, replace ignores LWW and loads verbatim;
-    // w2 (absent from the backup) is dropped.
     expect((await store.collection<Widget>('widgets').get('w1'))?.name).toBe('backup-1');
     expect(await store.collection<Widget>('widgets').get('w2')).toBeNull();
   });
@@ -1040,7 +1002,6 @@ describe('Store backup/restore', () => {
     expect(Array.from((await blobs.read('hash-a'))!)).toEqual(Array.from(bytes));
     expect(await blobs.mimeType('hash-a')).toBe('image/png');
 
-    // Re-restoring is idempotent: the hash is content-addressed, so it's skipped.
     const again = await store.backup.restore(archive);
     expect(again.blobsWritten).toBe(0);
   });
@@ -1122,7 +1083,7 @@ describe('Store blob GC', () => {
     await store.author.set('us/1');
     await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
     await store.collection<Photo>('photos').create({ id: 'p1', imageHash: 'h-x' });
-    await store.collection('photos').delete('p1'); // soft delete — doc stays as a tombstone
+    await store.collection('photos').delete('p1');
 
     const { deleted } = await store.blobs.prune();
 
@@ -1135,7 +1096,6 @@ describe('Store blob GC', () => {
     await blobs.write('h-x', Uint8Array.from([1]), 'image/png');
 
     await expect(store.blobs.prune()).rejects.toThrow(/blobHashes extractor/);
-    // The guard must not have deleted anything.
     expect(await blobs.has('h-x')).toBe(true);
   });
 
@@ -1144,7 +1104,7 @@ describe('Store blob GC', () => {
     await store.author.set('us/1');
     await store.collection<Photo>('photos').create({ id: 'p1', imageHash: 'h-a' });
     await store.collection<Photo>('photos').create({ id: 'p2', imageHash: 'h-b' });
-    await store.collection<Photo>('photos').create({ id: 'p3' }); // no hash field set
+    await store.collection<Photo>('photos').create({ id: 'p3' });
 
     const refs = await store.blobs.referencedHashes();
 
@@ -1205,7 +1165,6 @@ describe('Store encryption (optional E2E)', () => {
     expect(isEncryptedDoc(body.documents[0]!.data)).toBe(true);
     expect((pushCall[1] as RequestInit).body as string).not.toContain('Secret Soup');
 
-    // Pull: server returns an envelope; the store lands the decrypted doc.
     const remote = await encryptDoc(
       cipher,
       'widgets',
@@ -1238,7 +1197,6 @@ describe('Store encryption (optional E2E)', () => {
         encryption: { cipher: otherCipher },
       })
     ).rejects.toThrow(/key does not match/);
-    // The right key keeps opening fine.
     await expect(Store.create({ adapter: inner, ...domain })).resolves.toBeInstanceOf(Store);
   });
 
@@ -1247,7 +1205,6 @@ describe('Store encryption (optional E2E)', () => {
     await inner.put('widgets', mkDoc('legacy', 'Plain Old Doc', '2026-01-01T00:00:00.000Z'));
     const store = new Store({ adapter: inner, collections: [widgetsDef], encryption: { cipher } });
 
-    // Readable before conversion (plaintext pass-through)…
     expect((await store.collection<Widget>('widgets').get('legacy'))?.name).toBe('Plain Old Doc');
 
     const { rewritten } = await store.encryption.encryptLocal();
@@ -1267,8 +1224,7 @@ describe('Store encryption (optional E2E)', () => {
     await store.author.set('us/1');
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Secret Soup' });
 
-    // Persisted under the key, sealed, and AAD-bound to `c1/w1` — opening it
-    // as `widgets/w1` must fail (proves local and wire identities agree).
+    // AAD-bound to `c1/w1`, so opening it as `widgets/w1` must fail
     const stored = (await inner.get<BaseDocument>('c1', 'w1'))!;
     expect(isEncryptedDoc(stored)).toBe(true);
     await expect(decryptDoc(cipher, 'c1', stored)).resolves.toMatchObject({ name: 'Secret Soup' });
@@ -1308,7 +1264,6 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     };
   }
 
-  // A store opened with keyA that wrote one doc, then went away.
   async function seedKeyA(inner: InMemoryAdapter): Promise<void> {
     const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
     await storeA.author.set('us/1');
@@ -1320,9 +1275,7 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     const inner = new InMemoryAdapter();
     await seedKeyA(inner);
 
-    // keyB opens without a key check…
     const storeB = await Store.create({ adapter: inner, ...hideDomain(keyB) });
-    // …and keyA's doc is completely invisible.
     expect(await storeB.collection<Widget>('widgets').get('wa')).toBeNull();
     expect(await storeB.collection<Widget>('widgets').list()).toEqual([]);
 
@@ -1331,7 +1284,6 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     expect((await storeB.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['wb']);
     storeB.dispose();
 
-    // Both rows sit sealed side by side; reopening with keyA sees only wa.
     const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
     expect((await storeA.collection<Widget>('widgets').list()).map((w) => w.id)).toEqual(['wa']);
     expect((await storeA.collection<Widget>('widgets').get('wa'))?.name).toBe('A Secret');
@@ -1348,7 +1300,6 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
       storeB.collection<Widget>('widgets').upsert({ id: 'wa', name: 'Clobber' })
     ).rejects.toThrow(/another encryption key/);
 
-    // keyA's row survives untouched.
     const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
     await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Secret' });
     storeB.dispose();
@@ -1379,7 +1330,6 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     expect(rewritten).toBe(1);
     expect(skipped).toBe(1);
     expect(isEncryptedDoc(await inner.get<BaseDocument>('widgets', 'legacy'))).toBe(true);
-    // wa still opens with keyA — the sweep left it alone.
     const raw = (await inner.get<BaseDocument>('widgets', 'wa'))!;
     await expect(decryptDoc(keyA, 'widgets', raw)).resolves.toMatchObject({ name: 'A Secret' });
     storeB.dispose();
@@ -1414,15 +1364,12 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
     );
 
     const applied = await storeB.collection<Widget>('widgets').pullAll();
-    // Only the readable doc counts as applied; the pull did not wedge on the
-    // foreign envelope and the cursor advanced past both.
     expect(applied.map((w) => w.id)).toEqual(['w-mine']);
     const meta = await inner.get<BaseDocument & { cursor: number }>('_sync_meta', 'widgets');
     expect(meta?.cursor).toBe(7);
     expect(await storeB.collection<Widget>('widgets').get('w-foreign')).toBeNull();
     storeB.dispose();
 
-    // The foreign envelope landed intact and surfaces for keyA.
     const storeA = await Store.create({ adapter: inner, ...hideDomain(keyA) });
     expect((await storeA.collection<Widget>('widgets').get('w-foreign'))?.name).toBe('A Remote');
     storeA.dispose();
@@ -1481,7 +1428,6 @@ describe('Store encryption (multi-key: onUndecryptable hide)', () => {
       );
     const pushed = new Map(pushBodies.flatMap((b) => b.documents.map((d) => [d.id, d.data])));
     expect(Array.from(pushed.keys()).sort()).toEqual(['wa', 'wb']);
-    // The foreign doc went up as keyA's envelope, byte-identical to the row.
     expect(pushed.get('wa')).toEqual(await inner.get('widgets', 'wa'));
     storeB.dispose();
   });
@@ -1605,8 +1551,7 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
     await store.author.set('us/1');
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
-    // Server broadcasts the physical key; the pull path (cursor doc, change
-    // event) must run under the code-facing name.
+    // the server broadcasts the physical key
     fetchMock.mockClear();
     vi.stubGlobal(
       'fetch',
@@ -1637,8 +1582,6 @@ describe('Store collection aliasing (name in code, key in storage/wire)', () => 
     await store.collection<Widget>('widgets').create({ id: 'w1', name: 'Alpha' });
     const archive = await store.backup.create();
 
-    // Restore into a store with a *different* key for the same collection:
-    // the name is the portable identity, so the archive still applies.
     const inner2 = new InMemoryAdapter();
     const store2 = new Store({
       adapter: inner2,

@@ -1,16 +1,13 @@
 import { ENVELOPE_PREFIX, type DocCipher } from './types';
 import { toBase64, fromBase64 } from './base64';
 
-// AES-256-GCM over WebCrypto (globalThis.crypto.subtle) — present natively in
-// Workers, Node ≥ 19, and every modern browser. React Native lacks it; RN
-// apps inject their own DocCipher instead of using this factory.
-
 const ENVELOPE_VERSION = 1;
 const IV_BYTES = 12;
 
 /**
- * Build a DocCipher from a raw 256-bit key. Get a key from
- * `deriveEncryptionKey` (passphrase) or your platform keychain.
+ * AES-256-GCM over `globalThis.crypto.subtle`, available in Workers, Node 19+,
+ * and browsers but not React Native, which must inject its own `DocCipher`.
+ * Obtain the key from `deriveEncryptionKey` or a platform keychain.
  */
 export function createWebCryptoCipher(rawKey: Uint8Array): DocCipher {
   if (rawKey.length !== 32) {
@@ -58,9 +55,8 @@ export function createWebCryptoCipher(rawKey: Uint8Array): DocCipher {
 }
 
 /**
- * Derive a 256-bit encryption key from a human passphrase (PBKDF2-SHA-256).
- * The salt need not be secret but must be stable per app group — e.g. the
- * appName — so every member device derives the same key.
+ * PBKDF2-SHA-256. The salt need not be secret but must be the same for every
+ * device in an app group (the appName, say) so they all derive the same key.
  */
 export async function deriveEncryptionKey(
   passphrase: string,

@@ -1,14 +1,7 @@
 import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
 
-/**
- * The slice of `expo-sqlite`'s `SQLiteDatabase` this adapter uses, declared
- * structurally so this recipe file has no dependency on `expo-sqlite` (this
- * repo can typecheck it, and you can read it without an Expo project). In
- * your app, delete this interface and use the real type:
- *
- *   import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
- *   const adapter = await ExpoSqliteAdapter.create(await openDatabaseAsync('my-app.db'));
- */
+// Declared structurally so this file typechecks without `expo-sqlite` installed.
+// In an app, delete this and pass the `SQLiteDatabase` from `openDatabaseAsync`.
 export interface ExpoSqliteDatabase {
   execAsync(source: string): Promise<void>;
   getFirstAsync<T>(source: string, ...params: (string | number | null)[]): Promise<T | null>;
@@ -19,14 +12,6 @@ export interface ExpoSqliteDatabase {
 
 const TABLE = 'pact_documents';
 
-/**
- * `DatabaseAdapter` backed by `expo-sqlite` — persistence for React Native /
- * Expo apps. Same one-table JSON-column layout as the `node:sqlite` recipe;
- * only the driver API differs (async methods instead of sync statements).
- *
- * Construction is async (the table must exist before first use), so use the
- * factory: `await ExpoSqliteAdapter.create(db)`.
- */
 export class ExpoSqliteAdapter implements DatabaseAdapter {
   private readonly db: ExpoSqliteDatabase;
 
@@ -34,6 +19,8 @@ export class ExpoSqliteAdapter implements DatabaseAdapter {
     this.db = db;
   }
 
+  // The table must exist before the first query, and expo-sqlite is async-only,
+  // so construction goes through this factory instead of the constructor.
   static async create(db: ExpoSqliteDatabase): Promise<ExpoSqliteAdapter> {
     await db.execAsync(
       `CREATE TABLE IF NOT EXISTS ${TABLE} (

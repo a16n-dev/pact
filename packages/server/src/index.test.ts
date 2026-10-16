@@ -1,21 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// index.ts re-exports RealtimeDO, whose `cloudflare:workers` import only
-// resolves inside a Workers runtime — stub it so the Hono app is testable
-// under plain vitest.
+// `cloudflare:workers` only resolves inside a Workers runtime.
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 
 import { createSyncApp } from './index';
 import type { Env } from './types';
 
-/**
- * Fake env for exercising the register + provisioning routes end-to-end
- * through Hono. The fake DB records every client INSERT's bound values so
- * tests can assert which app a client row was written under — or that
- * nothing was written at all — and holds a live `apps` table that starts
- * empty: apps only come into existence by going through `POST /apps`, so
- * tests provision the same way a real deployment does.
- */
+// The fake DB records each client INSERT's bound values and holds an `apps`
+// table that starts empty, so tests provision through `POST /apps`.
 function registerEnv(extra: Partial<Env> = {}) {
   const inserts: unknown[][] = [];
   const apps = new Map<string, { app_name: string; password_hash: string }>();
@@ -62,7 +54,6 @@ function register(env: Env, password: string, body: Record<string, unknown>) {
 
 const BODY = { appName: 'app-a', clientId: 'cl-1', clientName: 'Test Device' };
 
-/** Provision an app the only way one can exist: through `POST /apps`. */
 function provision(env: Env, appName: string, password: string) {
   return claim(env, 'master', { appName, password });
 }
@@ -99,7 +90,6 @@ describe('POST /auth/register (multi-tenant)', () => {
 
   it('rejects an unknown app with the same 401 as a bad password', async () => {
     const { env, inserts } = registerEnv({ PROVISION_KEY: 'master' });
-    // Deliberately not provisioned — the app simply doesn't exist.
     const res = await register(env, 'pa', { ...BODY, appName: 'no-such-app' });
     expect(res.status).toBe(401);
     expect(inserts).toHaveLength(0);

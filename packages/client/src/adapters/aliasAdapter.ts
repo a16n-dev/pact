@@ -2,17 +2,12 @@ import type { BaseDocument } from '../types';
 import type { DatabaseAdapter } from './adapter';
 
 /**
- * The collection-alias seam: wraps any DatabaseAdapter so callers address
- * collections by their code-facing name while storage only ever sees the
- * physical key from `CollectionDefinition.key`. `listCollections` reverses
- * the mapping, so everything above this wrapper (Store, sync engine,
- * backups) deals exclusively in names.
- *
- * Names outside the map — internal `_*` collections, or stale physical
- * collections from an older domain — pass through unchanged, mirroring how
- * unaliased collections behave. When encryption is on this sits *above*
- * `EncryptedAdapter`, so envelopes are AAD-bound to the key (the persisted
- * identity), matching what the wire layer seals against.
+ * Translates code-facing collection names to the physical keys from
+ * `CollectionDefinition.key`, so everything above it deals only in names.
+ * Names outside the map (internal `_*` collections, stale physical
+ * collections from an older domain) pass through unchanged. With encryption
+ * on, this must sit above `EncryptedAdapter` so envelopes are AAD-bound to
+ * the key, which is what the wire layer seals against.
  */
 export class AliasAdapter implements DatabaseAdapter {
   private readonly inner: DatabaseAdapter;

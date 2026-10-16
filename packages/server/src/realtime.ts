@@ -15,7 +15,7 @@ export class RealtimeDO extends DurableObject<Env> {
       try {
         ws.send(payload);
       } catch {
-        // Peer is gone — webSocketClose will reap the entry shortly.
+        // Peer is gone; webSocketClose reaps it.
       }
     }
   }
@@ -29,7 +29,7 @@ export class RealtimeDO extends DurableObject<Env> {
   }
 
   webSocketMessage(_ws: WebSocket, _msg: string | ArrayBuffer): void {
-    // No client-to-server messages in v1.
+    // The protocol has no client-to-server messages yet.
   }
 
   webSocketClose(ws: WebSocket): void {

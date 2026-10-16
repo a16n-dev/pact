@@ -1,13 +1,12 @@
 import type { BaseDocument } from '../types';
 
-/** Field-wise equality ignoring audit timestamps — used to skip seed writes
- *  that would change nothing but `updatedAt`. */
+// Ignores audit timestamps so a seed write that would change only `updatedAt` is skipped.
 export function seedContentEqual(a: BaseDocument, b: BaseDocument): boolean {
   const strip = ({ createdAt: _c, updatedAt: _u, ...rest }: BaseDocument) => rest;
   return deepEqual(strip(a), strip(b));
 }
 
-export function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
   if (Array.isArray(a) !== Array.isArray(b)) return false;

@@ -1,17 +1,5 @@
 import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
 
-/**
- * `DatabaseAdapter` backed by Web Storage (`localStorage` / `sessionStorage`).
- *
- * Good for small web apps and prototypes: zero dependencies, synchronous
- * storage, survives reloads. Not good once your data outgrows the ~5 MB
- * Storage quota or you need non-blocking IO — switch to the IndexedDB
- * recipe at that point.
- *
- * Layout: one Storage entry per document, keyed
- * `<prefix>:<collection>:<id>` (segments URI-encoded so separators in
- * names can't collide), holding the JSON-serialized doc.
- */
 export class LocalStorageAdapter implements DatabaseAdapter {
   private readonly prefix: string;
   private readonly storage: Storage;
@@ -21,11 +9,12 @@ export class LocalStorageAdapter implements DatabaseAdapter {
     this.storage = opts?.storage ?? globalThis.localStorage;
   }
 
+  // Segments are URI-encoded so a ':' in a collection name or id cannot collide
+  // with the separator.
   private key(collection: string, id: string): string {
     return `${this.prefix}:${encodeURIComponent(collection)}:${encodeURIComponent(id)}`;
   }
 
-  /** Decodes a Storage key of ours, or null for keys owned by someone else. */
   private parseKey(key: string): { collection: string; id: string } | null {
     if (!key.startsWith(`${this.prefix}:`)) return null;
     const parts = key.split(':');

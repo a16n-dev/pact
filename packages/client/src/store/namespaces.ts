@@ -1,37 +1,33 @@
-// The Store's namespaced runtime surface: one interface per namespace
-// (`store.sync`, `store.author`, `store.backup`, `store.blobs`,
-// `store.encryption`), plus the result types those methods speak. The
-// document-access surface is `Collection` (collectionRef.ts); initialisation
-// types are in `options.ts`.
 import type { BlobAdapter } from '../blobs/blobAdapter';
 import type { RegisterResult } from '../sync/sync';
 
-/** `store.sync` — everything server-facing: pushing, pulling, registration. */
 export interface StoreSync {
-  /** Drain the push outbox, then push every doc in every synced collection. */
+  /**
+   * Drains the outbox, then pushes every doc in every synced collection.
+   * Cost scales with the database; routine sync paths should use `drain()`.
+   */
   push(): Promise<void>;
   /**
-   * Drain the push outbox only — retry the writes the server hasn't accepted
-   * yet, without the full-dataset sweep `push()` also performs. This is the
-   * cheap one, and what routine "sync now" paths (app foreground, pull-to-
-   * refresh) want: cost scales with the backlog rather than the database.
+   * Drains the outbox only: retries the writes the server has not yet
+   * accepted. Cost scales with the backlog, so this is what "sync now" paths
+   * (app foreground, pull-to-refresh) want.
    */
   drain(): Promise<void>;
-  /** Count of documents written locally but not yet accepted by the server. */
+  /** Documents written locally but not yet accepted by the server. */
   pending(): Promise<number>;
   /**
-   * Drop all locally-cached state except `_config` (credentials + author),
-   * then re-pull every registered collection from a fresh cursor. Clears the
-   * outbox — callers with unsynced writes that matter must `push()` first.
-   * One-off recovery for when the server's docs were rewritten out-of-band.
+   * Drops all local state except `_config`, including the outbox, then
+   * re-pulls every registered collection from a fresh cursor. Callers with
+   * unsynced writes that matter must `push()` first. One-off recovery for
+   * when the server's docs were rewritten out-of-band.
    */
   resync(): Promise<void>;
-  /** When this device last completed a pull covering all named collections. */
+  /** When this device last completed a pull covering all the named collections. */
   lastSyncedAt(collections: string[]): Promise<Date | null>;
   /**
-   * Trade the app's password for a long-lived access token bound to this
-   * client. The clientId persists across calls, so re-registering (to rotate
-   * a token, rename, or repoint) keeps the same server-side identity.
+   * Trades the app password for a long-lived access token. The clientId
+   * persists across calls, so re-registering (to rotate a token, rename, or
+   * repoint) keeps the same server-side identity.
    */
   register(
     url: string,
@@ -39,19 +35,17 @@ export interface StoreSync {
     appName: string,
     clientName: string
   ): Promise<RegisterResult>;
-  /** The persisted registration (token stripped), or null when unregistered. */
+  /** The persisted registration with the token stripped; null when unregistered. */
   registration(): Promise<ClientRegistration | null>;
   /**
-   * Raw url + access token. Internal-use only — app surfaces should call
-   * `registration()`, which strips the token. Exposed so helpers issuing
-   * direct HTTP calls (e.g. the blob store) can authenticate.
+   * Raw url and access token, for helpers issuing direct HTTP calls such as
+   * the blob store. App surfaces should use `registration()` instead.
    */
   credentials(): Promise<{ url: string; token: string } | null>;
-  /** Forget the registration and close the connection. Local data is kept. */
+  /** Forgets the registration and closes the connection. Local data is kept. */
   unregister(): Promise<void>;
 }
 
-/** What `sync.registration()` reports about the persisted registration. */
 export interface ClientRegistration {
   id: string;
   name: string;
@@ -60,153 +54,130 @@ export interface ClientRegistration {
   appName: string | null;
 }
 
-/** `store.author` — who writes are attributed to. */
 export interface StoreAuthor {
-  /** The current author id (`LOCAL_AUTHOR_ID` until an identity is claimed). */
+  /** `LOCAL_AUTHOR_ID` until an identity is claimed. */
   get(): Promise<string>;
-  /** Claim an identity: all subsequent writes are attributed to it. */
+  /** All subsequent writes are attributed to this id. */
   set(authorId: string): Promise<void>;
   /**
-   * Re-attribute every doc still carrying the local placeholder author to the
-   * given id, bumping `updatedAt` so the next push picks them up. Run after
-   * `set()` to adopt writes made before the identity existed.
+   * Re-attributes every doc still carrying the local placeholder author and
+   * bumps `updatedAt` so the next push picks them up. Run after `set()` to
+   * adopt writes made before the identity existed.
    */
   reassignLocal(newAuthorId: string): Promise<void>;
-  /** Soft-delete every live doc created by the given author. */
+  /** Soft-deletes every live doc created by the author. */
   wipe(authorId: string): Promise<void>;
 }
 
-/** `store.backup` — self-contained, server-independent snapshots. */
 export interface StoreBackup {
   /**
-   * Pack every document (tombstones included) into a portable archive,
-   * bundling local blobs by default when a blob adapter is present. Internal
-   * `_*` state never travels. The caller persists the bytes however it likes.
+   * Packs every document, tombstones included, into a portable archive,
+   * bundling local blobs by default when a blob adapter is present.
+   * Internal `_*` state never travels.
    */
   create(opts?: { blobs?: boolean }): Promise<Uint8Array>;
   /**
-   * Load an archive produced by `create`. Docs are written raw (audit fields
-   * and `schemaVersion` survive; reads migrate lazily) and reach a sync
-   * server on the next `sync.push()`. `mode` defaults to `merge`
-   * (last-write-wins, safe on a live store); see `RestoreMode`.
+   * Docs are written raw (audit fields and `schemaVersion` survive; reads
+   * migrate lazily) and reach the sync server on the next `sync.push()`.
+   * `mode` defaults to `merge`.
    */
   restore(archive: Uint8Array, opts?: { mode?: RestoreMode }): Promise<RestoreResult>;
 }
 
 /**
- * How `backup.restore` reconciles the archive against existing local data:
- * - `merge` (default): last-write-wins per document (the same strict
- *   `updatedAt` rule sync uses), so it's safe to run onto a live or
- *   partially-synced store. Blobs are content-addressed, so a backup blob is
- *   written only when its hash is missing locally.
- * - `replace`: clears every scope the archive carries (the document
- *   collections it contains, and all blobs if it carries any), then loads it
- *   verbatim. Internal `_*` state (credentials, cursors, outbox) is left
- *   untouched in both modes — the archive never contains it.
+ * `merge`: last-write-wins per document under the same strict `updatedAt`
+ * rule sync uses, so it is safe on a live or partially-synced store; a blob
+ * is written only when its hash is missing locally. `replace`: clears every
+ * scope the archive carries (its document collections, and all blobs if it
+ * holds any) before loading it verbatim. Neither mode touches internal `_*`
+ * state.
  */
 export type RestoreMode = 'merge' | 'replace';
 
-/** Summary of what a `backup.restore` call applied. */
 export interface RestoreResult {
   mode: RestoreMode;
   /** Collections present in the archive. */
   collections: string[];
-  /**
-   * Archive collections this Store has no definition for — their docs were
-   * not restored. Non-empty means the archive came from a domain with
-   * collections this build doesn't know about.
-   */
+  /** Archive collections this Store has no definition for; their docs were not restored. */
   collectionsSkipped: string[];
-  /** Documents written to local storage. */
   docsWritten: number;
-  /** Documents skipped because a newer local copy won (merge only). */
+  /** Skipped because a newer local copy won (merge only). */
   docsSkipped: number;
-  /** Blob bytes written locally. */
   blobsWritten: number;
-  /** Blobs in the archive that couldn't be restored (store has no blob adapter). */
+  /** Blobs in the archive that could not be restored because the store has no blob adapter. */
   blobsSkipped: number;
 }
 
 /**
- * `store.blobs` — content-addressed binary storage alongside documents. The
- * key is the SHA-256 of the bytes, so writes are idempotent and dedupe is
- * automatic. Requires a `BlobAdapter` in `StoreOptions.blobs`; the methods
- * that touch bytes throw without one.
+ * Content-addressed: the key is the SHA-256 of the bytes, so writes are
+ * idempotent and dedupe automatically. Requires `StoreOptions.blobs`; the
+ * methods that touch bytes throw without one.
  */
 export interface StoreBlobs {
-  /** The raw blob backend, or null on doc-only stores. */
+  /** null on doc-only stores. */
   readonly adapter: BlobAdapter | null;
   /**
-   * Hash, write locally, and best-effort push to the sync server. Returns
-   * the SHA-256 hex digest — the blob's identity in every layer (filesystem,
-   * bucket key, doc reference). Failed pushes retry on `push()`.
+   * Hashes, writes locally, and best-effort pushes to the sync server.
+   * Returns the SHA-256 hex digest, which is the blob's identity in every
+   * layer. A failed push is retried by `push()`.
    */
   write(bytes: Uint8Array, mimeType: string): Promise<string>;
-  /** Renderable URI for a stored blob (e.g. `file://…`), or null when not local. */
+  /** Renderable URI (e.g. `file://…`), or null when the blob is not held locally. */
   uri(hash: string): string | null;
-  /** Whether the blob is present locally. */
+  /** Whether the blob is held locally. */
   has(hash: string): Promise<boolean>;
-  /** Hashes of every blob currently held locally. */
+  /** Hashes of every blob held locally. */
   list(): Promise<string[]>;
   /**
-   * Evict a blob from local storage and signal the change. Local-only, like
-   * `prune`: the server's copy stays, so a document still referencing this
-   * hash re-pulls it on the next sync.
+   * Local-only, like `prune`: the server's copy stays, so a document still
+   * referencing this hash re-pulls it on the next sync.
    */
   delete(hash: string): Promise<void>;
   /**
-   * Upload local blobs the server doesn't have yet: one round trip for the
-   * server's hash set, then PUT the difference. Idempotent.
+   * Uploads the local blobs the server lacks: one round trip for the
+   * server's hash set, then PUTs the difference. Idempotent.
    */
   push(): Promise<void>;
-  /**
-   * Download the named blobs where missing locally. Prefer `pullReferenced`,
-   * which sources the hash set from the documents for you.
-   */
+  /** Downloads the named blobs where missing locally. Prefer `pullReferenced`. */
   pull(referencedHashes: Iterable<string>): Promise<void>;
   /**
-   * Download every blob the local document set references but doesn't yet
-   * hold. Requires a `StoreDomain.blobHashes` extractor; downloads nothing
-   * without one.
+   * Downloads every blob the local documents reference but do not hold.
+   * Downloads nothing without a `StoreDomain.blobHashes` extractor.
    */
   pullReferenced(): Promise<void>;
   /**
-   * Union of blob hashes referenced by every live document, via the domain's
-   * `blobHashes` extractor (empty set when none is declared). Drives `prune`
-   * and `pullReferenced`.
+   * Union of hashes referenced by every live document, via
+   * `StoreDomain.blobHashes`; empty without one.
    */
   referencedHashes(): Promise<Set<string>>;
   /**
-   * Delete local blobs no live document references. Local-only: the server's
-   * bucket is untouched (other devices may still reference a blob). Throws
-   * without a `blobHashes` extractor; no-op without a blob adapter.
+   * Deletes local blobs no live document references. Local-only: other
+   * devices may still reference a blob, so the server's bucket is untouched.
+   * Throws without a `blobHashes` extractor; no-op without a blob adapter.
    */
   prune(): Promise<{ deleted: string[] }>;
   /**
-   * Signal that the local blob set changed (a direct adapter write, an
-   * out-of-band delete). Routed through the `change` channel (as `_blobs`)
-   * so UI invalidation can hang off one subscription. The `blobs` methods
-   * here signal automatically — call this only for writes that bypass them.
+   * Signals a local blob-set change made outside these methods (a direct
+   * adapter write, an out-of-band delete). Routed through the `change`
+   * channel as `_blobs` so UI invalidation can hang off one subscription.
    */
   notifyChanged(): void;
 }
 
-/** `store.encryption` — at-rest/on-wire document encryption management. */
 export interface StoreEncryption {
   /**
-   * Fail fast on a wrong key: verify (or write, on first encrypted use) the
-   * sealed sentinel in `_config/encryption`. No-op without encryption.
-   * `Store.create` calls this automatically. With
-   * `onUndecryptable: 'hide'` there is no wrong key — the sentinel is still
-   * written but never verified.
+   * Verifies, or writes on first encrypted use, the sealed sentinel in
+   * `_config/encryption` so a wrong key fails fast. `Store.create` calls this
+   * automatically; no-op without encryption. Under `onUndecryptable: 'hide'`
+   * no key is wrong, so the sentinel is written but never verified.
    */
   verifyKey(): Promise<void>;
   /**
-   * One-time sweep for enabling encryption on an existing install: rewrite
-   * every doc through the encrypting adapter. Follow with `sync.push()` to
-   * convert the server's copies. Idempotent. `skipped` counts docs sealed
-   * under other keys (always 0 outside `onUndecryptable: 'hide'`), which
-   * are left untouched.
+   * One-time sweep to enable encryption on an existing install: rewrites
+   * every doc through the encrypting adapter. Idempotent. Follow with
+   * `sync.push()` to convert the server's copies. `skipped` counts docs
+   * sealed under other keys, which are left untouched; always 0 outside
+   * `onUndecryptable: 'hide'`.
    */
   encryptLocal(): Promise<{ rewritten: number; skipped: number }>;
 }

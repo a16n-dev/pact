@@ -1,19 +1,10 @@
 import type { SyncDocument, BlobRecord } from '../types';
 
-// Every statement here is scoped by `app_name` — the tenant boundary. No
-// unscoped variant exists on purpose: a caller physically cannot touch
-// another app's rows through this module, and a test asserts every SQL
-// constant names the column (see the tripwire test in api.test.ts).
-//
-// `seq` is the server-assigned monotonic write sequence, per app (see the
-// schema in the README). It's computed here, on the server, so the pull
-// cursor never depends on a client's wall clock. A skipped last-write-wins
-// update (the WHERE rejects it) leaves the stored row — and its seq —
-// untouched, so it stays where it was in the pull order. Within a D1 `batch`,
-// statements run sequentially in one transaction, so each `MAX(seq)+1`
-// already sees the prior statement's insert. The unique `(app_name, seq)`
-// index is the backstop: a counter bug fails loudly instead of silently
-// corrupting pull cursors.
+// `seq` is assigned here, per app, so the pull cursor never depends on a
+// client clock. Within a D1 batch each `MAX(seq)+1` sees the prior insert.
+// A write the last-write-wins WHERE rejects leaves the row and its seq
+// untouched. The unique `(app_name, seq)` index makes a counter bug fail
+// loudly instead of corrupting cursors.
 const UPSERT_SQL = `
   INSERT INTO documents (app_name, id, collection, updated_at, data, seq)
   VALUES (?1, ?2, ?3, ?4, ?5,
@@ -25,12 +16,8 @@ const UPSERT_SQL = `
     WHERE excluded.updated_at >= documents.updated_at
 `;
 
-// Max documents one pull page returns. The client drains by re-pulling from
-// the returned cursor until `hasMore` is false, so this bounds a single
-// response (D1 result set, Worker memory, JSON payload) independent of how
-// large the collection is or how far behind the puller has fallen — e.g. a
-// first full sync. seq's strict monotonicity makes the page boundary exact:
-// no row can slip between pages.
+// Bounds one response regardless of collection size or how far behind the
+// puller is; seq's strict monotonicity means no row can slip between pages.
 const PULL_PAGE_SIZE = 500;
 
 const PULL_SQL = `
@@ -60,11 +47,8 @@ export async function upsertDocuments(
 
   const results = await db.batch(statements);
 
-  // `meta.changes` is 1 when a row was inserted or updated, 0 when the
-  // last-write-wins guard (`excluded.updated_at >= documents.updated_at`)
-  // declined the write because the stored copy is newer-or-equal. The latter
-  // is a benign no-op, not a failure — hence `skipped`, not `rejected`. A
-  // client re-pushing already-synced docs expects a high `skipped` count.
+  // `changes` is 0 when the last-write-wins guard declined the write because
+  // the stored copy is newer-or-equal: a benign no-op, hence `skipped`.
   const accepted = results.reduce((sum, r) => sum + (r.meta.changes ?? 0), 0);
 
   return { accepted, skipped: docs.length - accepted };
@@ -97,13 +81,6 @@ export async function wipeAllBlobRecords(db: D1Database, appName: string): Promi
   await db.prepare(WIPE_BLOB_RECORDS_SQL).bind(appName).run();
 }
 
-/**
- * One page of documents in `collection` written after `cursor` (a server
- * `seq`), oldest first. Returns the new cursor to persist (the highest `seq`
- * in the page, or the input cursor unchanged when the page is empty) and
- * `hasMore` — whether rows beyond this page remain. The caller drains by
- * re-pulling from the returned cursor while `hasMore` is true.
- */
 export async function getDocumentsSince(
   db: D1Database,
   appName: string,
@@ -111,8 +88,7 @@ export async function getDocumentsSince(
   cursor: number,
   limit: number = PULL_PAGE_SIZE
 ): Promise<{ documents: SyncDocument[]; cursor: number; hasMore: boolean }> {
-  // Fetch one extra row to learn whether more remain without a second COUNT
-  // query, then drop it from the page.
+  // Peek one row past the page to learn `hasMore` without a COUNT query.
   const result = await db
     .prepare(PULL_SQL)
     .bind(appName, collection, cursor, limit + 1)
@@ -135,6 +111,8 @@ export async function getDocumentsSince(
   return { documents, cursor: nextCursor, hasMore };
 }
 
+// DO NOTHING: the hash is the content identity, so a repeat upload keeps the
+// first row rather than churning metadata.
 const UPSERT_BLOB_SQL = `
   INSERT INTO blobs (app_name, hash, mime_type, size, created_at)
   VALUES (?1, ?2, ?3, ?4, ?5)
@@ -143,11 +121,6 @@ const UPSERT_BLOB_SQL = `
 
 const LIST_BLOBS_SQL = `SELECT hash FROM blobs WHERE app_name = ?1`;
 
-/**
- * Record that a blob exists. Idempotent: the hash is the content identity, so
- * a repeat upload keeps the first row (same bytes ⇒ same size; mime can't
- * change the identity) rather than churning metadata.
- */
 export async function upsertBlob(db: D1Database, appName: string, blob: BlobRecord): Promise<void> {
   await db
     .prepare(UPSERT_BLOB_SQL)
@@ -160,11 +133,8 @@ export async function listBlobHashes(db: D1Database, appName: string): Promise<s
   return result.results.map((row) => row.hash);
 }
 
-/**
- * Every SQL statement this module issues, exported solely for the isolation
- * tripwire test: each must reference `app_name` so no query can ever span
- * tenants. Add new statements here when adding them above.
- */
+// Exported only for the tenant-isolation tripwire test, which asserts every
+// statement references `app_name`. Add new statements here.
 export const ALL_SQL: readonly string[] = [
   UPSERT_SQL,
   PULL_SQL,

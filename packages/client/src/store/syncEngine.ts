@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BaseDocument } from '../types';
 import type { Migrator } from '../migrator';
-import { SyncClient } from '../sync/sync';
+import type { SyncClient } from '../sync/sync';
 import { isEncryptedDoc } from '../crypto/docCrypto';
 import { LOCAL_AUTHOR_ID } from '../system';
 import {
@@ -13,9 +13,8 @@ import {
   type SyncMetaDoc,
 } from './types';
 
-// Docs still authored by the pre-identity `_local` placeholder must never be
-// pushed. The server also rejects them — but only when it can read the
-// author fields, which it can't for end-to-end-encrypted docs, so this
+// The server also rejects `_local`-authored docs, but only when it can read
+// the author fields, which it cannot for end-to-end-encrypted docs. This
 // client-side filter is the enforcement that survives encryption.
 function isLocalAuthored(doc: BaseDocument): boolean {
   return (
@@ -27,35 +26,20 @@ function isLocalAuthored(doc: BaseDocument): boolean {
 
 export interface SyncEngineDeps {
   adapter: DatabaseAdapter;
-  /**
-   * The same adapter stack minus the cipher (identical to `adapter` on
-   * unencrypted stores). Used where only cleartext base fields are needed
-   * (LWW timestamps), and to move docs sealed under other keys — which the
-   * decrypting `adapter` hides in multi-key mode — through sync intact.
-   */
+  // The same adapter stack minus the cipher (identical to `adapter` on
+  // unencrypted stores). Reads cleartext base fields such as LWW timestamps,
+  // and sees docs sealed under other keys, which the decrypting `adapter`
+  // hides in multi-key mode, so they can move through sync intact.
   rawAdapter: DatabaseAdapter;
   migrator: Migrator;
-  /** The synced collections — the full push-all / pull-all enumeration. */
   collections: readonly string[];
-  /** Live read of the Store's current author id (changes via setAuthor/wipe). */
   getAuthorId: () => string;
-  /** Routes a collection-changed signal back through the Store's `change` channel. */
   emit: (collection: string) => void;
-  /**
-   * Persist a merged document through the Store's write choke point (rather
-   * than straight to the adapter), so derived state maintained off writes —
-   * e.g. indexes — sees pulled/merged docs just as it sees local mutations.
-   */
+  // The Store's write choke point rather than the adapter directly, so
+  // derived state maintained off writes (indexes) sees pulled docs too.
   persist: (collection: string, doc: BaseDocument) => Promise<void>;
 }
 
-/**
- * Owns everything that moves documents between local storage and a sync server:
- * the durable push outbox and its drain loop, paged pulls with last-write-wins
- * merge, push-all, and the per-collection pull cursor. Constructed and held by
- * the `Store`, which feeds it live views of its author id and `change` emitter
- * and swaps the `SyncClient` in/out as credentials are registered or cleared.
- */
 export class SyncEngine {
   private readonly adapter: DatabaseAdapter;
   private readonly rawAdapter: DatabaseAdapter;
@@ -68,10 +52,9 @@ export class SyncEngine {
   private syncClient: SyncClient | null = null;
   private readonly lastReadPullAt = new Map<string, number>();
   private readonly inFlightReadPulls = new Set<string>();
-  // Coalesces concurrent outbox drains: `drainTask` is the in-flight drain, so
-  // callers await the same one; `drainPending` flags that another drain was
-  // requested mid-flight, making the runner take one more pass (a write enqueued
-  // — or a retry requested — during a drain isn't stranded).
+  // Concurrent drains coalesce onto `drainTask`; `drainPending` makes the
+  // runner take one more pass when a drain was requested mid-flight, so a
+  // write enqueued during a drain is not stranded.
   private drainTask: Promise<void> | null = null;
   private drainPending = false;
 
@@ -85,18 +68,12 @@ export class SyncEngine {
     this.persist = deps.persist;
   }
 
-  /** Point the engine at a new sync server, or `null` to go local-only. */
   setSyncClient(client: SyncClient | null): void {
     this.syncClient = client;
   }
 
-  /**
-   * Fire-and-forget background pull triggered by a read. A no-op without sync
-   * credentials. Deduped while a pull for the collection is in flight and
-   * throttled to `READ_PULL_THROTTLE_MS` so re-renders don't spray requests.
-   * The applied docs emit `change`, which the UI layer turns into a refetch —
-   * and that refetch is throttled out here, so there's no read→pull→read loop.
-   */
+  // Applied docs emit `change`, which the UI turns into a refetch; the
+  // throttle swallows that refetch's pull, so there is no read-pull-read loop.
   triggerReadPull(collection: string): void {
     if (!this.syncClient) return;
     if (collection.startsWith('_')) return;
@@ -123,8 +100,8 @@ export class SyncEngine {
         .filter((doc) => !isLocalAuthored(doc));
       // Rows sealed under other keys are invisible to the decrypting read but
       // must still reach the server (e.g. restored from a backup on a device
-      // that registered under a different key). They push verbatim — the wire
-      // transform passes an already-sealed envelope through unchanged.
+      // registered under a different key). The wire transform passes an
+      // already-sealed envelope through unchanged.
       if (this.rawAdapter !== this.adapter) {
         const readableIds = new Set(readable.map((doc) => doc.id));
         for (const row of await this.rawAdapter.getAll<BaseDocument>(collection)) {
@@ -139,14 +116,10 @@ export class SyncEngine {
     }
   }
 
-  /**
-   * Record documents as needing a push, then kick a drain. This replaces a
-   * fire-and-forget `push`: the queue entry is written to local storage first,
-   * so a push that fails — offline, server error, or the app dying mid-flight —
-   * is retried on the next drain instead of being silently lost. No-op without
-   * a sync client: a purely local store (CLI, the in-Worker D1 adapter) has
-   * nowhere to push and must not accumulate a queue.
-   */
+  // The entry is written to local storage before any network call, so a push
+  // that fails (offline, server error, app killed mid-flight) is retried on
+  // the next drain rather than lost. A purely local store has nowhere to push
+  // and must not accumulate a queue.
   async queuePush(collection: string, ids: readonly string[]): Promise<void> {
     if (!this.syncClient || ids.length === 0) return;
     const now = dayjs().toISOString();
@@ -163,33 +136,24 @@ export class SyncEngine {
       collection,
       docId,
     }));
-    // Keyed by collection+id, so re-editing a still-pending doc overwrites its
-    // entry rather than queuing a duplicate — the drain sends the latest version.
+    // Keyed by collection+id, so re-editing a pending doc overwrites its
+    // entry instead of queuing a duplicate.
     if (this.adapter.putMany) await this.adapter.putMany(OUTBOX, entries);
     else for (const entry of entries) await this.adapter.put(OUTBOX, entry);
     this.emit(OUTBOX);
     void this.drainOutbox().catch(() => {});
   }
 
-  /**
-   * Push every queued document to the server, clearing entries the server
-   * accepts. The single mechanism that moves local writes upstream; safe to
-   * call anytime. Triggered on each mutation, on realtime reconnect, and on a
-   * full sync. Concurrent calls coalesce. Stops on the first failing collection
-   * and leaves the rest queued for the next trigger rather than spinning while
-   * offline.
-   */
   async drainOutbox(): Promise<void> {
     if (!this.syncClient) return;
-    // Pre-identity writes are local-authored and the server rejects them (a
-    // client must claim an identity first). Leave them queued — the claim flow
-    // pushes them once an author is assigned.
+    // The server rejects pre-identity writes; leave them queued for the claim
+    // flow to push once an author is assigned.
     if (this.getAuthorId() === LOCAL_AUTHOR_ID) return;
-    // Mark a drain wanted *before* checking for one in flight: a concurrent
-    // drain sees this flag and takes another pass, and we await that same task
-    // so a coalesced caller still observes a settled drain. The window between
-    // the loop's last `drainPending` check and clearing `drainTask` is fully
-    // synchronous, so no request can slip through unobserved.
+    // Set the flag before checking for an in-flight drain so that drain takes
+    // another pass, and await the same task so a coalesced caller still
+    // observes a settled drain. The window between the loop's last
+    // `drainPending` check and clearing `drainTask` is synchronous, so no
+    // request slips through unobserved.
     this.drainPending = true;
     if (!this.drainTask) this.drainTask = this.runDrain();
     return this.drainTask;
@@ -197,25 +161,19 @@ export class SyncEngine {
 
   private async runDrain(): Promise<void> {
     try {
+      // A failed pass leaves its entries queued and, absent a new request,
+      // exits rather than spinning while offline.
       while (this.drainPending) {
         this.drainPending = false;
         await this.drainOnce();
-        // Loop only if another drain was requested mid-pass (a fresh write, or a
-        // retry after connectivity returned). A failed pass leaves its entries
-        // queued and, absent a new request, exits — no spin while offline.
       }
     } finally {
-      // Clear here, in the same synchronous continuation as the loop's exit, so
-      // there's no gap in which a coalescing caller could grab a settled task.
+      // Must clear in the same synchronous continuation as the loop's exit;
+      // see `drainOutbox`.
       this.drainTask = null;
     }
   }
 
-  /**
-   * One drain pass: group queued entries by collection, push each group's
-   * current document versions, and remove the entries a push accepted. A
-   * group whose push throws is left queued for a later pass.
-   */
   private async drainOnce(): Promise<void> {
     const entries = await this.adapter.getAll<OutboxDoc>(OUTBOX);
     if (entries.length === 0) return;
@@ -229,20 +187,19 @@ export class SyncEngine {
 
     let changed = false;
     for (const [collection, group] of byCollection) {
-      // Push the docs' *current* versions, coalescing edits made since they were
-      // queued. A doc that's vanished locally (hard-deleted before its push
-      // landed) has nothing to send, but its entry is still cleared. A doc
-      // still `_local`-authored stays queued (entry kept) until the claim
-      // flow reassigns it.
+      // Pushes each doc's current version, coalescing edits made since it was
+      // queued. A doc hard-deleted before its push landed has nothing to send
+      // but its entry is still cleared; a doc still `_local`-authored keeps
+      // its entry until the claim flow reassigns it.
       const docs: BaseDocument[] = [];
       const clearable: OutboxDoc[] = [];
       for (const entry of group) {
         const doc = await this.adapter.get<BaseDocument>(collection, entry.docId);
         if (!doc) {
-          // The row may exist but be sealed under another key (multi-key
-          // mode) — e.g. queued before an identity claim reassigned it, then
-          // superseded by a pulled foreign version. Push the envelope
-          // verbatim rather than dropping the entry as "vanished".
+          // The row may exist but be sealed under another key (e.g. queued
+          // before an identity claim, then superseded by a pulled foreign
+          // version). Push the envelope verbatim rather than treating the
+          // doc as vanished.
           const raw = await this.rawAdapter.get<BaseDocument>(collection, entry.docId);
           if (raw && isEncryptedDoc(raw)) {
             if (isLocalAuthored(raw)) continue;
@@ -261,13 +218,12 @@ export class SyncEngine {
         await Promise.all(clearable.map((entry) => this.adapter.delete(OUTBOX, entry.id)));
         changed = clearable.length > 0;
       } catch {
-        // Leave this collection's entries queued; a later drain retries them.
+        // Entries stay queued for a later drain.
       }
     }
     if (changed) this.emit(OUTBOX);
   }
 
-  /** Count of documents written locally but not yet accepted by the server. */
   async pendingPushCount(): Promise<number> {
     const entries = await this.adapter.getAll<OutboxDoc>(OUTBOX);
     return entries.length;
@@ -276,27 +232,22 @@ export class SyncEngine {
   async pull<T extends BaseDocument>(collection: string): Promise<T[]> {
     if (!this.syncClient) return [];
     const applied: T[] = [];
-    // Pull is paged server-side; drain from the stored cursor until the server
-    // reports no more pages. Each page's cursor is persisted as it lands, so an
-    // interrupted drain (offline, crash) resumes mid-stream instead of
-    // restarting the whole collection.
+    // Each page's cursor is persisted as it lands, so an interrupted pull
+    // resumes mid-stream instead of restarting the collection.
     let cursor = await this.getLastSyncCursor(collection);
     for (;;) {
       const page = await this.syncClient.pull<T>(collection, cursor);
       for (const wireDoc of page.documents) {
-        // Last-write-wins: skip an incoming doc that's older than the local
-        // copy, so a not-yet-pushed local edit isn't clobbered by a stale
-        // server version. Mirrors the server's upsert guard (db.ts); ties go
-        // to the incoming doc. The cursor still advances past it — the local
-        // copy is newer and will be pushed, so re-pulling the server's is
-        // moot. The raw read suffices (`updatedAt` is cleartext on
-        // envelopes) and sees local rows sealed under other keys too.
+        // Last-write-wins, mirroring the server's upsert guard: a strictly
+        // newer local copy wins, ties go to the incoming doc. The cursor
+        // still advances past a skipped doc since the local copy will be
+        // pushed anyway. The raw read is enough (`updatedAt` is cleartext on
+        // envelopes) and also sees local rows sealed under other keys.
         //
-        // A doc still sealed after the wire transform is another key's
-        // (multi-key mode): store the envelope raw — no migration,
-        // validation, or indexing is possible on ciphertext — so it survives
-        // locally and surfaces on a device holding its key. It's invisible
-        // here, so it doesn't count as applied.
+        // A doc still sealed after the wire transform belongs to another key
+        // (multi-key mode): store the envelope raw, since ciphertext cannot
+        // be migrated, validated, or indexed, so it surfaces on a device
+        // holding its key. It is invisible here, so it is not applied.
         if (isEncryptedDoc(wireDoc)) {
           const local = await this.rawAdapter.get<BaseDocument>(collection, wireDoc.id);
           if (local && local.updatedAt > wireDoc.updatedAt) continue;
@@ -310,8 +261,7 @@ export class SyncEngine {
         applied.push(doc);
       }
       await this.setLastSyncCursor(collection, page.cursor);
-      // hasMore implies a full page, so the cursor strictly advanced; the
-      // no-progress check is a backstop against a misbehaving server.
+      // The no-progress check is a backstop against a misbehaving server.
       if (!page.hasMore || page.cursor === cursor) break;
       cursor = page.cursor;
     }
@@ -323,9 +273,8 @@ export class SyncEngine {
     if (!this.syncClient) return null;
     const doc = await this.syncClient.pullDocument<T>(collection, id);
     if (!doc) return null;
-    // Still sealed after the wire transform: another key's doc (multi-key
-    // mode). Store the envelope raw and report it as missing — it's
-    // invisible to this key (see `pull`).
+    // Another key's doc: store the envelope raw and report it as missing,
+    // as in `pull`.
     if (isEncryptedDoc(doc)) {
       const localRaw = await this.rawAdapter.get<BaseDocument>(collection, id);
       if (!localRaw || localRaw.updatedAt <= doc.updatedAt) {
@@ -335,11 +284,9 @@ export class SyncEngine {
     }
     const upgraded = this.migrator.migrate<T>(collection, doc);
     const local = await this.rawAdapter.get<BaseDocument>(collection, id);
-    // Last-write-wins: a newer local edit takes precedence over the pulled
-    // server copy (see `pull`). Return the version that's now authoritative.
     if (local && local.updatedAt > upgraded.updatedAt) {
-      // The raw row carries only base fields when encrypted; return the
-      // decrypted local copy the caller can actually use.
+      // The raw row carries only base fields when encrypted, so return the
+      // decrypted local copy.
       return this.adapter.get<T>(collection, id);
     }
     await this.persist(collection, upgraded);
@@ -358,13 +305,9 @@ export class SyncEngine {
     return dayjs(latest).toDate();
   }
 
-  // The pull cursor is a server-assigned `seq` high-water mark, not a
-  // timestamp — see `pull` / the server's db.ts. Stored alongside `syncedAt`
-  // (this device's wall clock at last pull) which drives the human-facing
-  // "last synced" display only. A client upgrading from the old
-  // timestamp-cursor scheme has no `cursor` field yet, so this returns 0 and
-  // the collection re-pulls from the start once — which also backfills any
-  // writes the old clock-based cursor had skipped.
+  // A client upgrading from the old timestamp-cursor scheme has no `cursor`
+  // field, so it re-pulls from 0 once, which also backfills any writes the
+  // clock-based cursor had skipped.
   private async getLastSyncCursor(collection: string): Promise<number> {
     const meta = await this.adapter.get<SyncMetaDoc>('_sync_meta', collection);
     return meta?.cursor ?? 0;

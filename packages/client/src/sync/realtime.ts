@@ -1,7 +1,3 @@
-// WebSocket lifecycle for server-pushed cache invalidations. Probes /info
-// before opening so we silently no-op against servers without the realtime
-// feature flag enabled.
-
 import { fetchWithTimeout } from './http';
 
 interface InvalidateMessage {
@@ -12,10 +8,13 @@ interface InvalidateMessage {
 export interface RealtimeOptions {
   url: string;
   token: string;
+  /** Receives the collection's wire key, not its local name. */
   onInvalidate: (collection: string) => void;
+  /** Fires on every open, including the first, so the caller can backfill. */
   onReconnect: () => void;
 }
 
+/** `start` probes `/info` first and is a silent no-op when the server lacks realtime. */
 export class RealtimeConnection {
   private readonly opts: RealtimeOptions;
   private ws: WebSocket | null = null;
@@ -34,8 +33,8 @@ export class RealtimeConnection {
       const res = await fetchWithTimeout(`${baseUrl}/info`, {}, 10_000);
       if (res.ok) info = (await res.json()) as { realtime?: unknown };
     } catch {
-      // network down at boot; reconnect logic doesn't kick in unless we
-      // opened a socket once. Bail; foreground sync handles initial backfill.
+      // Offline at boot. Reconnects only begin once a socket has opened, so
+      // give up here; foreground sync covers the backfill.
       return;
     }
     if (info?.realtime !== true) return;
@@ -71,20 +70,17 @@ export class RealtimeConnection {
         for (const c of msg.collections) {
           if (typeof c === 'string') this.opts.onInvalidate(c);
         }
-      } catch {
-        // ignore malformed payloads
-      }
+      } catch {}
     };
     ws.onclose = () => this.scheduleReconnect();
     ws.onerror = () => {
       try {
         ws.close();
-      } catch {
-        // already closed
-      }
+      } catch {}
     };
   }
 
+  // Exponential backoff from 500ms, capped at 30s; reset on a successful open.
   private scheduleReconnect(): void {
     if (this.closed) return;
     const delay = Math.min(30_000, 500 * 2 ** this.retries++);

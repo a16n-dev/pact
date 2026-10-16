@@ -1,21 +1,16 @@
 /**
- * Sidecar to `DatabaseAdapter` for content-addressed byte blobs. Keys are
- * SHA-256 hex digests of the bytes, so identity falls out of content:
- * writes are idempotent, dedupe is automatic, and "is this the same blob"
- * is a string comparison.
+ * Content-addressed byte storage alongside a `DatabaseAdapter`. Keys are the
+ * SHA-256 hex digest of the bytes, so writes are idempotent and equal content
+ * dedupes to one entry.
  */
 export interface BlobAdapter {
   has(hash: string): Promise<boolean>;
   read(hash: string): Promise<Uint8Array | null>;
-  /** Stored MIME type for a blob, or null when unknown (e.g. a legacy blob). */
+  /** Null for a blob stored before MIME types were recorded. */
   mimeType(hash: string): Promise<string | null>;
   write(hash: string, bytes: Uint8Array, mimeType: string): Promise<void>;
   delete(hash: string): Promise<void>;
-  /** Hashes of every blob currently stored locally. */
   list(): Promise<string[]>;
-  /**
-   * Renderable URI for a stored blob (e.g. local `file://`). Null when
-   * the blob isn't present locally.
-   */
+  /** Renderable URI (e.g. `file://`) for a locally present blob, else null. */
   uriFor(hash: string): string | null;
 }

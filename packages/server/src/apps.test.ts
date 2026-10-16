@@ -2,11 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { isValidAppName, hashAppPassword, verifyAppPassword, resolveAppAuth } from './apps';
 import type { Env } from './types';
 
-/** Env whose DB serves a fixed `apps`-table row set. */
-function envWithAppsTable(
-  fields: Partial<Env>,
-  rows: Record<string, string> // appName → password_hash
-): Env {
+function envWithAppsTable(fields: Partial<Env>, rows: Record<string, string>): Env {
   return {
     ...fields,
     DB: {

@@ -27,11 +27,9 @@ describe('AliasAdapter', () => {
     await adapter.put('widgets', mkDoc('w1'));
     await adapter.putMany('widgets', [mkDoc('w2'), mkDoc('w3')]);
 
-    // Physically under the key, invisible under the name.
     expect(await inner.get('c1', 'w1')).not.toBeNull();
     expect(await inner.get('widgets', 'w1')).toBeNull();
 
-    // Reads through the wrapper speak the name.
     expect((await adapter.get('widgets', 'w1'))?.id).toBe('w1');
     expect((await adapter.getMany('widgets', ['w1', 'w2'])).map((d) => d.id)).toEqual(['w1', 'w2']);
     expect(await adapter.getAll('widgets')).toHaveLength(3);

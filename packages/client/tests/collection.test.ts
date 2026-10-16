@@ -54,7 +54,7 @@ describe('defineCollection', () => {
     expectTypeOf(widgets.generateId()).toEqualTypeOf<`wg-${string}`>();
     expectTypeOf<DocumentOf<[typeof widgets], 'widgets'>['id']>().toEqualTypeOf<`wg-${string}`>();
     expectTypeOf<DocId<'wg'>>().toEqualTypeOf<`wg-${string}`>();
-    // @ts-expect-error — wrong prefix is a compile error
+    // @ts-expect-error wrong prefix
     expectTypeOf<DocumentOf<[typeof widgets], 'widgets'>['id']>().toEqualTypeOf<`ln-${string}`>();
   });
 });
@@ -68,7 +68,6 @@ describe('createIdParser', () => {
       prefix: 'wg',
       localId: 'abc',
     });
-    // localId keeps any further dashes (e.g. a seed key like `yellow-onion`).
     expect(parseId('ln-yellow-onion')).toEqual({
       collection: 'localNotes',
       prefix: 'ln',

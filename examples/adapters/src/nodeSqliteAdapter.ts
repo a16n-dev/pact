@@ -3,22 +3,13 @@ import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
 
 const TABLE = 'pact_documents';
 
-/**
- * `DatabaseAdapter` backed by Node's built-in SQLite (`node:sqlite`,
- * Node ≥ 22.5) — real persistence for Node CLIs and desktop apps with zero
- * dependencies. Adapting this recipe to `better-sqlite3` is a
- * constructor-import rename: the prepare/get/all/run surface is the same.
- *
- * Layout: one table, one row per document, the doc JSON-serialized in a
- * `doc` column. Pact never queries inside documents (reads are by id or
- * whole-collection), so a JSON column is enough — no per-field schema.
- */
 export class NodeSqliteAdapter implements DatabaseAdapter {
   private readonly db: DatabaseSync;
 
-  /** @param path A file path, or `':memory:'` for an ephemeral store. */
   constructor(path: string) {
     this.db = new DatabaseSync(path);
+    // Pact reads by id or whole collection and never queries inside a document,
+    // so one JSON column is enough; no per-field schema.
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS ${TABLE} (
          collection TEXT NOT NULL,

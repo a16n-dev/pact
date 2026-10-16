@@ -8,8 +8,6 @@ import { isEncryptedDoc } from '../src/crypto/docCrypto';
 import type { DatabaseAdapter } from '../src/adapters/adapter';
 import type { BaseDocument } from '../src/types';
 
-// A collection that declares three indexes: a single-valued string field, a
-// multi-valued array field, and a numeric field (exercising key coercion).
 const tasksDef = defineCollection({
   name: 'tasks',
   idPrefix: 't',
@@ -93,11 +91,9 @@ describe('secondary indexes — queries', () => {
     await tasks().create({ id: 't2', title: 'B', status: 'open', tags: [], priority: 2 });
     await tasks().create({ id: 't3', title: 'C', status: 'open', tags: [], priority: 5 });
 
-    // number query and string query both resolve to the same bucket
     expect(ids(await store.collection('tasks').listByIndex('priority', 2))).toEqual(['t1', 't2']);
     expect(ids(await store.collection('tasks').listByIndex('priority', '2'))).toEqual(['t1', 't2']);
     expect(ids(await store.collection('tasks').listByIndex('priority', 5))).toEqual(['t3']);
-    // Date key matches regardless of how it's reconstructed
     expect(ids(await store.collection('tasks').listByIndex('due', new Date(due)))).toEqual(['t1']);
   });
 
@@ -219,7 +215,6 @@ describe('secondary indexes — isolation', () => {
     const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [plainDef] });
     await store.author.set('us/1');
     await store.collection('notes').create({ id: 'n1', body: 'hi' });
-    // No index API is available and nothing throws on the normal write path.
     expect(await store.collection('notes').get('n1')).toMatchObject({ id: 'n1', body: 'hi' });
   });
 });
@@ -238,11 +233,8 @@ describe('secondary indexes — under encryption', () => {
       .collection('tasks')
       .create({ id: 't1', title: 'A', status: 'open', tags: ['home'] });
 
-    // Query works — the index saw the plaintext doc as it was written.
     expect(ids(await store.collection('tasks').listByIndex('tag', 'home'))).toEqual(['t1']);
 
-    // ...but nothing readable reached storage: the row is an envelope and the
-    // indexed value never appears in the persisted bytes.
     const stored = await inner.get<BaseDocument>('tasks', 't1');
     expect(isEncryptedDoc(stored)).toBe(true);
     expect(JSON.stringify(stored)).not.toContain('home');
@@ -251,7 +243,6 @@ describe('secondary indexes — under encryption', () => {
   it('rebuilds the index by decrypting on load', async () => {
     const cipher = createWebCryptoCipher(new Uint8Array(32).fill(7));
     const inner = new InMemoryAdapter();
-    // First store writes an encrypted doc.
     const first = await Store.create({
       adapter: inner,
       collections: [tasksDef],
@@ -262,7 +253,6 @@ describe('secondary indexes — under encryption', () => {
       .collection('tasks')
       .create({ id: 't1', title: 'A', status: 'open', tags: ['home'] });
 
-    // A fresh store over the same ciphertext rebuilds the index on create.
     const second = await Store.create({
       adapter: inner,
       collections: [tasksDef],
@@ -274,13 +264,11 @@ describe('secondary indexes — under encryption', () => {
 
 describe('secondary indexes — self-healing via getMany', () => {
   it('never returns a doc the index over-reports (deleted underneath)', async () => {
-    // Hard-delete straight through the adapter so the index is intentionally
-    // left stale; listByIndex must still not surface the vanished doc because
-    // it re-reads through getMany.
     const { store, tasks, adapter } = await makeStore();
     await tasks().create({ id: 't1', title: 'A', status: 'open', tags: [] });
     await tasks().create({ id: 't2', title: 'B', status: 'open', tags: [] });
-    await adapter.delete('tasks', 't1'); // bypasses the store's remove()
+    // hard-delete through the adapter so the index is deliberately left stale
+    await adapter.delete('tasks', 't1');
 
     expect(ids(await store.collection('tasks').listByIndex('status', 'open'))).toEqual(['t2']);
   });

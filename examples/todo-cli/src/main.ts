@@ -1,8 +1,3 @@
-// A complete Pact client app: a local-first TODO list for your terminal.
-//
-// Everything works offline against a local JSON file. Point it at a pact
-// server (`todo register`, `todo author`) and the same commands sync —
-// none of the CRUD code below changes for that.
 import { join } from 'node:path';
 import { Store } from '@a16n/pact-client';
 import { JsonFileAdapter } from './jsonFileAdapter'; // copied from examples/adapters
@@ -29,14 +24,13 @@ Ids can be abbreviated to any unique tail, e.g. "todo done 4w" for td-x7k2m9qp4w
 
 const file = process.env.PACT_TODO_FILE ?? join(process.cwd(), '.pact-todo.json');
 const store = await Store.create({ adapter: new JsonFileAdapter(file), ...domain });
-const list = store.collection('todos'); // typed from the schema in domain.ts
+const list = store.collection('todos');
 
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
 }
 
-/** Resolve a full id or any unique tail of one to a todo. */
 async function resolve(idArg: string | undefined) {
   if (!idArg) fail('Missing id. Run "todo list" to see ids.');
   const all = await list.list();
@@ -109,7 +103,8 @@ try {
         break;
       }
       await store.author.set(authorId);
-      // Adopt anything written before the identity existed, so it can sync.
+      // Docs written before an author was set carry the local placeholder author
+      // and would never sync; hand them to the new identity.
       await store.author.reassignLocal(authorId);
       console.log(`Writing as ${authorId}.`);
       break;
@@ -117,7 +112,7 @@ try {
 
     case 'sync': {
       if (!(await store.sync.registration())) fail('Not registered. Run "todo register" first.');
-      await store.sync.push(); // drains anything queued while offline, then pushes all
+      await store.sync.push();
       const pulled = await list.pullAll();
       console.log(`Synced. ${pulled.length} change(s) pulled.`);
       break;
@@ -151,5 +146,6 @@ try {
       process.exit(1);
   }
 } finally {
-  store.dispose(); // close the realtime socket, if one opened
+  // Closes the realtime socket if one was opened, so the process can exit.
+  store.dispose();
 }

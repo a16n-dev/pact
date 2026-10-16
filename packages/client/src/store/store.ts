@@ -50,8 +50,7 @@ import type {
 } from './namespaces';
 import type { ClientConfigDoc, AuthorConfigDoc, SeedMarkerDoc, EncryptionCheckDoc } from './types';
 
-// Sealed sentinel for the `_config/encryption` key check — any constant
-// works; wrong keys fail to open it regardless of content.
+// Any constant works: a wrong key fails to open the sealed check regardless of content.
 const KEYCHECK_SENTINEL = 'pact-keycheck';
 const KEYCHECK_AAD = '_config/encryption';
 
@@ -59,61 +58,37 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private realtime: RealtimeConnection | null = null;
   private changeHandlers = new Set<ChangeHandler>();
   private readonly cipher: DocCipher | null;
-  // Encrypt/decrypt hooks handed to every SyncClient this Store creates, so
-  // wire bodies match what's persisted locally: base fields + ciphertext.
+  // Handed to every SyncClient so wire bodies carry the same ciphertext as local storage.
   private readonly wireTransform: SyncTransform | null;
   private cachedAuthorId: string = LOCAL_AUTHOR_ID;
   private adapter: DatabaseAdapter;
-  // Multi-key mode (`encryption.onUndecryptable: 'hide'`): docs sealed under
-  // another key read as missing instead of throwing.
+  // `encryption.onUndecryptable: 'hide'`: docs sealed under another key read as missing.
   private readonly hideUndecryptable: boolean;
-  // The same adapter stack minus the cipher: rows read raw, envelopes intact.
-  // Paths that only need cleartext base fields (LWW timestamps), or that must
-  // see docs *this* key can't open (backup, push, hidden-row guards), read
-  // here. Identical to `adapter` on unencrypted stores.
+  // The same adapter stack minus the cipher, so envelopes come back intact. Paths that only
+  // need cleartext base fields (LWW timestamps) or must see docs this key can't open (backup,
+  // push, hidden-row guards) read here. Identical to `adapter` on unencrypted stores.
   private readonly rawAdapter: DatabaseAdapter;
   private readonly migrator: Migrator;
   private readonly validate: (collection: string, doc: unknown) => unknown;
-  // The domain's collection definitions, keyed by name — the authoritative
-  // set of collections this Store serves. Anything else (bar `_*`) is
-  // rejected at the method boundary.
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
-  // Names of `synced: true` collections — the pushAll / pull-all enumeration.
   private readonly syncedCollections: readonly string[];
-  // Collection aliasing (name → storage/wire key and its reverse), or null
-  // when no definition sets a `key`. Everything inside the Store speaks
-  // names; the AliasAdapter and SyncClient translate at the physical/wire
-  // boundary, and realtime invalidations translate back on the way in.
+  // Null unless a definition sets a `key`. Everything inside the Store speaks names; the
+  // AliasAdapter and SyncClient translate at the storage/wire boundary.
   private readonly collectionKeys: ReadonlyMap<string, string> | null;
   private readonly collectionNames: ReadonlyMap<string, string> | null;
   private readonly idParser: (id: string) => ParsedId | null;
   private readonly onSetAuthor?: (store: Store, authorId: string) => Promise<void>;
-  // Domain-supplied blob-reference extractor and whether one was configured.
-  // Without it, blob GC has no notion of "referenced" and must refuse to run.
+  // Without an extractor blob GC cannot tell referenced from orphan and must refuse to run.
   private readonly blobHashesOf: (collection: string, doc: BaseDocument) => Iterable<string>;
   private readonly hasBlobRefs: boolean;
-  // Owns the push outbox, pulls, and cursors. Fed live views of this Store's
-  // author id + change emitter; its SyncClient is swapped in/out by the
-  // client-registration methods below.
   private readonly syncEngine: SyncEngine;
-  // Sidecar for opaque byte blobs (surfaced as `blobs.adapter`). Null on
-  // consumers that only deal in JSON docs (e.g. CLI tools).
   private readonly blobAdapter: BlobAdapter | null;
-  // In-memory secondary indexes over the collections that declare them,
-  // maintained off the persist/remove choke point and rebuilt on `create`.
-  // Null when no collection declares any index.
   private readonly indexes: IndexManager | null;
 
-  // The namespaced surface — everything beyond core doc access lives here.
-  /** Server-facing operations: pushing, pulling, registration. */
   readonly sync: StoreSync;
-  /** Who writes are attributed to. */
   readonly author: StoreAuthor;
-  /** Portable snapshots of the document (and blob) set. */
   readonly backup: StoreBackup;
-  /** Blob bookkeeping: references, garbage collection, change signals. */
   readonly blobs: StoreBlobs;
-  /** At-rest/on-wire encryption management. */
   readonly encryption: StoreEncryption;
 
   constructor(options: StoreOptions<Defs>) {
@@ -139,11 +114,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       this.collectionKeys !== null
         ? new Map(Array.from(this.collectionKeys, ([name, key]) => [key, name]))
         : null;
-    // With encryption on, wrap the adapter before anything else touches it:
-    // every layer above (migrations, LWW, sync engine, backups) then deals
-    // exclusively in plaintext while storage only ever holds ciphertext.
-    // The alias wrapper goes outermost, so the cipher sees physical keys —
-    // envelopes are AAD-bound to the same identity the wire seals against.
+    // The cipher wraps the adapter before anything else touches it, so every layer above deals
+    // in plaintext. The alias wrapper goes outermost so the cipher sees physical keys: envelopes
+    // are AAD-bound to the same identity the wire seals against.
     this.hideUndecryptable = domain.encryption?.onUndecryptable === 'hide';
     let stacked = this.cipher
       ? new EncryptedAdapter(options.adapter, this.cipher, {
@@ -160,10 +133,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.wireTransform = this.cipher
       ? {
           toWire: (collection, doc) => encryptDoc(this.cipher!, collection, doc),
-          // In hide mode a pulled envelope another key sealed comes back
-          // *still sealed* (tryDecryptDoc → null → pass the envelope through);
-          // the sync engine stores it raw so it survives locally without ever
-          // surfacing as plaintext.
+          // In hide mode an envelope another key sealed passes through still sealed; the sync
+          // engine stores it raw so it survives locally without ever surfacing as plaintext.
           fromWire: this.hideUndecryptable
             ? async (collection, data) =>
                 (await tryDecryptDoc(this.cipher!, collection, data as BaseDocument)) ??
@@ -173,9 +144,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       : null;
     this.migrator = new Migrator(buildMigrationRegistry(defs));
     this.syncedCollections = defs.filter((d) => d.synced).map((d) => d.name);
-    // Indexes are declared per-collection (so their target collection always
-    // exists and names are unique within it). Null out the manager entirely
-    // when nothing declares an index, keeping the write path free of overhead.
     const indexManager = new IndexManager(defs);
     this.indexes = indexManager.isEmpty ? null : indexManager;
     this.idParser = createIdParser(defs);
@@ -187,7 +155,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         ...(doc as object),
         schemaVersion: this.migrator.currentVersion(collection),
       };
-      // Internal `_*` docs (config, cursors, outbox) carry no domain schema.
+      // Internal `_*` docs carry no domain schema.
       const def = this.definitions.get(collection);
       return def ? def.schema.parse(stamped) : stamped;
     };
@@ -210,8 +178,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       this.openRealtime(creds.syncUrl, creds.syncToken);
     }
 
-    // The namespaces: thin closures over the private implementations,
-    // grouped so the top-level surface stays close to just doc access.
     this.sync = {
       push: async () => {
         await this.syncEngine.drainOutbox();
@@ -268,26 +234,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
   }
 
-  // Realtime is server-driven: RealtimeConnection.start() probes `GET /info`
-  // and silently no-ops unless the server advertises `realtime: true`, so this
-  // always attempts to connect and the server is the sole authority on whether
-  // a socket actually opens.
+  // Always attempted: RealtimeConnection.start() probes `GET /info` and no-ops unless the server
+  // advertises `realtime: true`, so the server alone decides whether a socket opens.
   private openRealtime(url: string, token: string): void {
     this.realtime?.stop();
     this.realtime = new RealtimeConnection({
       url,
       token,
-      // Internal `_`-prefixed collections are per-store bookkeeping (e.g. the
-      // `_seeds` marker); pulling another party's copy would clobber ours.
-      // The server broadcasts physical keys (that's all it ever sees), so
-      // aliased domains translate back to the name the pull path speaks.
+      // The server broadcasts physical keys, so aliased domains translate back to names. `_*`
+      // collections are per-store bookkeeping; pulling another party's copy would clobber ours.
       onInvalidate: (collection) => {
         const name = this.collectionNames?.get(collection) ?? collection;
         if (!name.startsWith('_')) void this.syncEngine.pull(name);
       },
       onReconnect: () => {
-        // Regained connectivity: pull others' changes and flush any writes
-        // whose push failed while we were offline.
         void this.syncEngine.pullRegisteredCollections();
         void this.syncEngine.drainOutbox().catch(() => {});
       },
@@ -300,10 +260,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return () => this.changeHandlers.delete(handler);
   }
 
-  /**
-   * Tear down the realtime WebSocket if one is open. Safe to call repeatedly.
-   * Document mutations and HTTP sync continue to work after this.
-   */
+  /** Closes the realtime socket. Document mutations and HTTP sync keep working afterwards. */
   dispose(): void {
     this.realtime?.stop();
     this.realtime = null;
@@ -313,27 +270,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const handler of this.changeHandlers) handler(collection);
   }
 
-  /**
-   * Signal that the local blob set has changed (capture, pull, delete).
-   * Routed through the same `change` channel as document collections so
-   * UI invalidation can hang off a single subscription.
-   */
+  // Blob changes ride the document change channel so UI invalidation needs one subscription.
   private notifyBlobsChanged(): void {
     this.emit('_blobs');
   }
 
-  /**
-   * Union of blob hashes referenced by every *live* document across all
-   * registered collections, via the domain's `blobHashes` extractor.
-   * Tombstones are skipped — a blob kept alive only by deleted docs is
-   * collectable. Returns an empty set when the domain declares no extractor.
-   *
-   * Drives `blobs.prune` and `blobs.pullReferenced` — pulling exactly the
-   * blobs the local doc set needs. Docs are migrated in memory before
-   * extraction (no write-back), so the extractor always sees current field
-   * names — running it against a stale shape could miss a reference and
-   * wrongly mark a live blob as an orphan.
-   */
   private async referencedBlobHashes(): Promise<Set<string>> {
     const refs = new Set<string>();
     if (!this.hasBlobRefs) return refs;
@@ -341,6 +282,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const all = await this.adapter.getAll<BaseDocument>(collection);
       for (const raw of all) {
         if (raw.deletedAt) continue;
+        // Migrated in memory (no write-back) so the extractor sees current field names; a stale
+        // shape could miss a reference and mark a live blob as an orphan.
         const doc = this.migrator.needsMigration(collection, raw)
           ? this.migrator.migrate<BaseDocument>(collection, raw)
           : raw;
@@ -350,12 +293,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return refs;
   }
 
-  /**
-   * Hide mode: whether any collection holds rows this key can't open — the
-   * decrypting read returns fewer docs than the raw enumeration. Cheap
-   * count-only comparison; used to guard operations that would misbehave
-   * around invisible documents (blob pruning).
-   */
   private async hasHiddenDocs(): Promise<boolean> {
     for (const collection of this.definitions.keys()) {
       const readable = (await this.adapter.getAll<BaseDocument>(collection)).length;
@@ -365,20 +302,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return false;
   }
 
-  /**
-   * Delete local blobs that no live document references, reclaiming device
-   * storage. Returns the hashes removed.
-   *
-   * Local-only by design: the server's bucket is left untouched. Deleting a
-   * shared, content-addressed blob server-side would break any *other* device
-   * still referencing it — last-write-wins gives no safe moment to know every
-   * client has dropped the reference. A locally-pruned blob simply re-pulls if
-   * a document referencing it arrives later.
-   *
-   * Throws if the domain declares no `blobHashes` extractor: with no notion of
-   * what's referenced, every blob would look like an orphan. No-op (empty
-   * result) on a store without a blob adapter.
-   */
+  // Local-only by design: deleting a shared, content-addressed blob server-side would break any
+  // other device still referencing it, and LWW gives no safe moment to know every client has
+  // dropped the reference. A pruned blob re-pulls if a referencing document arrives later.
   private async pruneBlobs(): Promise<{ deleted: string[] }> {
     if (!this.blobAdapter) return { deleted: [] };
     if (!this.hasBlobRefs) {
@@ -386,9 +312,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         'pruneBlobs requires a StoreDomain.blobHashes extractor; refusing to treat every blob as an orphan'
       );
     }
-    // Hide mode: docs sealed under other keys can't contribute their blob
-    // references, so any blob only they reference would look like an orphan.
-    // Refuse rather than delete bytes another key still needs.
+    // Hidden docs can't contribute their blob references, so their blobs would look orphaned.
     if (this.hideUndecryptable && (await this.hasHiddenDocs())) {
       throw new Error(
         'pruneBlobs refused: documents sealed under other encryption keys are present, ' +
@@ -414,9 +338,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       options.sync ??
       (clientDoc ? { syncUrl: clientDoc.url, syncToken: clientDoc.token } : undefined);
     const store = new Store({ ...options, sync });
-    // Pre-sync, the author is implicitly LOCAL_AUTHOR_ID. If a real identity
-    // was previously claimed (via a sync server), restore it from the author
-    // config doc.
     const authorDoc = await options.adapter.get<AuthorConfigDoc>('_config', 'author');
     if (authorDoc) store.cachedAuthorId = authorDoc.authorId;
     await store.verifyEncryptionKey();
@@ -424,13 +345,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return store;
   }
 
-  /**
-   * Populate every secondary index from local storage. Indexes are in-memory
-   * derived state, so each load rebuilds them from the persisted documents
-   * (migrated + validated; tombstones and unreadable rows skipped). A no-op
-   * when no collection declares an index. This is the one full scan indexes
-   * cost — paid once at startup, not per query.
-   */
   private async buildIndexes(): Promise<void> {
     if (!this.indexes) return;
     this.indexes.clear();
@@ -443,19 +357,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
   }
 
-  /**
-   * Fail fast on a wrong encryption key: verify (or, on first encrypted use,
-   * write) the sealed sentinel in `_config/encryption`. No-op without
-   * encryption. `Store.create` calls this automatically; call it yourself
-   * only when constructing a Store directly.
-   *
-   * In `'hide'` mode there is no such thing as a wrong key — the sentinel is
-   * still written on first encrypted use (apps use its existence as the
-   * "encryption has been enabled here" switch) but never verified.
-   */
   private async verifyEncryptionKey(): Promise<void> {
     if (!this.cipher) return;
     const existing = await this.adapter.get<EncryptionCheckDoc>('_config', 'encryption');
+    // In hide mode there is no wrong key, but the sentinel is still written on first encrypted
+    // use: apps use its existence as the "encryption has been enabled here" switch.
     if (existing && this.hideUndecryptable) return;
     if (!existing) {
       const now = dayjs().toISOString();
@@ -482,25 +388,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
   }
 
-  /**
-   * One-time sweep for enabling encryption on an existing install: rewrite
-   * every doc in every non-internal collection through the encrypting
-   * adapter, so plaintext rows become ciphertext at rest. To also convert
-   * the server's copies, follow with `sync.push()` — the server's
-   * last-write-wins guard accepts equal `updatedAt`, so each plaintext row
-   * up there is overwritten by its encrypted twin. Idempotent: already
-   * encrypted docs pass through unchanged. In `'hide'` mode, docs sealed
-   * under another key are left untouched and reported as `skipped`.
-   */
   private async encryptLocalData(): Promise<{ rewritten: number; skipped: number }> {
     if (!this.cipher) throw new Error('encryptLocalData requires the encryption option');
     let rewritten = 0;
     let skipped = 0;
     for (const collection of this.definitions.keys()) {
-      // Reads decrypt (or pass plaintext through); writes seal — one
-      // round-trip through the wrapper re-encrypts the lot. Hidden rows
-      // (another key's, hide mode only) don't come back from the read and
-      // are already ciphertext, so leaving them alone is the correct sweep.
+      // Reads decrypt (or pass plaintext through) and persist seals, so one round-trip re-encrypts
+      // the lot. Hidden rows don't come back from the read and are already ciphertext.
       const docs = await this.adapter.getAll<BaseDocument>(collection);
       for (const doc of docs) {
         await this.persist(collection, doc);
@@ -513,8 +407,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
     return { rewritten, skipped };
   }
-
-  // Current author
 
   private async setAuthor(authorId: string): Promise<void> {
     if (authorId === SYSTEM_AUTHOR_ID) throw new Error('Cannot set author to the system author');
@@ -541,25 +433,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return this.cachedAuthorId;
   }
 
-  /**
-   * Resolve a document id to its collection (and parts) via the domain's
-   * prefix map. Returns `null` for ids with an unknown prefix.
-   */
   parseId(id: string): ParsedId | null {
     return this.idParser(id);
   }
 
-  // Client registration / sync config
-
-  /**
-   * Trade the app's password for a long-lived access token bound to this
-   * client. `appName` identifies which app on the (possibly multi-tenant)
-   * server this client belongs to; the token comes back bound to it, so only
-   * registration ever names the app. The clientId is generated once on first
-   * call and reused on every subsequent call (persisted in `_config/client`),
-   * so re-registering — to rotate the token, rename the client, or point at a
-   * different URL — keeps the same identity on the server side.
-   */
   private async registerClient(
     url: string,
     password: string,
@@ -568,6 +445,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<RegisterResult> {
     const normalisedUrl = url.replace(/\/+$/, '');
     const existing = await this.adapter.get<ClientConfigDoc>('_config', 'client');
+    // Re-registering (token rotation, rename, new URL) keeps the same server-side identity.
     const clientId = existing?.clientId ?? `cl-${randomId(10)}`;
     const result = await registerClientFetch(
       normalisedUrl,
@@ -609,12 +487,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       : null;
   }
 
-  /**
-   * Returns the raw url + access token. Internal-use only — surfaces of
-   * a consuming app should call `getClientRegistration` instead, which
-   * strips the token. Exposed so the repo layer can hand the token to
-   * helpers that issue HTTP calls directly.
-   */
   private async getSyncCredentials(): Promise<{ url: string; token: string } | null> {
     const doc = await this.adapter.get<ClientConfigDoc>('_config', 'client');
     return doc ? { url: doc.url, token: doc.token } : null;
@@ -628,10 +500,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
-   * Clear all local data and reset to the unidentified local author. There is
-   * deliberately no remote-wipe path: a single client credential must not be
-   * able to erase the household's shared server database. Server data is wiped
-   * out-of-band by the operator (see @a16n/pact-server).
+   * Clears all local data and resets to the unidentified local author. There is deliberately
+   * no remote-wipe path: a single client credential must not be able to erase the shared
+   * server database. Server data is wiped out-of-band by the operator.
    */
   async wipe(): Promise<void> {
     await this.adapter.wipe();
@@ -649,13 +520,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     );
   }
 
-  // CRUD
-
-  /**
-   * The schemas handed to the constructor define which collections exist:
-   * any read, write, or pull naming a collection without a definition is a
-   * programming error and throws. Internal `_*` collections are exempt.
-   */
   private assertDefined(collection: string): void {
     if (collection.startsWith('_') || this.definitions.has(collection)) return;
     throw new Error(
@@ -669,38 +533,21 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return this.validate(collection, doc) as T;
   }
 
-  /**
-   * Run on every read. If the doc is behind the collection's current
-   * schemaVersion, upgrade it via the migration chain. Upgraded docs are
-   * lazily written back so old versions drain from local storage over
-   * time. Internal `_config`/`_sync_meta` collections aren't in the
-   * registry and short-circuit to a no-op.
-   */
-  /**
-   * Normalise a doc coming off the adapter: migrate it to the current shape if
-   * stale, then re-validate through the collection schema. The re-validation
-   * reconstructs schema-typed values the storage format flattens — notably
-   * `date()` fields, whose persisted ISO string coerces back to a `Date`.
-   *
-   * A doc that fails validation (post-migration) is treated as *unreadable*
-   * rather than thrown: this returns null, so a single corrupt row degrades to
-   * a missing doc instead of bricking a whole `list()`/`getMany()`. Callers
-   * that map over collections must drop these nulls. Returns null for a null
-   * input (missing doc) too. (No corruption reporting yet — a future
-   * `onInvalidDocument` hook is the place to make this observable.)
-   */
+  // Re-validation after migration reconstructs schema-typed values the storage format flattens,
+  // notably `date()` fields persisted as ISO strings.
   private migrateRead<T>(collection: string, doc: T | null): T | null {
     if (!doc) return doc;
     let normalised: T = doc;
     if (this.migrator.needsMigration(collection, doc)) {
       normalised = this.migrator.migrate<T>(collection, doc);
-      // Fire-and-forget write-back of the migrated shape. Failure here isn't
-      // fatal — the next read will just migrate again.
+      // Lazy write-back; failure isn't fatal, the next read migrates again.
       this.persist(collection, normalised as unknown as BaseDocument).catch(() => {});
     }
     try {
       return this.validate(collection, normalised) as T;
     } catch (err) {
+      // A corrupt row degrades to a missing doc rather than bricking a whole list()/getMany().
+      // TODO(alex): surface these via an `onInvalidDocument` hook.
       if (err instanceof z.ZodError) return null;
       throw err;
     }
@@ -710,27 +557,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return this.getCurrentAuthor();
   }
 
-  /**
-   * Hide mode only: true when a row exists at this id but is sealed under
-   * another key (the decrypting read returned null while a raw envelope is
-   * present). Writers that treat "missing" as "free to create" — upsert,
-   * seed — must not silently overwrite another key's document. Callers check
-   * this only after a null decrypted read, so a readable envelope never
-   * reaches it.
-   */
+  // Hide mode: a null decrypted read may mean a row sealed under another key, which writers that
+  // treat "missing" as "free to create" (upsert, seed) must not overwrite.
   private async isHiddenRow(collection: string, id: string): Promise<boolean> {
     if (!this.hideUndecryptable) return false;
     const raw = await this.rawAdapter.get<BaseDocument>(collection, id);
     return raw !== null && isEncryptedDoc(raw);
   }
 
-  /**
-   * Reassigns every local document with `createdBy`, `updatedBy`, or
-   * `deletedBy` === `LOCAL_AUTHOR_ID` to the given author id, bumping
-   * `updatedAt` so the next push picks them up. `deletedBy` is included so a
-   * doc soft-deleted before identity was claimed doesn't sync a tombstone
-   * still tagged with the local sentinel. Skips internal `_*` collections.
-   */
   private async reassignLocalAuthor(newAuthorId: string): Promise<void> {
     if (newAuthorId === LOCAL_AUTHOR_ID || newAuthorId === SYSTEM_AUTHOR_ID) {
       throw new Error('Cannot reassign local docs to a system or local author id');
@@ -741,6 +575,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       if (collection.startsWith('_')) continue;
       const all = await this.adapter.getAll<BaseDocument>(collection);
       for (const raw of all) {
+        // `deletedBy` is included so a doc soft-deleted before identity was claimed doesn't sync a
+        // tombstone still tagged with the local sentinel.
         if (
           raw.createdBy !== LOCAL_AUTHOR_ID &&
           raw.updatedBy !== LOCAL_AUTHOR_ID &&
@@ -758,11 +594,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         };
         await this.persist(collection, updated);
       }
-      // Hide mode: rows sealed under another key were invisible to the pass
-      // above but may also be local-authored (written pre-sync in a session
-      // holding their key). Author fields live cleartext outside the
-      // envelope, so swap them in place — the sealed domain is untouched and
-      // the write bypasses persist/indexing (the doc isn't readable here).
+      // Rows sealed under another key may also be local-authored. Author fields are cleartext
+      // outside the envelope, so swap them in place; the write bypasses persist/indexing since
+      // the doc isn't readable here.
       if (this.hideUndecryptable) {
         for (const raw of await this.rawAdapter.getAll<BaseDocument>(collection)) {
           if (!isEncryptedDoc(raw)) continue;
@@ -786,12 +620,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
   }
 
-  /**
-   * One doc by id, or null when missing. Soft-deleted docs read as null
-   * unless `includeDeleted` is set — with it, inspect `deletedAt` to tell a
-   * tombstone from a live doc (e.g. "author deleted this seed" vs "doc never
-   * existed").
-   */
   private async get<T extends BaseDocument>(
     collection: string,
     id: string,
@@ -813,11 +641,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       .filter((doc): doc is T => doc !== null && !doc.deletedAt);
   }
 
-  /**
-   * All live docs in the collection. Pass `includeDeleted` to keep tombstones
-   * in the result (inspect `deletedAt` to tell them apart) — for debug/admin
-   * surfaces.
-   */
   private async list<T extends BaseDocument>(
     collection: string,
     opts?: { includeDeleted?: boolean }
@@ -854,21 +677,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
-   * Apply a versioned seed payload. No-op while the locally stored `_seeds`
-   * marker matches `seeds.version` (pass `force` to bypass, e.g. a manual
-   * "restore seed data" action). Writes are local-only; they reach a sync
-   * server through the normal push paths, or directly when the adapter itself
-   * fronts the server's database.
-   *
-   * Per-doc semantics:
-   * - Untouched docs (still system-authored) are overwritten wholesale, but
-   *   only when content actually changed — re-running is cheap.
-   * - Docs a real author edited keep every field that has a value; fields the
-   *   seed provides that are still `undefined` on the doc are filled in
-   *   (enrichment). `undefined` is the only fillable state — an explicit
-   *   `null` is somebody's decision and is never overridden. The doc stays
-   *   author-touched so later seeds still can't clobber it.
-   * - Docs a real author deleted stay deleted.
+   * Applies a versioned seed payload; a no-op while the stored `_seeds` marker matches
+   * `seeds.version` unless `force` is set. Docs still system-authored are overwritten when
+   * their content changed. Docs a real author edited only gain fields that are `undefined` on
+   * the doc: an explicit `null` is somebody's decision and is never overridden. Docs a real
+   * author deleted stay deleted.
    */
   async seed(seeds: SeedSet, opts?: { force?: boolean }): Promise<{ written: number }> {
     const marker = await this.adapter.get<SeedMarkerDoc>('_seeds', 'current');
@@ -936,24 +749,15 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { written };
   }
 
-  /**
-   * Generated id for a new doc in the collection, via its definition's
-   * `generateId`. Internal (`_*`) collections have no definition, so callers
-   * writing to those must always supply an explicit id.
-   */
   private newId(collection: string): string {
     const def = this.definitions.get(collection);
     if (!def) throw new Error(`Cannot generate an id for collection: ${collection}`);
     return def.generateId();
   }
 
-  // The single choke point for persisting domain documents to local storage.
-  // Every write of a defined collection's doc funnels through `persist` /
-  // `persistMany` (soft-deletes included — a tombstone is a `put`), and every
-  // hard removal through `remove`, so state derived from writes (see the index
-  // layer) has exactly one place to hook. Internal `_*` bookkeeping docs
-  // (config, pull cursors, the outbox, the seed marker) bypass these and hit
-  // the adapter directly: they carry no domain schema and feed no derived state.
+  // Every write of a defined collection's doc funnels through persist/persistMany (tombstones
+  // included) and every hard removal through remove, so derived state (indexes) has one place
+  // to hook. Internal `_*` docs bypass these: no domain schema, no derived state.
   private async persist(collection: string, doc: BaseDocument): Promise<void> {
     await this.adapter.put(collection, doc);
     this.indexWrite(collection, doc);
@@ -971,26 +775,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.indexes?.onRemove(collection, id);
   }
 
-  /**
-   * Reflect a just-persisted doc into the in-memory indexes. Re-derives the
-   * migrated, validated shape the extractors expect (persist callers pass docs
-   * in varying states — freshly validated, migrated-only, or raw from a
-   * restore/pull), so index keys are consistent regardless. A tombstone is
-   * dropped inside `onPersist`; a doc that can't be normalised is unreadable
-   * (a `list()` would skip it too), so it's removed from the index.
-   */
   private indexWrite(collection: string, doc: BaseDocument): void {
     if (!this.indexes?.hasIndexesFor(collection)) return;
     const normalised = this.normalizeForIndex(collection, doc);
     if (normalised) this.indexes.onPersist(collection, normalised);
+    // A doc that won't normalise is unreadable (list() would skip it), so it leaves the index.
     else this.indexes.onRemove(collection, doc.id);
   }
 
-  /**
-   * Migrate-then-validate a doc for index extraction, without the read path's
-   * lazy write-back or network pull. Returns null for a doc that fails
-   * validation post-migration (mirroring `migrateRead`'s null-on-invalid).
-   */
   private normalizeForIndex(collection: string, doc: BaseDocument): BaseDocument | null {
     const migrated = this.migrator.needsMigration(collection, doc)
       ? this.migrator.migrate<BaseDocument>(collection, doc)
@@ -1051,11 +843,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return validated;
   }
 
-  /**
-   * Create the doc if absent, update it if present — `id` is required since
-   * it's the match key. A soft-deleted doc counts as absent: upserting its id
-   * revives it as a fresh doc (new `createdAt`, tombstone cleared).
-   */
   private async upsert<T extends BaseDocument>(
     collection: string,
     input: Omit<T, keyof BaseDocument> & { id: T['id'] }
@@ -1201,53 +988,32 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.emit(collection);
   }
 
-  /**
-   * Removes a document from local storage outright — no tombstone, no sync
-   * push. Unlike `delete`, this leaves nothing behind, so a later reseed (or
-   * any `getIncludingDeleted` consumer) treats the doc as never-having-existed.
-   * Intended for low-level/debug use; normal deletes should go through
-   * `delete`/`deleteMany` so the tombstone propagates to other devices. A doc
-   * that still exists on the server will re-pull on the next sync.
-   */
   private async hardDelete(collection: string, id: string): Promise<void> {
     this.assertDefined(collection);
     await this.remove(collection, id);
     this.emit(collection);
   }
 
-  /** Batch form of `hardDelete`. */
   private async hardDeleteMany(collection: string, ids: string[]): Promise<void> {
     this.assertDefined(collection);
     await Promise.all(ids.map((id) => this.remove(collection, id)));
     this.emit(collection);
   }
 
-  /** Fetch every remote change for the collection (cursor-paged) and merge it in. */
   private pullAll<T extends BaseDocument>(collection: string): Promise<T[]> {
     this.assertDefined(collection);
     return this.syncEngine.pull<T>(collection);
   }
 
-  /**
-   * Drop all locally-cached state except `_config` (sync credentials + author
-   * identity), then re-pull every registered collection from a fresh cursor.
-   * Unlike `wipe`, the install stays registered and identified. Clears the
-   * outbox, so callers with unsynced writes that matter must `drainOutbox`
-   * first. Intended as a one-off recovery after the server's documents were
-   * rewritten out-of-band (e.g. an id-format change) and the local copies can
-   * no longer be reconciled doc-by-doc.
-   */
   private async resyncFromScratch(): Promise<void> {
-    // Straight through the adapter, not hardDeleteMany: this must also clear
-    // data left behind by collections the current build no longer defines.
-    // Indexes are dropped wholesale here rather than diffed per delete; the
-    // pulls below repopulate them through the persist choke point.
+    // Straight through the adapter rather than hardDeleteMany: this must also clear collections
+    // the current build no longer defines. Indexes are dropped wholesale; the pulls repopulate
+    // them through persist.
     this.indexes?.clear();
     const collections = await this.adapter.listCollections();
     for (const collection of collections) {
       if (collection === '_config') continue;
-      // Raw enumeration: only ids are needed, and it must also clear rows
-      // sealed under other keys (hide mode), which a decrypting read hides.
+      // Raw enumeration so rows sealed under other keys are cleared too.
       const all = await this.rawAdapter.getAll<BaseDocument>(collection);
       if (all.length > 0) {
         await Promise.all(all.map((d) => this.adapter.delete(collection, d.id)));
@@ -1257,29 +1023,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.syncEngine.pullRegisteredCollections();
   }
 
-  // Backup / restore — a self-contained, server-independent snapshot.
-
-  /**
-   * Pack every document (tombstones included) into a single portable archive,
-   * optionally bundling the local blobs. Internal `_*` collections — sync
-   * credentials, pull cursors, the push outbox — are excluded: they're
-   * device-specific and must not travel. The result is a `Uint8Array` the
-   * caller persists however it likes (a file, a cloud object); the framework
-   * makes no filesystem assumption.
-   *
-   * Blobs are included by default when this store has a `BlobAdapter`; pass
-   * `{ blobs: false }` for a documents-only archive (blobs can be re-pulled
-   * from a sync server later via their referenced hashes).
-   */
   private async createBackup(opts?: { blobs?: boolean }): Promise<Uint8Array> {
     const collections: Record<string, BaseDocument[]> = {};
+    // `_*` collections (credentials, cursors, outbox) are device-specific and must not travel.
     for (const name of await this.adapter.listCollections()) {
       if (name.startsWith('_')) continue;
       const docs = await this.adapter.getAll<BaseDocument>(name);
-      // Hide mode: rows sealed under other keys are invisible to the
-      // decrypting read but must not vanish from a backup — archive their
-      // envelopes as-is (restore writes envelopes back raw, so they stay
-      // readable to whichever key sealed them).
+      // Rows sealed under other keys must not vanish from a backup: archive their envelopes as-is
+      // (restore writes them back raw, so they stay readable to whichever key sealed them).
       if (this.hideUndecryptable) {
         const readable = new Set(docs.map((doc) => doc.id));
         for (const raw of await this.rawAdapter.getAll<BaseDocument>(name)) {
@@ -1306,23 +1057,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     );
   }
 
-  /**
-   * Load an archive produced by `createBackup`. Docs are written raw so their
-   * audit fields and `schemaVersion` survive intact (reads migrate lazily, as
-   * with pulled docs); restored docs reach a sync server on the next
-   * `pushAll`. Throws if `archive` isn't a recognized backup.
-   *
-   * `mode` defaults to `merge` (last-write-wins, safe on a live store); see
-   * `RestoreMode`.
-   */
   private async restoreBackup(
     archive: Uint8Array,
     opts?: { mode?: RestoreMode }
   ): Promise<RestoreResult> {
     const mode = opts?.mode ?? 'merge';
     const { manifest, blobs } = unpackBackup(archive);
-    // Only defined collections restore; an archive from a domain with
-    // collections this build doesn't know is reported, not silently merged.
     const collectionsSkipped = Object.keys(manifest.collections).filter(
       (name) => !this.definitions.has(name)
     );
@@ -1343,19 +1083,16 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const sealed: BaseDocument[] = [];
       for (const doc of incoming) {
         if (mode === 'merge') {
-          // Last-write-wins, mirroring the pull path (syncEngine): skip only
-          // when the local copy is strictly newer; ties go to the archive.
-          // `updatedAt` is cleartext on envelopes, so the raw read compares
-          // correctly even when the local row is sealed under another key.
+          // Last-write-wins mirroring the pull path: ties go to the archive. `updatedAt` is
+          // cleartext on envelopes, so the raw read compares correctly against a sealed local row.
           const local = await this.rawAdapter.get<BaseDocument>(name, doc.id);
           if (local && local.updatedAt > doc.updatedAt) {
             docsSkipped++;
             continue;
           }
         }
-        // An archive from an encrypted store carries foreign-key docs as
-        // sealed envelopes. They bypass persist (no migration/validation/
-        // indexing is possible on ciphertext) and land raw, intact.
+        // Envelopes from another key bypass persist (no migration, validation or indexing is
+        // possible on ciphertext) and land raw.
         if (isEncryptedDoc(doc)) sealed.push(doc);
         else toWrite.push(doc);
       }
@@ -1377,8 +1114,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           for (const hash of await this.blobAdapter.list()) await this.blobAdapter.delete(hash);
         }
         for (const blob of blobs) {
-          // Content-addressed: a present hash already holds these exact bytes,
-          // so skip it in merge mode. Replace cleared the set above.
           if (mode === 'merge' && (await this.blobAdapter.has(blob.hash))) continue;
           await this.blobAdapter.write(blob.hash, blob.bytes, blob.mimeType);
           blobsWritten++;
@@ -1398,18 +1133,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
   }
 
-  /** Fetch one doc fresh from the server and merge it in (last-write-wins). */
   private pull<T extends BaseDocument>(collection: string, id: string): Promise<T | null> {
     this.assertDefined(collection);
     return this.syncEngine.pullDocument<T>(collection, id);
   }
 
-  /**
-   * Resolve a secondary-index lookup: the live docs recorded under `key` in the
-   * collection's named index. Goes through `getMany`, so the returned docs are
-   * migrated, validated, and tombstone-free even if the in-memory index lags a
-   * concurrent write. Throws on an unknown index name.
-   */
   private async listByIndex<T extends BaseDocument>(
     collection: string,
     index: string,
@@ -1419,17 +1147,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     if (!this.indexes?.has(collection, index)) {
       throw new Error(`Unknown index "${index}" on collection "${collection}"`);
     }
+    // getMany keeps results migrated, validated and tombstone-free even if the index lags a write.
     const ids = this.indexes.find(collection, index, normalizeKey(key));
     return ids.length > 0 ? this.getMany<T>(collection, ids) : [];
   }
 
   /**
-   * Typed handle to one defined collection — the only way to read and write
-   * documents. The name is narrowed to the domain's definition list and the
-   * document type is inferred from that collection's schema — undefined
-   * collections are a type error (and throw at runtime when the name arrives
-   * as a plain string). Pass the document type explicitly
-   * (`store.collection<Doc>('name')`) when the definition list isn't
+   * Typed handle to one defined collection. The document type is inferred from the collection's
+   * schema; pass it explicitly (`store.collection<Doc>('name')`) when the definition list isn't
    * statically known.
    */
   collection<Name extends CollectionName<Defs>>(
