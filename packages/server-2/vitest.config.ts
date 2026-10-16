@@ -9,6 +9,9 @@ export default defineWorkersConfig(async () => {
       setupFiles: ['test/setup.ts'],
       poolOptions: {
         workers: {
+          // The AI binding would otherwise open a remote proxy session, which needs a Cloudflare
+          // login; tests stub it instead.
+          remoteBindings: false,
           // Isolated storage trips over R2's SQLite WAL files when it pops a frame, so tests
           // share one runtime and reset storage themselves (test/setup.ts).
           isolatedStorage: false,
