@@ -204,8 +204,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
   private onUnauthorized(): void {}
 
-  // Config helpers
-
   private async getConfig<T extends Record<string, unknown>>(id: string): Promise<T | null> {
     const raw = await this.adapter.get(CONFIG, id);
     if (!raw || isSealedRecord(raw)) return null;
@@ -216,8 +214,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private async setConfig(id: string, value: Record<string, unknown>): Promise<void> {
     await this.adapter.put(CONFIG, id, configRecord(id, value));
   }
-
-  // Definitions
 
   private def(name: string): CollectionDefinition {
     const def = this.definitions.get(name);
@@ -244,8 +240,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     });
     return run;
   }
-
-  // Records
 
   private async loadRaw(def: CollectionDefinition, id: string): Promise<StoredRecord | null> {
     const stored = await this.adapter.get(def.key, id);
@@ -342,8 +336,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       }))
     );
   }
-
-  // Writes
 
   private stamp(
     def: CollectionDefinition,
@@ -601,8 +593,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return this.openText(def, id, record.text).handle(field) as YText;
   }
 
-  // Reads
-
   private async get(
     def: CollectionDefinition,
     id: string,
@@ -657,8 +647,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const ids = this.indexes.find(def.name, index, normalizeKey(key));
     return ids.length > 0 ? this.getMany(def, ids) : [];
   }
-
-  // Incoming versions (sync, restore)
 
   /**
    * Merges a version from another writer, or an archive, into the local
@@ -753,8 +741,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const name of touched) this.emit(name);
   }
 
-  // Encryption
-
   private async verifyEncryptionKey(): Promise<void> {
     if (!this.cipher) return;
     const existing = await this.getConfig<EncryptionConfig>('encryption');
@@ -794,8 +780,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { rewritten };
   }
 
-  // Blobs
-
   private async referencedBlobHashes(): Promise<Set<string>> {
     const refs = new Set<string>();
     if (!this.hasBlobRefs) return refs;
@@ -827,8 +811,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     if (deleted.length > 0) this.notifyBlobsChanged();
     return { deleted };
   }
-
-  // Backups
 
   private async createBackup(opts?: { blobs?: boolean }): Promise<Uint8Array> {
     const collections: Record<string, BackupEntry[]> = {};
