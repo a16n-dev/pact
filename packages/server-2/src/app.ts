@@ -7,6 +7,7 @@ import { oauthRoutes } from './oauth/routes';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
 import { realtimeRoutes } from './realtime/routes';
+import { aiRoutes } from './ai/routes';
 import { adminRoutes } from './admin/routes';
 
 export const app = new Hono<{ Bindings: Env }>();
@@ -24,10 +25,12 @@ app.get('/.well-known/pact', (c) => {
 app.use('/oauth/token', preflight('sync'));
 app.use('/auth/*', preflight('sync'));
 app.use('/sync/*', preflight('sync'));
+app.use('/ai/*', preflight('any'));
 
 app.route('/oauth', oauthRoutes);
 app.route('/auth', authRoutes);
 app.route('/sync', syncRoutes);
+app.route('/ai', aiRoutes);
 app.route('/realtime', realtimeRoutes);
 app.route('/admin', adminRoutes);
 

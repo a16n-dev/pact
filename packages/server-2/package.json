@@ -9,9 +9,10 @@
     "migrate": "wrangler d1 migrations apply DB --remote",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tc": "tsc --noEmit",
+    "tc": "tsc --noEmit && tsc --noEmit -p scripts",
     "check": "eslint . && prettier --check .",
-    "format": "eslint --fix . && prettier --write ."
+    "format": "eslint --fix . && prettier --write .",
+    "setup": "node scripts/setup.ts"
   },
   "dependencies": {
     "hono": "catalog:",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
