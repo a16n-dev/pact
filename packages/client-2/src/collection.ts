@@ -197,6 +197,11 @@ export type DocumentOf<
   Name extends CollectionName<Defs>,
 > = z.output<Extract<Defs[number], { name: Name }>['schema']> & BaseDocument;
 
+export type DocumentInputOf<
+  Defs extends readonly CollectionDefinition[],
+  Name extends CollectionName<Defs>,
+> = Omit<z.input<Extract<Defs[number], { name: Name }>['schema']>, keyof BaseDocument>;
+
 export type CollectionIndexNames<
   Defs extends readonly CollectionDefinition[],
   Name extends CollectionName<Defs>,

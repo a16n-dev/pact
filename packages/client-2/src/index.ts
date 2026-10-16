@@ -16,3 +16,4 @@ export {
 export { type TextDocument, type TextEngine, registerTextField } from './text/engine';
 export { ClockDriftError, MAX_CLOCK_DRIFT_MS } from './clock';
 export type { IndexKey, IndexKeyInput, IndexExtractor, IndexMap } from './store/indexes';
+export * from './store';
