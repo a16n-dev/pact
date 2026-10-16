@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "hono": "catalog:",
-    "nanoid": "catalog:"
+    "nanoid": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import type { Env } from './env';
-import { maxPushDocuments } from './env';
-import { ApiError, errorResponse } from './errors';
+import type { Env } from './lib/env';
+import { maxPushDocuments } from './lib/env';
+import { ApiError, errorResponse } from './lib/errors';
 
 export const app = new Hono<{ Bindings: Env }>();
 

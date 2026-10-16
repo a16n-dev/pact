@@ -1,6 +1,6 @@
-import type { RealtimeDO } from './realtime';
+import type { RealtimeDO } from '../realtime';
 
-export interface Env {
+export type Env = {
   DB: D1Database;
   BLOBS: R2Bucket;
   REALTIME: DurableObjectNamespace<RealtimeDO>;
@@ -11,7 +11,7 @@ export interface Env {
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   MAX_PUSH_DOCUMENTS?: string;
-}
+};
 
 const DEFAULT_MAX_PUSH_DOCUMENTS = 50;
 

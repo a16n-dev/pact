@@ -1,18 +1,21 @@
-import { generateId, hashPassword } from '../crypto';
+import { generateId, hashPassword } from '../lib/crypto';
 
-interface UserRow {
+// A server-wide user account. Users are shared across apps; each app sees them through its own
+// device tokens.
+type UserRow = {
   id: string;
   username: string;
   password_hash: string;
   created_at: number;
-}
+};
 
-export interface UserSummary {
+// What the admin panel shows per user.
+export type UserSummary = {
   id: string;
   username: string;
   created_at: number;
   token_count: number;
-}
+};
 
 export async function getUserByUsername(db: D1Database, username: string): Promise<UserRow | null> {
   return db

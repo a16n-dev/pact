@@ -175,6 +175,9 @@ importers:
       nanoid:
         specifier: 'catalog:'
         version: 5.1.11
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.1
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'

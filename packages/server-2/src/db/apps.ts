@@ -1,16 +1,18 @@
-export interface AppRow {
+// A registered app. `seq` is the app-wide counter that stamps every document version written.
+export type AppRow = {
   id: string;
   name: string;
   seq: number;
   created_at: number;
-}
+};
 
-export interface AppSummary extends AppRow {
+// An app with the counts the admin panel lists.
+export type AppSummary = AppRow & {
   token_count: number;
   document_count: number;
   blob_count: number;
   blob_bytes: number;
-}
+};
 
 export async function getApp(db: D1Database, id: string): Promise<AppRow | null> {
   return db.prepare('SELECT id, name, seq, created_at FROM apps WHERE id = ?1').bind(id).first();

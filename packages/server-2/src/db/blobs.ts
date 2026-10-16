@@ -1,46 +1,50 @@
-export interface BlobRow {
+import { LIMITS } from '../lib/limits';
+
+// One stored blob for an app. The bytes live in R2 under `<app_id>/<hash>`; this row records
+// who first uploaded them. `user_id` and `device_id` are NULL when an API token did the upload.
+export type BlobRow = {
   hash: string;
   mime_type: string;
   size: number;
+  user_id: string | null;
+  device_id: string | null;
   created_at: number;
-}
-
-const UPSERT_SQL = `
-  INSERT INTO blobs (app_id, hash, mime_type, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
-  ON CONFLICT (app_id, hash) DO NOTHING`;
-const LIST_HASHES_SQL = 'SELECT hash FROM blobs WHERE app_id = ?1';
-const LIST_PAGE_SQL = `
-  SELECT hash, mime_type, size, created_at FROM blobs
-  WHERE app_id = ?1 AND hash > ?2 ORDER BY hash LIMIT ?3`;
-const STATS_SQL =
-  'SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM blobs WHERE app_id = ?1';
-const WIPE_SQL = 'DELETE FROM blobs WHERE app_id = ?1';
-
-export const BLOB_SQL = [UPSERT_SQL, LIST_HASHES_SQL, LIST_PAGE_SQL, STATS_SQL, WIPE_SQL];
+};
 
 export async function recordBlob(
   db: D1Database,
   appId: string,
-  hash: string,
-  mimeType: string,
-  size: number
+  blob: Omit<BlobRow, 'created_at'>
 ): Promise<void> {
-  await db.prepare(UPSERT_SQL).bind(appId, hash, mimeType, size, Date.now()).run();
+  await db
+    .prepare(
+      `INSERT INTO blobs (app_id, hash, mime_type, size, user_id, device_id, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+       ON CONFLICT (app_id, hash) DO NOTHING`
+    )
+    .bind(appId, blob.hash, blob.mime_type, blob.size, blob.user_id, blob.device_id, Date.now())
+    .run();
 }
 
 export async function listBlobHashes(db: D1Database, appId: string): Promise<string[]> {
-  const { results } = await db.prepare(LIST_HASHES_SQL).bind(appId).all<{ hash: string }>();
+  const { results } = await db
+    .prepare('SELECT hash FROM blobs WHERE app_id = ?1')
+    .bind(appId)
+    .all<{ hash: string }>();
   return results.map((row) => row.hash);
 }
 
 export async function listBlobPage(
   db: D1Database,
   appId: string,
-  after: string,
-  limit: number
+  after: string
 ): Promise<{ blobs: BlobRow[]; hasMore: boolean }> {
+  const limit = LIMITS.blobPageSize;
   const { results } = await db
-    .prepare(LIST_PAGE_SQL)
+    .prepare(
+      `SELECT hash, mime_type, size, user_id, device_id, created_at FROM blobs
+       WHERE app_id = ?1 AND hash > ?2 ORDER BY hash LIMIT ?3`
+    )
     .bind(appId, after, limit + 1)
     .all<BlobRow>();
   const hasMore = results.length > limit;
@@ -51,10 +55,15 @@ export async function blobStats(
   db: D1Database,
   appId: string
 ): Promise<{ count: number; bytes: number }> {
-  const row = await db.prepare(STATS_SQL).bind(appId).first<{ count: number; bytes: number }>();
+  const row = await db
+    .prepare(
+      'SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM blobs WHERE app_id = ?1'
+    )
+    .bind(appId)
+    .first<{ count: number; bytes: number }>();
   return row ?? { count: 0, bytes: 0 };
 }
 
 export function wipeBlobsStatement(db: D1Database, appId: string): D1PreparedStatement {
-  return db.prepare(WIPE_SQL).bind(appId);
+  return db.prepare('DELETE FROM blobs WHERE app_id = ?1').bind(appId);
 }

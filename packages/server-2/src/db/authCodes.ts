@@ -1,7 +1,10 @@
-import { generateAuthCode, sha256Hex } from '../crypto';
-import { LIMITS } from '../limits';
+import { generateAuthCode, sha256Hex } from '../lib/crypto';
+import { LIMITS } from '../lib/limits';
 
-interface AuthCodeRow {
+// A pending OAuth authorization code: the short-lived, single-use grant handed to a device after
+// the user signs in on the login page, which the device then exchanges for a token. Only its
+// hash is stored.
+type AuthCodeRow = {
   app_id: string;
   user_id: string;
   device_id: string;
@@ -9,7 +12,7 @@ interface AuthCodeRow {
   redirect_uri: string;
   code_challenge: string;
   expires_at: number;
-}
+};
 
 export async function createAuthCode(
   db: D1Database,

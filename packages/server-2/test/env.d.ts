@@ -1,4 +1,4 @@
-import type { Env } from '../src/env';
+import type { Env } from '../src/lib/env';
 
 declare module 'cloudflare:test' {
   interface ProvidedEnv extends Env {

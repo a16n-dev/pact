@@ -45,6 +45,7 @@ CREATE TABLE tokens (
 );
 CREATE INDEX idx_tokens_app ON tokens (app_id);
 
+-- One row per (document, writer): each writer's latest version of the document.
 CREATE TABLE documents (
   app_id TEXT NOT NULL,
   collection TEXT NOT NULL,
@@ -62,6 +63,9 @@ CREATE TABLE blobs (
   hash TEXT NOT NULL,
   mime_type TEXT NOT NULL,
   size INTEGER NOT NULL,
+  -- Who first uploaded the blob; NULL for uploads by API tokens.
+  user_id TEXT,
+  device_id TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (app_id, hash)
 );

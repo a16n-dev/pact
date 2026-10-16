@@ -53,7 +53,7 @@ tokens (id PRIMARY KEY, token_hash UNIQUE, token_prefix, app_id, user_id NULL, d
         UNIQUE (app_id, user_id, device_id))
 documents (app_id, collection, id, writer_id, hlc, seq, data, PRIMARY KEY (app_id, collection, id, writer_id))
   UNIQUE (app_id, seq); INDEX (app_id, seq)
-blobs (app_id, hash, mime_type, size, created_at, PRIMARY KEY (app_id, hash))
+blobs (app_id, hash, mime_type, size, user_id NULL, device_id NULL, created_at, PRIMARY KEY (app_id, hash))
 ```
 
 - `app_id` charset: `^[a-z0-9][a-z0-9_-]{0,63}$`.

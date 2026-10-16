@@ -1,7 +1,10 @@
-import { generateId, generateToken, sha256Hex, TOKEN_PREFIX_LENGTH } from '../crypto';
-import { LIMITS } from '../limits';
+import { generateId, generateToken, sha256Hex, TOKEN_PREFIX_LENGTH } from '../lib/crypto';
+import { LIMITS } from '../lib/limits';
 
-interface TokenRow {
+// A bearer token for one app. Device tokens (issued by OAuth sign-in) carry the user and device;
+// API tokens (minted in the admin panel) carry neither. The row ID doubles as the writer ID on
+// documents. Only the token hash and a display prefix are stored.
+type TokenRow = {
   id: string;
   app_id: string;
   user_id: string | null;
@@ -9,11 +12,12 @@ interface TokenRow {
   label: string;
   created_at: number;
   last_seen_at: number;
-}
+};
 
-export interface TokenWithUser extends TokenRow {
+// A token joined with its user's name, as the bearer middleware sees it.
+export type TokenWithUser = TokenRow & {
   username: string | null;
-}
+};
 
 export async function lookupToken(db: D1Database, token: string): Promise<TokenWithUser | null> {
   return db
@@ -91,17 +95,18 @@ export async function deleteToken(db: D1Database, appId: string, tokenId: string
   await db.prepare('DELETE FROM tokens WHERE app_id = ?1 AND id = ?2').bind(appId, tokenId).run();
 }
 
-export interface ApiTokenSummary {
+// What the admin panel shows per token.
+export type ApiTokenSummary = {
   id: string;
   label: string;
   token_prefix: string;
   created_at: number;
   last_seen_at: number;
-}
+};
 
-export interface DeviceTokenSummary extends ApiTokenSummary {
+export type DeviceTokenSummary = ApiTokenSummary & {
   username: string;
-}
+};
 
 export async function listAppTokens(
   db: D1Database,
