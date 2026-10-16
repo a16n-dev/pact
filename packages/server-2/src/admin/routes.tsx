@@ -1,0 +1,308 @@
+import { type Context, Hono } from 'hono';
+import type { Env } from '../lib/env';
+import { requireAdminAccess } from './access';
+import {
+  addRedirectUri,
+  createApp,
+  deleteAppStatements,
+  getApp,
+  listApps,
+  listRedirectUris,
+  removeRedirectUri,
+  renameApp,
+  type AppRow,
+} from '../db/apps';
+import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
+import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
+import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
+import { wipeDocumentsStatement } from '../db/documents';
+import { isAllowedRedirectUriForm } from '../auth/redirectUris';
+import { isValidAppId, isValidLabel, isValidPassword, isValidUsername } from '../lib/validation';
+import { notifyRealtime } from '../realtime/durableObject';
+import { AppsPage } from './AppsPage';
+import { UsersPage } from './UsersPage';
+import { BlobsPage } from './BlobsPage';
+import { TokensPage } from './TokensPage';
+import { SettingsPage, type SettingsDialogId } from './SettingsPage';
+
+type AdminEnv = { Bindings: Env; Variables: { app: AppRow } };
+
+export const adminRoutes = new Hono<AdminEnv>();
+
+adminRoutes.use('*', requireAdminAccess);
+
+function field(form: Record<string, unknown>, name: string): string {
+  const value = form[name];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+const hostOf = (url: string) => new URL(url).host;
+
+adminRoutes.get('/', (c) => c.redirect('/admin/apps'));
+
+adminRoutes.get('/apps', async (c) => {
+  return c.html(<AppsPage host={hostOf(c.req.url)} apps={await listApps(c.env.DB)} />);
+});
+
+adminRoutes.post('/apps', async (c) => {
+  const form = await c.req.parseBody();
+  const name = field(form, 'name');
+  const id = field(form, 'id');
+  const fail = (error: string) =>
+    c.html(
+      <AppsPage host={hostOf(c.req.url)} apps={[]} dialog={{ open: true, name, id, error }} />,
+      400
+    );
+  if (!isValidLabel(name)) return fail('Give the app a name of up to 100 characters.');
+  if (!isValidAppId(id)) {
+    return fail('Use lowercase letters, numbers, hyphens and underscores, up to 64 characters.');
+  }
+  const { created } = await createApp(c.env.DB, id, name);
+  if (!created) return fail('An app with this ID already exists.');
+  return c.redirect(`/admin/apps/${id}/settings`, 303);
+});
+
+adminRoutes.get('/users', async (c) => {
+  return c.html(<UsersPage host={hostOf(c.req.url)} users={await listUsers(c.env.DB)} />);
+});
+
+adminRoutes.post('/users', async (c) => {
+  const form = await c.req.parseBody();
+  const username = field(form, 'username');
+  const password = typeof form.password === 'string' ? form.password : '';
+  const fail = async (error: string) =>
+    c.html(
+      <UsersPage
+        host={hostOf(c.req.url)}
+        users={await listUsers(c.env.DB)}
+        dialog={{ id: 'new-user', username, error }}
+      />,
+      400
+    );
+  if (!isValidUsername(username)) return fail('Usernames are 1 to 64 characters.');
+  if (!isValidPassword(password)) return fail('Passwords need at least 8 characters.');
+  const { created } = await createUser(c.env.DB, username, password);
+  if (!created) return fail('Someone already has this username.');
+  return c.redirect('/admin/users', 303);
+});
+
+adminRoutes.post('/users/:id/password', async (c) => {
+  const userId = c.req.param('id');
+  const form = await c.req.parseBody();
+  const password = typeof form.password === 'string' ? form.password : '';
+  if (!isValidPassword(password)) {
+    return c.html(
+      <UsersPage
+        host={hostOf(c.req.url)}
+        users={await listUsers(c.env.DB)}
+        dialog={{ id: `reset-${userId}`, error: 'Passwords need at least 8 characters.' }}
+      />,
+      400
+    );
+  }
+  await resetPassword(c.env.DB, userId, password);
+  return c.redirect('/admin/users', 303);
+});
+
+adminRoutes.post('/users/:id/delete', async (c) => {
+  const tokenIds = await deleteUser(c.env.DB, c.req.param('id'));
+  c.executionCtx.waitUntil(closeSockets(c.env, tokenIds));
+  return c.redirect('/admin/users', 303);
+});
+
+// Revoked tokens' sockets live in their app's DO; look each token's app up before deleting.
+async function closeSockets(env: Env, tokenIds: string[]): Promise<void> {
+  if (tokenIds.length === 0) return;
+  const { results } = await env.DB.prepare(
+    `SELECT id, app_id FROM tokens WHERE id IN (SELECT value FROM json_each(?1))`
+  )
+    .bind(JSON.stringify(tokenIds))
+    .all<{ id: string; app_id: string }>();
+  await Promise.all(
+    results.map((row) => notifyRealtime(env, row.app_id, (rt) => rt.closeToken(row.id)))
+  );
+}
+
+adminRoutes.use('/apps/:id/*', async (c, next) => {
+  const app = await getApp(c.env.DB, c.req.param('id'));
+  if (!app) return c.text('No app with that ID.', 404);
+  c.set('app', app);
+  await next();
+});
+
+adminRoutes.get('/apps/:id', (c) => c.redirect(`/admin/apps/${c.req.param('id')}/blobs`));
+
+adminRoutes.get('/apps/:id/blobs', async (c) => {
+  const app = c.get('app');
+  const after = c.req.query('after') ?? '';
+  const [{ blobs, hasMore }, stats] = await Promise.all([
+    listBlobPage(c.env.DB, app.id, after),
+    blobStats(c.env.DB, app.id),
+  ]);
+  return c.html(
+    <BlobsPage
+      host={hostOf(c.req.url)}
+      app={app}
+      blobs={blobs}
+      stats={stats}
+      nextCursor={hasMore ? blobs.at(-1)?.hash : undefined}
+    />
+  );
+});
+
+adminRoutes.get('/apps/:id/blobs/:hash', async (c) => {
+  const object = await c.env.BLOBS.get(`${c.get('app').id}/${c.req.param('hash')}`);
+  if (!object) return c.text('No blob with that hash.', 404);
+  return c.body(object.body, 200, {
+    'content-type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+    'content-disposition': `attachment; filename="${c.req.param('hash')}"`,
+  });
+});
+
+async function tokensPage(
+  c: Context<AdminEnv>,
+  extra: {
+    mint?: { open: boolean; label?: string; error?: string };
+    minted?: { label: string; token: string };
+  }
+) {
+  const app = c.get('app');
+  const { api, devices } = await listAppTokens(c.env.DB, app.id);
+  return <TokensPage host={hostOf(c.req.url)} app={app} api={api} devices={devices} {...extra} />;
+}
+
+adminRoutes.get('/apps/:id/tokens', async (c) => c.html(await tokensPage(c, {})));
+
+adminRoutes.post('/apps/:id/tokens', async (c) => {
+  const label = field(await c.req.parseBody(), 'label');
+  if (!isValidLabel(label)) {
+    return c.html(
+      await tokensPage(c, {
+        mint: { open: true, label, error: 'Give the token a label of up to 100 characters.' },
+      }),
+      400
+    );
+  }
+  const { token } = await mintApiToken(c.env.DB, c.get('app').id, label);
+  return c.html(await tokensPage(c, { minted: { label, token } }));
+});
+
+adminRoutes.post('/apps/:id/tokens/:tokenId/revoke', async (c) => {
+  const app = c.get('app');
+  const tokenId = c.req.param('tokenId');
+  await deleteToken(c.env.DB, app.id, tokenId);
+  c.executionCtx.waitUntil(notifyRealtime(c.env, app.id, (rt) => rt.closeToken(tokenId)));
+  return c.redirect(`/admin/apps/${app.id}/tokens`, 303);
+});
+
+async function settingsPage(
+  c: Context<AdminEnv>,
+  dialog?: { id: SettingsDialogId; value?: string; error?: string }
+) {
+  const app = c.get('app');
+  const [redirectUris, stats, documents, tokens] = await Promise.all([
+    listRedirectUris(c.env.DB, app.id),
+    blobStats(c.env.DB, app.id),
+    c.env.DB.prepare('SELECT COUNT(*) AS n FROM documents WHERE app_id = ?1')
+      .bind(app.id)
+      .first<{ n: number }>(),
+    c.env.DB.prepare('SELECT COUNT(*) AS n FROM tokens WHERE app_id = ?1')
+      .bind(app.id)
+      .first<{ n: number }>(),
+  ]);
+  return (
+    <SettingsPage
+      host={hostOf(c.req.url)}
+      app={app}
+      redirectUris={redirectUris}
+      counts={{
+        documents: documents?.n ?? 0,
+        blobs: stats.count,
+        blobBytes: stats.bytes,
+        tokens: tokens?.n ?? 0,
+      }}
+      dialog={dialog}
+    />
+  );
+}
+
+adminRoutes.get('/apps/:id/settings', async (c) => c.html(await settingsPage(c)));
+
+adminRoutes.post('/apps/:id/rename', async (c) => {
+  const app = c.get('app');
+  const name = field(await c.req.parseBody(), 'name');
+  if (!isValidLabel(name)) {
+    return c.html(
+      await settingsPage(c, {
+        id: 'rename',
+        value: name,
+        error: 'Give the app a name of up to 100 characters.',
+      }),
+      400
+    );
+  }
+  await renameApp(c.env.DB, app.id, name);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/redirect-uris', async (c) => {
+  const app = c.get('app');
+  const uri = field(await c.req.parseBody(), 'uri');
+  if (!uri || uri.length > 2048 || !isAllowedRedirectUriForm(uri)) {
+    return c.html(
+      await settingsPage(c, {
+        id: 'add-uri',
+        value: uri,
+        error:
+          'Use an https address, a localhost address, or a custom scheme like com.example.app:/callback.',
+      }),
+      400
+    );
+  }
+  await addRedirectUri(c.env.DB, app.id, uri);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/redirect-uris/remove', async (c) => {
+  const app = c.get('app');
+  await removeRedirectUri(c.env.DB, app.id, field(await c.req.parseBody(), 'uri'));
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+async function deleteAppBlobs(bucket: R2Bucket, appId: string): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix: `${appId}/`, cursor });
+    if (page.objects.length > 0) await bucket.delete(page.objects.map((object) => object.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
+adminRoutes.post('/apps/:id/wipe', async (c) => {
+  const app = c.get('app');
+  await c.env.DB.batch([
+    wipeDocumentsStatement(c.env.DB, app.id),
+    wipeBlobsStatement(c.env.DB, app.id),
+  ]);
+  await deleteAppBlobs(c.env.BLOBS, app.id);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/delete', async (c) => {
+  const app = c.get('app');
+  if (field(await c.req.parseBody(), 'confirm') !== app.id) {
+    return c.html(
+      await settingsPage(c, { id: 'delete', error: `Type ${app.id} exactly to delete the app.` }),
+      400
+    );
+  }
+  const { results } = await c.env.DB.prepare('SELECT id FROM tokens WHERE app_id = ?1')
+    .bind(app.id)
+    .all<{ id: string }>();
+  await c.env.DB.batch(deleteAppStatements(c.env.DB, app.id));
+  await deleteAppBlobs(c.env.BLOBS, app.id);
+  c.executionCtx.waitUntil(
+    Promise.all(results.map((row) => notifyRealtime(c.env, app.id, (rt) => rt.closeToken(row.id))))
+  );
+  return c.redirect('/admin/apps', 303);
+});
