@@ -7,6 +7,7 @@ import { oauthRoutes } from './oauth/routes';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
 import { realtimeRoutes } from './realtime/routes';
+import { adminRoutes } from './admin/routes';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -28,6 +29,7 @@ app.route('/oauth', oauthRoutes);
 app.route('/auth', authRoutes);
 app.route('/sync', syncRoutes);
 app.route('/realtime', realtimeRoutes);
+app.route('/admin', adminRoutes);
 
 app.notFound((c) => errorResponse(c, new ApiError(404, 'not_found', 'No such route')));
 

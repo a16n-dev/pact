@@ -1,0 +1,268 @@
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { env, fetchMock, SELF } from 'cloudflare:test';
+import { api, doc, ORIGIN, push, seedApp } from './helpers';
+import { base64url, sha256Hex } from '../src/lib/crypto';
+
+const TEAM = 'test.cloudflareaccess.com';
+const AUD = 'aud-123';
+let privateKey: CryptoKey;
+
+beforeAll(async () => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+  const pair = await crypto.subtle.generateKey(
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256',
+    },
+    true,
+    ['sign', 'verify']
+  );
+  privateKey = pair.privateKey;
+  const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  fetchMock
+    .get(`https://${TEAM}`)
+    .intercept({ path: '/cdn-cgi/access/certs' })
+    .reply(200, { keys: [{ ...jwk, kid: 'k1' }] })
+    .persist();
+});
+
+async function jwt(claims: Record<string, unknown> = {}): Promise<string> {
+  const encode = (obj: unknown) => base64url(new TextEncoder().encode(JSON.stringify(obj)));
+  const head = encode({ alg: 'RS256', kid: 'k1' });
+  const body = encode({
+    aud: [AUD],
+    iss: `https://${TEAM}`,
+    exp: Math.floor(Date.now() / 1000) + 600,
+    ...claims,
+  });
+  const sig = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    privateKey,
+    new TextEncoder().encode(`${head}.${body}`)
+  );
+  return `${head}.${body}.${base64url(new Uint8Array(sig))}`;
+}
+
+async function admin(
+  path: string,
+  init: RequestInit & { form?: Record<string, string>; noOrigin?: boolean } = {}
+) {
+  const headers = new Headers(init.headers);
+  headers.set('cf-access-jwt-assertion', await jwt());
+  let body = init.body;
+  if (init.form) {
+    headers.set('content-type', 'application/x-www-form-urlencoded');
+    body = new URLSearchParams(init.form);
+    if (!init.noOrigin && !headers.has('origin')) headers.set('origin', ORIGIN);
+  }
+  return SELF.fetch(`${ORIGIN}/admin${path}`, { ...init, headers, body, redirect: 'manual' });
+}
+
+describe('Cloudflare Access', () => {
+  it('refuses requests without a valid Access token', async () => {
+    expect((await SELF.fetch(`${ORIGIN}/admin/apps`)).status).toBe(403);
+    const wrongAud = await SELF.fetch(`${ORIGIN}/admin/apps`, {
+      headers: { 'cf-access-jwt-assertion': await jwt({ aud: ['other'] }) },
+    });
+    expect(wrongAud.status).toBe(403);
+    const expired = await SELF.fetch(`${ORIGIN}/admin/apps`, {
+      headers: {
+        'cf-access-jwt-assertion': await jwt({ exp: Math.floor(Date.now() / 1000) - 10 }),
+      },
+    });
+    expect(expired.status).toBe(403);
+    expect((await admin('/apps')).status).toBe(200);
+  });
+
+  it('refuses state changes that do not come from the panel origin', async () => {
+    const res = await admin('/apps', {
+      method: 'POST',
+      form: { name: 'X', id: 'x' },
+      noOrigin: true,
+    });
+    expect(res.status).toBe(403);
+    const crossSite = await admin('/apps', {
+      method: 'POST',
+      form: { name: 'X', id: 'x' },
+      headers: { origin: 'https://evil.example' },
+    });
+    expect(crossSite.status).toBe(403);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM apps').first<{ n: number }>()).toEqual({
+      n: 0,
+    });
+  });
+});
+
+describe('apps and users', () => {
+  it('creates an app and shows it with its counts', async () => {
+    const created = await admin('/apps', {
+      method: 'POST',
+      form: { name: 'Recipe Box', id: 'recipe-box' },
+    });
+    expect(created.status).toBe(303);
+    expect(created.headers.get('location')).toBe('/admin/apps/recipe-box/settings');
+
+    const dup = await admin('/apps', { method: 'POST', form: { name: 'Again', id: 'recipe-box' } });
+    expect(dup.status).toBe(400);
+    expect(await dup.text()).toContain('An app with this ID already exists.');
+    const badId = await admin('/apps', { method: 'POST', form: { name: 'Bad', id: 'Not Valid' } });
+    expect(badId.status).toBe(400);
+
+    const html = await (await admin('/apps')).text();
+    expect(html).toContain('Recipe Box');
+    expect(html).toContain('recipe-box');
+  });
+
+  it('creates users, resets passwords and deletes them with their tokens', async () => {
+    const short = await admin('/users', {
+      method: 'POST',
+      form: { username: 'jo', password: 'short' },
+    });
+    expect(short.status).toBe(400);
+    expect(await short.text()).toContain('at least 8 characters');
+    expect(
+      (
+        await admin('/users', {
+          method: 'POST',
+          form: { username: 'jo', password: 'hunter2hunter2' },
+        })
+      ).status
+    ).toBe(303);
+    expect(
+      (
+        await admin('/users', {
+          method: 'POST',
+          form: { username: 'jo', password: 'hunter2hunter2' },
+        })
+      ).status
+    ).toBe(400);
+
+    const user = await env.DB.prepare('SELECT id, password_hash FROM users').first<{
+      id: string;
+      password_hash: string;
+    }>();
+    expect(
+      (
+        await admin(`/users/${user!.id}/password`, {
+          method: 'POST',
+          form: { password: 'newpassword1' },
+        })
+      ).status
+    ).toBe(303);
+    const after = await env.DB.prepare('SELECT password_hash FROM users').first<{
+      password_hash: string;
+    }>();
+    expect(after!.password_hash).not.toBe(user!.password_hash);
+
+    expect((await admin(`/users/${user!.id}/delete`, { method: 'POST', form: {} })).status).toBe(
+      303
+    );
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first()).toEqual({ n: 0 });
+  });
+});
+
+describe('inside an app', () => {
+  let a: Awaited<ReturnType<typeof seedApp>>;
+  beforeEach(async () => {
+    a = await seedApp('app-a');
+  });
+
+  it('mints an API token once and lists it by prefix', async () => {
+    const res = await admin('/apps/app-a/tokens', {
+      method: 'POST',
+      form: { label: 'MCP server' },
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const token = html.match(/value="(pact_[A-Za-z0-9_-]+)"/)![1]!;
+    expect((await api('/auth/check', token)).status).toBe(200);
+    const list = await (await admin('/apps/app-a/tokens')).text();
+    expect(list).toContain('MCP server');
+    expect(list).toContain(`${token.slice(0, 9)}…`);
+    expect(list).not.toContain(token);
+  });
+
+  it('revokes tokens', async () => {
+    expect(
+      (await admin(`/apps/app-a/tokens/${a.tokenId}/revoke`, { method: 'POST', form: {} })).status
+    ).toBe(303);
+    expect((await api('/auth/check', a.token)).status).toBe(401);
+  });
+
+  it('manages redirect URIs and renames', async () => {
+    const bad = await admin('/apps/app-a/redirect-uris', {
+      method: 'POST',
+      form: { uri: 'ftp://x' },
+    });
+    expect(bad.status).toBe(400);
+    expect(
+      (
+        await admin('/apps/app-a/redirect-uris', {
+          method: 'POST',
+          form: { uri: 'com.example.app:/cb' },
+        })
+      ).status
+    ).toBe(303);
+    expect(
+      (await admin('/apps/app-a/rename', { method: 'POST', form: { name: 'Renamed' } })).status
+    ).toBe(303);
+    const html = await (await admin('/apps/app-a/settings')).text();
+    expect(html).toContain('com.example.app:/cb');
+    expect(html).toContain('Renamed');
+    expect(
+      (
+        await admin('/apps/app-a/redirect-uris/remove', {
+          method: 'POST',
+          form: { uri: 'com.example.app:/cb' },
+        })
+      ).status
+    ).toBe(303);
+    expect(await (await admin('/apps/app-a/settings')).text()).not.toContain('com.example.app:/cb');
+  });
+
+  it('lists and downloads blobs', async () => {
+    const bytes = new TextEncoder().encode('blob');
+    const hash = await sha256Hex(bytes.buffer as ArrayBuffer);
+    await api(`/sync/blobs/${hash}`, a.token, {
+      method: 'PUT',
+      body: bytes,
+      headers: { 'content-type': 'image/png' },
+    });
+    const html = await (await admin('/apps/app-a/blobs')).text();
+    expect(html).toContain('image/png');
+    expect(html).toContain('1 blobs · 4 B');
+    const download = await admin(`/apps/app-a/blobs/${hash}`);
+    expect(download.status).toBe(200);
+    expect(await download.text()).toBe('blob');
+  });
+
+  it('wipes data but keeps tokens, and bumps nothing backwards', async () => {
+    const { seq } = (await (await push(a.token, [doc('n1', 'x')])).json()) as { seq: number };
+    const bytes = new TextEncoder().encode('blob');
+    const hash = await sha256Hex(bytes.buffer as ArrayBuffer);
+    await api(`/sync/blobs/${hash}`, a.token, { method: 'PUT', body: bytes });
+    expect((await admin('/apps/app-a/wipe', { method: 'POST', form: {} })).status).toBe(303);
+    const pull = (await (await api('/sync/pull?cursor=0', a.token)).json()) as {
+      documents: unknown[];
+    };
+    expect(pull.documents).toEqual([]);
+    expect((await env.BLOBS.list({ prefix: 'app-a/' })).objects).toEqual([]);
+    const { seq: next } = (await (await push(a.token, [doc('n1', 'y')])).json()) as { seq: number };
+    expect(next).toBeGreaterThan(seq);
+  });
+
+  it('deletes the app only when its ID is typed', async () => {
+    await push(a.token, [doc('n1', 'x')]);
+    const wrong = await admin('/apps/app-a/delete', { method: 'POST', form: { confirm: 'nope' } });
+    expect(wrong.status).toBe(400);
+    expect((await api('/auth/check', a.token)).status).toBe(200);
+    const res = await admin('/apps/app-a/delete', { method: 'POST', form: { confirm: 'app-a' } });
+    expect(res.status).toBe(303);
+    expect((await api('/auth/check', a.token)).status).toBe(401);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM documents').first()).toEqual({ n: 0 });
+    expect((await admin('/apps/app-a/settings')).status).toBe(404);
+  });
+});
