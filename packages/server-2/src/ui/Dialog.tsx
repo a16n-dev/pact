@@ -1,6 +1,6 @@
 import type { PropsWithChildren } from 'hono/jsx';
 import { X } from 'lucide';
-import { Icon } from '../ui/Icon';
+import { Icon } from './Icon';
 
 export type DialogProps = PropsWithChildren<{
   id: string;

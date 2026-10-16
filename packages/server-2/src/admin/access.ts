@@ -1,8 +1,8 @@
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../lib/env';
-import { verifyAccessJwt } from '../auth/access';
+import { verifyAccessJwt } from './cloudflareAccess';
 
-export const requireAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+export const requireAdminAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const ok = await verifyAccessJwt(
     c.req.header('cf-access-jwt-assertion'),
     c.env.ACCESS_TEAM_DOMAIN,

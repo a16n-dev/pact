@@ -1,6 +1,6 @@
 import { type Context, Hono } from 'hono';
 import type { Env } from '../lib/env';
-import { requireAccess } from './access';
+import { requireAdminAccess } from './access';
 import {
   addRedirectUri,
   createApp,
@@ -29,7 +29,7 @@ type AdminEnv = { Bindings: Env; Variables: { app: AppRow } };
 
 export const adminRoutes = new Hono<AdminEnv>();
 
-adminRoutes.use('*', requireAccess);
+adminRoutes.use('*', requireAdminAccess);
 
 function field(form: Record<string, unknown>, name: string): string {
   const value = form[name];

@@ -1,4 +1,4 @@
-import { AppShell } from './AppShell';
+import { AppShell } from './ui/AppShell';
 import type { AppRow } from '../db/apps';
 import type { BlobRow } from '../db/blobs';
 import { formatBytes, formatCount, formatDate, shortHash } from './format';

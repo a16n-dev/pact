@@ -1,5 +1,5 @@
 import type { PropsWithChildren } from 'hono/jsx';
-import { Document } from '../ui/Document';
+import { Document } from '../../ui/Document';
 
 type AdminSection = 'apps' | 'users';
 

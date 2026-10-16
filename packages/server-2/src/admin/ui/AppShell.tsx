@@ -1,6 +1,6 @@
 import type { PropsWithChildren } from 'hono/jsx';
 import { AdminShell } from './AdminShell';
-import type { AppRow } from '../db/apps';
+import type { AppRow } from '../../db/apps';
 
 type AppTab = 'blobs' | 'tokens' | 'settings';
 

@@ -1,6 +1,6 @@
-import { AppShell } from './AppShell';
-import { Dialog } from './Dialog';
-import { Field } from './Field';
+import { AppShell } from './ui/AppShell';
+import { Dialog } from '../ui/Dialog';
+import { Field } from '../ui/Field';
 import type { AppRow } from '../db/apps';
 import type { ApiTokenSummary, DeviceTokenSummary } from '../db/tokens';
 import { formatDate, formatRelative } from './format';

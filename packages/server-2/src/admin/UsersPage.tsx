@@ -1,6 +1,6 @@
-import { AdminShell } from './AdminShell';
-import { Dialog } from './Dialog';
-import { Field } from './Field';
+import { AdminShell } from './ui/AdminShell';
+import { Dialog } from '../ui/Dialog';
+import { Field } from '../ui/Field';
 import type { UserSummary } from '../db/users';
 import { formatCount, formatDate } from './format';
 
