@@ -1,5 +1,6 @@
 import { Document } from '../ui/Document';
-import { WarningIcon } from '../ui/icons';
+import { TriangleAlert } from 'lucide';
+import { Icon } from '../ui/Icon';
 
 export type AuthErrorPageProps = {
   title: string;
@@ -15,7 +16,7 @@ export function AuthErrorPage({ title, message, appId, redirectUri }: AuthErrorP
         pact
       </span>
       <div class='icon-badge icon-badge-warning' style='margin-bottom: 20px'>
-        <WarningIcon size={24} />
+        <Icon icon={TriangleAlert} size={24} color='var(--hz-yellow)' />
       </div>
       <h1 style='margin: 0 0 12px; font-size: 26px'>{title}</h1>
       <p class='muted' style='margin-bottom: 28px'>

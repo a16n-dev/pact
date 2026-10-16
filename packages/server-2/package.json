@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "hono": "catalog:",
+    "lucide": "catalog:",
     "nanoid": "catalog:",
     "zod": "catalog:"
   },

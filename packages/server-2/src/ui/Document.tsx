@@ -1,5 +1,5 @@
 import type { PropsWithChildren } from 'hono/jsx';
-import { STYLESHEET } from './styles';
+import styles from './styles.css';
 import { SCRIPT } from './script';
 
 type DocumentProps = PropsWithChildren<{ title: string; withScript?: boolean; bodyClass?: string }>;
@@ -17,7 +17,7 @@ export function Document({ title, withScript, bodyClass, children }: DocumentPro
           rel='stylesheet'
           href='https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Fira+Sans:wght@400;500;600&display=swap'
         />
-        <style dangerouslySetInnerHTML={{ __html: STYLESHEET }} />
+        <style dangerouslySetInnerHTML={{ __html: styles }} />
       </head>
       <body class={bodyClass}>
         {children}

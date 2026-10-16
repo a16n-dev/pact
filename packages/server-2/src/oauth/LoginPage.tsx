@@ -1,5 +1,6 @@
 import { Document } from '../ui/Document';
-import { AlertCircleIcon } from '../ui/icons';
+import { CircleAlert } from 'lucide';
+import { Icon } from '../ui/Icon';
 
 export type LoginPageProps = {
   host: string;
@@ -21,7 +22,7 @@ export function LoginPage({ host, turnstileSiteKey, username, error }: LoginPage
       <div style='height: 40px' />
       {error ? (
         <div role='alert' class='alert alert-error' style='margin-bottom: 20px'>
-          <AlertCircleIcon />
+          <Icon icon={CircleAlert} color='var(--hz-red)' />
           <span>{error}</span>
         </div>
       ) : null}

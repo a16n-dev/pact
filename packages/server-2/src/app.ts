@@ -3,7 +3,7 @@ import type { Env } from './lib/env';
 import { maxPushDocuments } from './lib/env';
 import { ApiError, errorResponse } from './lib/errors';
 import { preflight } from './cors';
-import { oauthRoutes } from './auth/oauth';
+import { oauthRoutes } from './oauth/routes';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
 import { realtimeRoutes } from './realtime/routes';

@@ -1,3 +1,5 @@
+// Cloudflare Turnstile's server-side validation endpoint:
+// https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
 const VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
 export async function verifyTurnstile(
