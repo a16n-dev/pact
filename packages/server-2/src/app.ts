@@ -3,6 +3,7 @@ import type { Env } from './lib/env';
 import { maxPushDocuments } from './lib/env';
 import { ApiError, errorResponse } from './lib/errors';
 import { preflight } from './cors';
+import { oauthRoutes } from './auth/oauth';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
 import { realtimeRoutes } from './realtime/routes';
@@ -19,9 +20,11 @@ app.get('/.well-known/pact', (c) => {
   });
 });
 
+app.use('/oauth/token', preflight('sync'));
 app.use('/auth/*', preflight('sync'));
 app.use('/sync/*', preflight('sync'));
 
+app.route('/oauth', oauthRoutes);
 app.route('/auth', authRoutes);
 app.route('/sync', syncRoutes);
 app.route('/realtime', realtimeRoutes);
