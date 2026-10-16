@@ -1,4 +1,4 @@
-import type { RealtimeDO } from '../realtime';
+import type { RealtimeDO } from '../realtime/durableObject';
 
 export type Env = {
   DB: D1Database;

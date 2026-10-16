@@ -19,7 +19,7 @@ A Cloudflare-deployable server that provides opaque document and blob storage fo
 - **Schema:** D1 migrations in `migrations/`, applied with `wrangler d1 migrations apply`.
 - **OAuth:** implement the sign-in flow by hand. Don't use `@cloudflare/workers-oauth-provider` (it's in the catalog): it keeps tokens in KV in its own format, which doesn't fit the `tokens` table, stable writer IDs or the admin device list.
 - **Tests:** Vitest with `@cloudflare/vitest-pool-workers`, so tests run against real D1, R2 and Durable Objects. Keep v1's tripwire test asserting that every data SQL statement filters on `app_id`.
-- **Carry over from v1** (`packages/server/src`): token generation and SHA-256 hashing, PBKDF2 password hashing and constant-time compare (`auth/auth.ts`, `apps.ts`), the `app_id` charset check, blob hash verification (`sync/blobs.ts`), and the hibernating `RealtimeDO` (`realtime.ts`).
+- **Carry over from v1** (`packages/server/src`): token generation and SHA-256 hashing, PBKDF2 password hashing and constant-time compare (`auth/auth.ts`, `apps.ts`), the `app_id` charset check, blob hash verification (`sync/blobs.ts`), and the hibernating `RealtimeDO` (`realtime/durableObject.ts`).
 - **Code rules** (from [react-conventions.a16n.dev](https://react-conventions.a16n.dev); pact's version is `CLAUDE.md` on branch `claude/react-conventions-comments-0b1904`):
   - Comments only for unusual code, non-obvious invariants or security properties, external sources, or `TODO(<person>)`. Never narrate code or changes. No JSDoc tags or section banners.
   - Type-only imports use `type` specifiers.

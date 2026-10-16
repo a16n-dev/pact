@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Env } from './lib/env';
+import type { Env } from '../lib/env';
 
 export const TOKEN_ID_HEADER = 'x-pact-token-id';
 
