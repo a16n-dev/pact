@@ -1,4 +1,4 @@
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 export class LocalStorageAdapter implements DatabaseAdapter {
   private readonly prefix: string;

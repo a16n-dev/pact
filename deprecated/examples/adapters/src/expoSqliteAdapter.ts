@@ -1,4 +1,4 @@
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 // Declared structurally so this file typechecks without `expo-sqlite` installed.
 // In an app, delete this and pass the `SQLiteDatabase` from `openDatabaseAsync`.

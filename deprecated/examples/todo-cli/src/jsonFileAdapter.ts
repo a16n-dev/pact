@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 type FileShape = Record<string, Record<string, BaseDocument>>;
 

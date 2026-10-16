@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 type Widget = BaseDocument & { name: string };
 

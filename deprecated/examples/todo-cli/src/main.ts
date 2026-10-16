@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { Store } from '@a16n/pact-client';
+import { Store } from '@a16n/pact-client-1';
 import { JsonFileAdapter } from './jsonFileAdapter'; // copied from examples/adapters
 import { domain } from './domain';
 
