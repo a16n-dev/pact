@@ -11,7 +11,7 @@
     "format": "eslint --fix . && prettier --write ."
   },
   "dependencies": {
-    "@a16n/pact-client": "workspace:*"
+    "@a16n/pact-client-1": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24",

@@ -1,4 +1,4 @@
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 interface DocumentRow {
   collection: string;
