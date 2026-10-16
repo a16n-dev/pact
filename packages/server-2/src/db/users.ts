@@ -2,7 +2,7 @@ import { generateId, hashPassword } from '../lib/crypto';
 
 // A server-wide user account. Users are shared across apps; each app sees them through its own
 // device tokens.
-type UserRow = {
+export type UserRow = {
   id: string;
   username: string;
   password_hash: string;
