@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { type AuthedEnv, requireAuth } from './bearer';
 import { deleteToken } from '../db/tokens';
-import { notifyRealtime } from '../realtime';
+import { notifyRealtime } from '../realtime/durableObject';
 
 export const authRoutes = new Hono<AuthedEnv>();
 
