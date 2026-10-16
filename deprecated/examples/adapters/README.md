@@ -36,7 +36,7 @@ describeAdapterContract('MyAdapter', async () => ({ adapter: new MyAdapter(...) 
 
 ## Blobs
 
-Binary attachments go through a separate, equally small `BlobAdapter` (content-addressed: keys are SHA-256 hashes). The same recipes apply conceptually — a table/store/directory keyed by hash. See the [Blobs guide](../../packages/docs/guide/blobs.md).
+Binary attachments go through a separate, equally small `BlobAdapter` (content-addressed: keys are SHA-256 hashes). The same recipes apply conceptually — a table/store/directory keyed by hash. See the [Blobs guide](../../docs/guide/blobs.md).
 
 ## Running the tests here
 

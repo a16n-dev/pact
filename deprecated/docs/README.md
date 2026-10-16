@@ -13,7 +13,7 @@ pnpm --filter @a16n/pact-docs preview  # preview the production build
 ## Structure
 
 ```
-packages/docs/
+deprecated/docs/
 ├─ .vitepress/config.ts   # site config: nav, sidebar, theme
 ├─ index.md               # home page
 ├─ guide/                 # concepts + client-side guide

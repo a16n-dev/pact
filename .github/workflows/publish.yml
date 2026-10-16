@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'packages/client/**'
+      - 'deprecated/client/**'
       - 'pnpm-workspace.yaml'
       - '.github/workflows/publish.yml'
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
 
       - name: Read package version
         id: version
-        run: echo "version=$(node -p "require('./packages/client/package.json').version")" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('./deprecated/client/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Check if already published
         id: check

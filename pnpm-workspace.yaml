@@ -1,6 +1,8 @@
 packages:
   - "packages/*"
-  - "examples/*"
+  # Pact 1 packages, kept building until Pact 2 replaces them.
+  - "deprecated/*"
+  - "deprecated/examples/*"
 
 nodeLinker: hoisted
 injectWorkspacePackages: true

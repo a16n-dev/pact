@@ -11,7 +11,7 @@ A comment is justified only when it is one of:
 - **Unusual code** — the code is written in an unexpected way, and the comment says why the conventional approach was not used.
 - **Non-obvious behaviour** — a side effect, invariant, ordering constraint, or security property a future maintainer must know and cannot read from the code.
 - **External source** — the code is taken or adapted from elsewhere; cite it.
-- **API boundary** — a `/** */` doc comment on a symbol exported from the public client API (`packages/client/src/index.ts`) when it adds information beyond the name and type signature. Do not restate the signature or describe the implementation.
+- **API boundary** — a `/** */` doc comment on a symbol exported from the public client API (`deprecated/client/src/index.ts`) when it adds information beyond the name and type signature. Do not restate the signature or describe the implementation.
 - **Temporary stub** — a `TODO(<person>)` (never an agent) saying what remains.
 
 Formatting:
