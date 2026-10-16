@@ -100,7 +100,7 @@ importers:
 
   deprecated/examples/adapters:
     dependencies:
-      '@a16n/pact-client':
+      '@a16n/pact-client-1':
         specifier: workspace:*
         version: link:../../client
     devDependencies:
@@ -119,7 +119,7 @@ importers:
 
   deprecated/examples/todo-cli:
     dependencies:
-      '@a16n/pact-client':
+      '@a16n/pact-client-1':
         specifier: workspace:*
         version: link:../../client
       zod:

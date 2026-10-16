@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client';
+import type { BaseDocument, DatabaseAdapter } from '@a16n/pact-client-1';
 
 const TABLE = 'pact_documents';
 
