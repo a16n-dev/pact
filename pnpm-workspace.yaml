@@ -17,6 +17,7 @@ catalog:
   '@cloudflare/workers-oauth-provider': ^0.7.0
   '@cloudflare/vitest-pool-workers': ^0.12
   '@cloudflare/workers-types': ^4
+  '@types/node': ^22
   dayjs: ^1.11.13
   eslint: ^9
   eslint-config-prettier: ^10

@@ -234,6 +234,10 @@ JSON endpoints return `{ "error": "<message>", "code": "<code>" }`.
 
 ## Deploy
 
+`pnpm setup --domain sync.example.com` (in `packages/server-2`) runs the steps below. It creates the D1 database and R2 bucket, fills in `wrangler.jsonc`, applies migrations, deploys, and stores the Turnstile secret. Access is set up in the dashboard: the script points you there and asks for the team domain and AUD tag. With `CLOUDFLARE_API_TOKEN` set (Account Settings: Read, Turnstile: Edit) it creates the Turnstile widget too; otherwise it asks for its keys. Re-running skips what already exists.
+
+The manual steps, for reference:
+
 1. **Fork the template** and install dependencies.
 2. **Create the D1 database and R2 bucket:** `wrangler d1 create pact` and `wrangler r2 bucket create pact-blobs`, then put the database ID in `wrangler.jsonc`.
 3. **Bindings in `wrangler.jsonc`:**
