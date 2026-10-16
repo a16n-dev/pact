@@ -1,0 +1,27 @@
+{
+  "name": "pact-server-2",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply DB --remote",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tc": "tsc --noEmit",
+    "check": "eslint . && prettier --check .",
+    "format": "eslint --fix . && prettier --write ."
+  },
+  "dependencies": {
+    "hono": "catalog:",
+    "nanoid": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
