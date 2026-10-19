@@ -173,7 +173,7 @@ describe('inside an app', () => {
   });
 
   it('mints an API token once and lists it by prefix', async () => {
-    const res = await admin('/apps/app-a/tokens', {
+    const res = await admin('/apps/app-a/access/tokens', {
       method: 'POST',
       form: { label: 'MCP server' },
     });
@@ -181,7 +181,7 @@ describe('inside an app', () => {
     const html = await res.text();
     const token = html.match(/value="(pact_[A-Za-z0-9_-]+)"/)![1]!;
     expect((await api('/auth/check', token)).status).toBe(200);
-    const list = await (await admin('/apps/app-a/tokens')).text();
+    const list = await (await admin('/apps/app-a/access')).text();
     expect(list).toContain('MCP server');
     expect(list).toContain(`${token.slice(0, 9)}…`);
     expect(list).not.toContain(token);
@@ -189,7 +189,8 @@ describe('inside an app', () => {
 
   it('revokes tokens', async () => {
     expect(
-      (await admin(`/apps/app-a/tokens/${a.tokenId}/revoke`, { method: 'POST', form: {} })).status
+      (await admin(`/apps/app-a/access/tokens/${a.tokenId}/revoke`, { method: 'POST', form: {} }))
+        .status
     ).toBe(303);
     expect((await api('/auth/check', a.token)).status).toBe(401);
   });

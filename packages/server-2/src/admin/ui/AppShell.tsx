@@ -2,7 +2,7 @@ import type { Child, PropsWithChildren } from 'hono/jsx';
 import { AdminShell } from './AdminShell';
 import type { AppRow } from '../../db/apps';
 
-export type AppTab = 'documents' | 'blobs' | 'tokens' | 'access' | 'settings';
+export type AppTab = 'documents' | 'blobs' | 'access' | 'settings';
 
 type AppShellProps = PropsWithChildren<{
   app: AppRow;
@@ -14,7 +14,6 @@ type AppShellProps = PropsWithChildren<{
 const TABS: { id: AppTab; label: string }[] = [
   { id: 'documents', label: 'Documents' },
   { id: 'blobs', label: 'Blobs' },
-  { id: 'tokens', label: 'Tokens' },
   { id: 'access', label: 'Access' },
   { id: 'settings', label: 'Settings' },
 ];

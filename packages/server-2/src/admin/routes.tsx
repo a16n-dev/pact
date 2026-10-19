@@ -25,7 +25,6 @@ import { AppsPage } from './AppsPage';
 import { UsersPage } from './UsersPage';
 import { BlobsPage } from './BlobsPage';
 import { DocumentsPage } from './DocumentsPage';
-import { TokensPage } from './TokensPage';
 import { AccessPage } from './AccessPage';
 import { SettingsPage, type SettingsDialogId } from './SettingsPage';
 
@@ -157,46 +156,23 @@ adminRoutes.get('/apps/:id/blobs/:hash', async (c) => {
   });
 });
 
-async function tokensPage(
+async function accessPage(
   c: Context<AdminEnv>,
   extra: {
+    addUser?: { error: string };
     mint?: { open: boolean; label?: string; error?: string };
     minted?: { label: string; token: string };
-  }
+  } = {}
 ) {
   const app = c.get('app');
-  const { api, devices } = await listAppTokens(c.env.DB, app.id);
-  return <TokensPage app={app} api={api} devices={devices} {...extra} />;
-}
-
-adminRoutes.get('/apps/:id/tokens', async (c) => c.html(await tokensPage(c, {})));
-
-adminRoutes.post('/apps/:id/tokens', async (c) => {
-  const label = field(await c.req.parseBody(), 'label');
-  if (!isValidLabel(label)) {
-    return c.html(
-      await tokensPage(c, {
-        mint: { open: true, label, error: 'Give the token a label of up to 100 characters.' },
-      }),
-      400
-    );
-  }
-  const { token } = await mintApiToken(c.env.DB, c.get('app').id, label);
-  return c.html(await tokensPage(c, { minted: { label, token } }));
-});
-
-adminRoutes.post('/apps/:id/tokens/:tokenId/revoke', async (c) => {
-  const app = c.get('app');
-  const tokenId = c.req.param('tokenId');
-  await deleteToken(c.env.DB, app.id, tokenId);
-  c.executionCtx.waitUntil(notifyRealtime(c.env, app.id, (rt) => rt.closeToken(tokenId)));
-  return c.redirect(`/admin/apps/${app.id}/tokens`, 303);
-});
-
-async function accessPage(c: Context<AdminEnv>, dialog?: { error: string }) {
-  const app = c.get('app');
-  const [allowed, users] = await Promise.all([listAppUsers(c.env.DB, app.id), listUsers(c.env.DB)]);
-  return <AccessPage app={app} allowed={allowed} users={users} dialog={dialog} />;
+  const [allowed, users, { api, devices }] = await Promise.all([
+    listAppUsers(c.env.DB, app.id),
+    listUsers(c.env.DB),
+    listAppTokens(c.env.DB, app.id),
+  ]);
+  return (
+    <AccessPage app={app} allowed={allowed} users={users} api={api} devices={devices} {...extra} />
+  );
 }
 
 adminRoutes.get('/apps/:id/access', async (c) => c.html(await accessPage(c)));
@@ -212,7 +188,10 @@ adminRoutes.post('/apps/:id/access/users', async (c) => {
   const userId = field(await c.req.parseBody(), 'user_id');
   const users = await listUsers(c.env.DB);
   if (!users.some((user) => user.id === userId)) {
-    return c.html(await accessPage(c, { error: 'Choose a user on this server.' }), 400);
+    return c.html(
+      await accessPage(c, { addUser: { error: 'Choose a user on this server.' } }),
+      400
+    );
   }
   await addAppUser(c.env.DB, app.id, userId);
   return c.redirect(`/admin/apps/${app.id}/access`, 303);
@@ -224,6 +203,28 @@ adminRoutes.post('/apps/:id/access/users/remove', async (c) => {
   c.executionCtx.waitUntil(
     Promise.all(tokenIds.map((id) => notifyRealtime(c.env, app.id, (rt) => rt.closeToken(id))))
   );
+  return c.redirect(`/admin/apps/${app.id}/access`, 303);
+});
+
+adminRoutes.post('/apps/:id/access/tokens', async (c) => {
+  const label = field(await c.req.parseBody(), 'label');
+  if (!isValidLabel(label)) {
+    return c.html(
+      await accessPage(c, {
+        mint: { open: true, label, error: 'Give the token a label of up to 100 characters.' },
+      }),
+      400
+    );
+  }
+  const { token } = await mintApiToken(c.env.DB, c.get('app').id, label);
+  return c.html(await accessPage(c, { minted: { label, token } }));
+});
+
+adminRoutes.post('/apps/:id/access/tokens/:tokenId/revoke', async (c) => {
+  const app = c.get('app');
+  const tokenId = c.req.param('tokenId');
+  await deleteToken(c.env.DB, app.id, tokenId);
+  c.executionCtx.waitUntil(notifyRealtime(c.env, app.id, (rt) => rt.closeToken(tokenId)));
   return c.redirect(`/admin/apps/${app.id}/access`, 303);
 });
 
