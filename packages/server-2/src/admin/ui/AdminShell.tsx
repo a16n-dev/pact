@@ -22,7 +22,7 @@ const APP_TABS: { id: AppTab; label: string; icon: IconNode }[] = [
 
 export function AdminShell({ title, section, app, narrow, children }: AdminShellProps) {
   return (
-    <Document title={`${title} · pact admin`} withScript bodyClass='frame'>
+    <Document title={`${title} · Pact admin`} withScript bodyClass='frame'>
       <header class='topbar'>
         <a href='/admin' class='wordmark'>
           pact
