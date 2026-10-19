@@ -57,4 +57,7 @@
   ],
 
   "ai": { "binding": "AI" },
+
+  // Stylesheets are imported as strings and inlined into server-rendered pages.
+  "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
 }
