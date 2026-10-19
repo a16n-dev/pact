@@ -21,7 +21,6 @@ import {
   greatestClock,
   isSealedRecord,
   mergeRecords,
-  type AdapterRecord,
   type StoredEntry,
   type StoredRecord,
 } from '../record';
@@ -42,12 +41,15 @@ import type {
   StoreBackup,
   StoreBlobs,
   StoreEncryption,
+  StoreSync,
 } from './namespaces';
+import { SyncEngine, type ApplyResult, type HeldEntry } from '../sync/engine';
 import {
   CONFIG,
   HELD,
   MAX_DOCUMENT_BYTES,
   OUTBOX,
+  TEXT_PUSH_DEBOUNCE_MS,
   configRecord,
   outboxKey,
   type EncryptionConfig,
@@ -68,10 +70,6 @@ import type { TextDocument } from '../text/engine';
 const KEYCHECK_SENTINEL = 'pact-keycheck';
 const KEYCHECK_AAD = '_config/encryption';
 
-type HeldEntry = { collection: string; docId: string; data: AdapterRecord };
-
-type ApplyResult = 'applied' | 'unchanged' | 'held';
-
 const encoder = new TextEncoder();
 
 export class Store<Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[]> {
@@ -87,11 +85,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   // Writes and merges to one document run one at a time, in arrival order.
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly changeHandlers = new Set<ChangeHandler>();
+  private readonly signedOutHandlers = new Set<() => void>();
+  private readonly syncEngine: SyncEngine;
   private readonly blobAdapter: BlobAdapter | null;
   // Without an extractor blob GC cannot tell referenced from orphan and must refuse to run.
   private readonly blobHashesOf: (collection: string, doc: BaseDocument) => Iterable<string>;
   private readonly hasBlobRefs: boolean;
 
+  readonly sync: StoreSync;
   readonly backup: StoreBackup;
   readonly blobs: StoreBlobs;
   readonly encryption: StoreEncryption;
@@ -123,6 +124,38 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.clock = new HybridClock(node);
     this.hasBlobRefs = options.blobHashes !== undefined;
     this.blobHashesOf = options.blobHashes ?? (() => []);
+    this.syncEngine = new SyncEngine({
+      adapter: this.adapter,
+      codec: this.codec,
+      clock: this.clock,
+      node,
+      syncedDefinitions: defs.filter((d) => d.synced),
+      definitionByKey: (key) => this.definitionsByKey.get(key),
+      definitionByName: (name) => this.definitions.get(name),
+      applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
+      heldEntries: () => this.heldEntries(),
+      clearLocalData: () => this.clearLocalData(),
+      emit: (collection) => this.emit(collection),
+      emitSignedOut: () => {
+        for (const handler of this.signedOutHandlers) handler();
+      },
+    });
+
+    this.sync = {
+      beginSignIn: (start) => this.syncEngine.beginSignIn(start),
+      completeSignIn: (input) => this.syncEngine.completeSignIn(input),
+      signOut: () => this.syncEngine.signOut(),
+      session: () => this.syncEngine.session(),
+      registration: () => this.syncEngine.registration(),
+      credentials: () => this.syncEngine.credentials(),
+      pull: () => this.syncEngine.pull(),
+      pullDocument: (collection, id) => this.syncEngine.pullDocument(collection, id),
+      drain: () => this.syncEngine.drain(),
+      push: () => this.syncEngine.push(),
+      pending: () => this.syncEngine.pending(),
+      resync: () => this.syncEngine.resync(),
+      lastSyncedAt: () => this.syncEngine.lastSyncedAt(),
+    };
 
     this.backup = {
       create: (opts) => this.createBackup(opts),
@@ -131,9 +164,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const blobSync = this.blobAdapter
       ? new BlobSync({
           adapter: this.blobAdapter,
-          credentials: () => this.syncCredentials(),
+          credentials: () => this.syncEngine.credentials(),
           notifyChanged: () => this.notifyBlobsChanged(),
-          onUnauthorized: () => this.onUnauthorized(),
+          onUnauthorized: () => void this.syncEngine.handleSignedOut(),
         })
       : null;
     const requireBlobs = (): BlobSync => {
@@ -167,6 +200,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await store.verifyEncryptionKey();
     await store.retryHeld();
     await store.buildIndexes();
+    await store.syncEngine.restore();
+    // Network work never blocks startup; `signedOut` fires if the token is gone.
+    void store.syncEngine.start().catch(() => {});
     return store;
   }
 
@@ -179,13 +215,24 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return node;
   }
 
-  on(_event: 'change', handler: ChangeHandler): () => void {
-    this.changeHandlers.add(handler);
-    return () => this.changeHandlers.delete(handler);
+  on(event: 'change', handler: ChangeHandler): () => void;
+  on(event: 'signedOut', handler: () => void): () => void;
+  on(event: 'change' | 'signedOut', handler: ChangeHandler | (() => void)): () => void {
+    if (event === 'signedOut') {
+      const h = handler as () => void;
+      this.signedOutHandlers.add(h);
+      return () => this.signedOutHandlers.delete(h);
+    }
+    this.changeHandlers.add(handler as ChangeHandler);
+    return () => this.changeHandlers.delete(handler as ChangeHandler);
   }
 
-  /** Releases live text documents. Document reads and writes keep working afterwards. */
+  /**
+   * Closes realtime and releases live text documents. Document reads,
+   * writes and explicit sync calls keep working afterwards.
+   */
   dispose(): void {
+    this.syncEngine.stop();
     this.textCache.clear();
   }
 
@@ -197,12 +244,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private notifyBlobsChanged(): void {
     this.emit('_blobs');
   }
-
-  private async syncCredentials(): Promise<{ url: string; token: string } | null> {
-    return null;
-  }
-
-  private onUnauthorized(): void {}
 
   private async getConfig<T extends Record<string, unknown>>(id: string): Promise<T | null> {
     const raw = await this.adapter.get(CONFIG, id);
@@ -378,15 +419,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { plain, text };
   }
 
-  private async queueOutbox(def: CollectionDefinition, id: string, clock: string): Promise<void> {
+  private async queueOutbox(
+    def: CollectionDefinition,
+    id: string,
+    clock: string,
+    debounceMs?: number
+  ): Promise<void> {
     if (!def.synced) return;
+    const key = outboxKey(def.key, id);
     const entry: OutboxEntry = { collection: def.name, docId: id, order: clock };
-    await this.adapter.put(
-      OUTBOX,
-      outboxKey(def.key, id),
-      configRecord(outboxKey(def.key, id), entry)
-    );
+    await this.adapter.put(OUTBOX, key, configRecord(key, entry));
     this.emit(OUTBOX);
+    this.syncEngine.requestDrain(
+      debounceMs === undefined ? undefined : { key, delayMs: debounceMs }
+    );
   }
 
   private async insert(
@@ -475,7 +521,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const record: StoredRecord = { ...existing, text: doc.encode() };
       this.stamp(def, record, fields, clock);
       await this.putRecord(def, id, record);
-      await this.queueOutbox(def, id, clock);
+      await this.queueOutbox(def, id, clock, TEXT_PUSH_DEBOUNCE_MS);
       this.emit(def.name);
       // Nothing can be reported to the editor; the next write surfaces a persistent fault.
     }).catch(() => {});
@@ -598,6 +644,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     id: string,
     opts?: { includeDeleted?: boolean }
   ): Promise<AnyDocument | null> {
+    this.syncEngine.triggerReadPull();
     const record = await this.loadRecord(def, id);
     const doc = record ? this.readDoc(def, id, record) : null;
     if (!doc) return null;
@@ -605,6 +652,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   private async getMany(def: CollectionDefinition, ids: readonly string[]): Promise<AnyDocument[]> {
+    this.syncEngine.triggerReadPull();
     const entries = await this.adapter.getMany(def.key, ids);
     const byId = new Map<string, AnyDocument>();
     for (const entry of entries) {
@@ -618,6 +666,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     def: CollectionDefinition,
     opts?: { includeDeleted?: boolean }
   ): Promise<AnyDocument[]> {
+    this.syncEngine.triggerReadPull();
     const docs: AnyDocument[] = [];
     for (const entry of await this.adapter.getAll(def.key)) {
       const doc = await this.docFromEntry(def, entry);
@@ -653,7 +702,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * record. Held versions wait in `_held` until a build can migrate and
    * validate them; the caller has already checked the clock for drift.
    */
-  protected applyIncoming(
+  private applyIncoming(
     def: CollectionDefinition,
     id: string,
     incoming: StoredRecord
@@ -724,6 +773,27 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     if (!raw || isSealedRecord(raw)) return null;
     const { id: _id, createdAt: _createdAt, ...value } = raw.fields;
     return value as T;
+  }
+
+  private async heldEntries(): Promise<HeldEntry[]> {
+    const rows = await this.adapter.getAll(HELD);
+    return rows.flatMap(({ record }) =>
+      isSealedRecord(record) ? [] : [record.fields as unknown as HeldEntry]
+    );
+  }
+
+  // Straight through the adapter so collections this build no longer defines
+  // are cleared too; the pull that follows repopulates indexes through putRecord.
+  private async clearLocalData(): Promise<void> {
+    for (const collection of await this.adapter.listCollections()) {
+      if (collection === CONFIG) continue;
+      for (const { id } of await this.adapter.getAll(collection)) {
+        await this.adapter.delete(collection, id);
+      }
+    }
+    this.indexes?.clear();
+    this.textCache.clear();
+    for (const name of this.definitions.keys()) this.emit(name);
   }
 
   private async retryHeld(): Promise<void> {
