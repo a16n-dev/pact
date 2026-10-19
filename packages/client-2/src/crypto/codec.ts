@@ -20,8 +20,9 @@ export type RecordCodec = {
   fromWire(collection: string, id: string, data: string): Promise<StoredRecord | null>;
 };
 
-// Binding the envelope to collection and id means a ciphertext moved onto a
-// different document fails to open.
+// Additional authenticated data for the cipher. Binding the envelope to the
+// collection and id means a ciphertext moved onto a different document fails
+// to open.
 function aadFor(collection: string, id: string): string {
   return `${collection}/${id}`;
 }

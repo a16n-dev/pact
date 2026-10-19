@@ -47,20 +47,12 @@
   },
   "dependencies": {
     "nanoid": "catalog:",
+    "yjs": "catalog:",
     "zod": "catalog:"
-  },
-  "peerDependencies": {
-    "yjs": "^13"
-  },
-  "peerDependenciesMeta": {
-    "yjs": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "tsup": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "yjs": "catalog:"
+    "vitest": "catalog:"
   }
 }
