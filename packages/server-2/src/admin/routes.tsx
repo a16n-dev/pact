@@ -16,13 +16,14 @@ import {
 import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
-import { wipeDocumentsStatement } from '../db/documents';
+import { documentStats, wipeDocumentsStatement } from '../db/documents';
 import { isAllowedRedirectUriForm, isLoopbackUri } from '../auth/redirectUris';
 import { isValidAppId, isValidLabel, isValidPassword, isValidUsername } from '../lib/validation';
 import { notifyRealtime } from '../realtime/durableObject';
 import { AppsPage } from './AppsPage';
 import { UsersPage } from './UsersPage';
 import { BlobsPage } from './BlobsPage';
+import { DocumentsPage } from './DocumentsPage';
 import { TokensPage } from './TokensPage';
 import { SettingsPage, type SettingsDialogId } from './SettingsPage';
 
@@ -121,7 +122,12 @@ adminRoutes.use('/apps/:id/*', async (c, next) => {
   await next();
 });
 
-adminRoutes.get('/apps/:id', (c) => c.redirect(`/admin/apps/${c.req.param('id')}/blobs`));
+adminRoutes.get('/apps/:id', (c) => c.redirect(`/admin/apps/${c.req.param('id')}/documents`));
+
+adminRoutes.get('/apps/:id/documents', async (c) => {
+  const app = c.get('app');
+  return c.html(<DocumentsPage app={app} stats={await documentStats(c.env.DB, app.id)} />);
+});
 
 adminRoutes.get('/apps/:id/blobs', async (c) => {
   const app = c.get('app');

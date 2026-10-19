@@ -112,3 +112,51 @@ export async function pullDocument(
 export function wipeDocumentsStatement(db: D1Database, appId: string): D1PreparedStatement {
   return db.prepare('DELETE FROM documents WHERE app_id = ?1').bind(appId);
 }
+
+export type CollectionStats = {
+  collection: string;
+  document_count: number;
+  version_count: number;
+  data_bytes: number;
+};
+
+export type DocumentStats = {
+  document_count: number;
+  version_count: number;
+  writer_count: number;
+  data_bytes: number;
+  collections: CollectionStats[];
+};
+
+export async function documentStats(db: D1Database, appId: string): Promise<DocumentStats> {
+  const [totals, collections] = await Promise.all([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS version_count,
+           COUNT(DISTINCT collection || '/' || id) AS document_count,
+           COUNT(DISTINCT writer_id) AS writer_count,
+           COALESCE(SUM(LENGTH(CAST(data AS BLOB))), 0) AS data_bytes
+         FROM documents WHERE app_id = ?1`
+      )
+      .bind(appId)
+      .first<Omit<DocumentStats, 'collections'>>(),
+    db
+      .prepare(
+        `SELECT collection,
+           COUNT(DISTINCT id) AS document_count,
+           COUNT(*) AS version_count,
+           COALESCE(SUM(LENGTH(CAST(data AS BLOB))), 0) AS data_bytes
+         FROM documents WHERE app_id = ?1
+         GROUP BY collection ORDER BY document_count DESC, collection`
+      )
+      .bind(appId)
+      .all<CollectionStats>(),
+  ]);
+  return {
+    document_count: totals?.document_count ?? 0,
+    version_count: totals?.version_count ?? 0,
+    writer_count: totals?.writer_count ?? 0,
+    data_bytes: totals?.data_bytes ?? 0,
+    collections: collections.results,
+  };
+}
