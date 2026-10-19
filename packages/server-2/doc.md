@@ -2,6 +2,8 @@
 
 A Cloudflare-deployable server that provides opaque document and blob storage for a set of registered apps, plus authentication against a server-wide registry of users. Intended for personal use and small groups of family and friends.
 
+The client-facing contract is in [`api.md`](./api.md); this document is the server design and build spec.
+
 ## Out of scope
 
 - Access control: all of an app's data is shared by everyone signed in to it, and any user can sign in to any app.
@@ -233,6 +235,10 @@ JSON endpoints return `{ "error": "<message>", "code": "<code>" }`.
 `/oauth/token` uses the standard OAuth error format instead: `{ "error": "invalid_request" | "invalid_grant" | "unsupported_grant_type" }`, with status 400. The login and authorize pages render errors as HTML.
 
 ## Deploy
+
+`pnpm setup --domain sync.example.com` (in `packages/server-2`) runs the steps below. It creates the D1 database and R2 bucket, fills in `wrangler.jsonc`, applies migrations, deploys, and stores the Turnstile secret. Access is set up in the dashboard: the script points you there and asks for the team domain and AUD tag. With `CLOUDFLARE_API_TOKEN` set (Account Settings: Read, Turnstile: Edit) it creates the Turnstile widget too; otherwise it asks for its keys. Re-running skips what already exists.
+
+The manual steps, for reference:
 
 1. **Fork the template** and install dependencies.
 2. **Create the D1 database and R2 bucket:** `wrangler d1 create pact` and `wrangler r2 bucket create pact-blobs`, then put the database ID in `wrangler.jsonc`.
