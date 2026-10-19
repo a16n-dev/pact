@@ -1,0 +1,60 @@
+{
+  // The Worker's name doubles as its workers.dev subdomain; rename it for your deployment.
+  "name": "pact-server",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+
+  // "routes": [{ "pattern": "sync.example.com", "custom_domain": true }],
+  // "workers_dev": false,
+
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "TURNSTILE_SITE_KEY": "",
+    "MAX_PUSH_DOCUMENTS": "50",
+  },
+
+  // `wrangler d1 create pact`, then paste the id it prints. Keep the binding names as they are:
+  // they're the server's Env contract.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pact",
+      "database_id": "<REPLACE_ME>",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // `wrangler r2 bucket create pact-blobs`
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "pact-blobs",
+    },
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REALTIME",
+        "class_name": "RealtimeDO",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RealtimeDO"],
+    },
+  ],
+
+  "ratelimits": [
+    {
+      "name": "LOGIN_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 },
+    },
+  ],
+
+  "ai": { "binding": "AI" },
+}

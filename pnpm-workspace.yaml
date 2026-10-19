@@ -11,8 +11,11 @@ injectWorkspacePackages: true
 allowBuilds:
   esbuild: true
   workerd: true
+  sharp: false
 
 catalog:
+  '@cloudflare/workers-oauth-provider': ^0.7.0
+  '@cloudflare/vitest-pool-workers': ^0.12
   '@cloudflare/workers-types': ^4
   dayjs: ^1.11.13
   eslint: ^9
@@ -25,4 +28,5 @@ catalog:
   typescript: ~6.0.3
   typescript-eslint: ^8
   vitest: ^3
+  wrangler: ^4
   zod: 4.4.1
