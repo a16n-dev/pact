@@ -79,7 +79,9 @@ describe('sign-in', () => {
   it('refuses an incomplete link without redirecting', async () => {
     const res = await SELF.fetch(`${ORIGIN}/oauth/authorize?app_id=app-a`);
     expect(res.status).toBe(400);
-    expect(await res.text()).toContain('This sign-in link is incomplete');
+    const html = await res.text();
+    expect(html).toContain('This sign-in link is incomplete');
+    expect(html).toContain('Back to the app');
   });
 
   it('completes the code exchange and rotates the token on the same row', async () => {
