@@ -1,5 +1,5 @@
 {
-  "name": "@a16n/pact-client",
+  "name": "@a16n/pact-client-1",
   "version": "1.3.0",
   "description": "Local-first document store with optional sync, realtime, blobs, migrations, and end-to-end encryption — the client half of Pact.",
   "license": "MIT",

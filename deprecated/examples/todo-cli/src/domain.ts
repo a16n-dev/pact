@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineCollection, type StoreDomain } from '@a16n/pact-client';
+import { defineCollection, type StoreDomain } from '@a16n/pact-client-1';
 
 const todos = defineCollection({
   name: 'todos',
