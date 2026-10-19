@@ -2,6 +2,10 @@ import { Hono } from 'hono';
 import type { Env } from './lib/env';
 import { maxPushDocuments } from './lib/env';
 import { ApiError, errorResponse } from './lib/errors';
+import { preflight } from './cors';
+import { authRoutes } from './auth/routes';
+import { syncRoutes } from './sync/routes';
+import { realtimeRoutes } from './realtime/routes';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -14,6 +18,13 @@ app.get('/.well-known/pact', (c) => {
     max_push_documents: maxPushDocuments(c.env),
   });
 });
+
+app.use('/auth/*', preflight('sync'));
+app.use('/sync/*', preflight('sync'));
+
+app.route('/auth', authRoutes);
+app.route('/sync', syncRoutes);
+app.route('/realtime', realtimeRoutes);
 
 app.notFound((c) => errorResponse(c, new ApiError(404, 'not_found', 'No such route')));
 
