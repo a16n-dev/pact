@@ -18,20 +18,22 @@ export type TokensPageProps = {
 export function TokensPage({ app, api, devices, mint, minted }: TokensPageProps) {
   const base = `/admin/apps/${app.id}/tokens`;
   return (
-    <AppShell app={app} tab='tokens'>
-      <div class='page-head'>
-        <h1>Tokens</h1>
-      </div>
+    <AppShell
+      app={app}
+      tab='tokens'
+      actions={
+        <button type='button' class='btn btn-primary' data-opens='mint'>
+          <Icon icon={Plus} size={16} />
+          Mint API token
+        </button>
+      }
+    >
       <section class='card' aria-labelledby='h-api'>
         <div class='card-head'>
           <div>
             <h2 id='h-api'>API tokens</h2>
             <p>For scripts and integrations that need access without a user account.</p>
           </div>
-          <button type='button' class='btn btn-primary' data-opens='mint'>
-            <Icon icon={Plus} size={16} />
-            Mint API token
-          </button>
         </div>
         <div class='table-scroll'>
           <table>

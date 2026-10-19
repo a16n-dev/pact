@@ -13,13 +13,15 @@ export type BlobsPageProps = {
 export function BlobsPage({ app, blobs, stats, nextCursor }: BlobsPageProps) {
   return (
     <AppShell app={app} tab='blobs'>
-      <div class='page-head'>
-        <h1>Blobs</h1>
-        <span class='muted'>
-          {formatCount(stats.count)} blobs · {formatBytes(stats.bytes)}
-        </span>
-      </div>
       <div class='card'>
+        <div class='card-head'>
+          <div>
+            <h2>Blobs</h2>
+            <p>
+              {formatCount(stats.count)} blobs · {formatBytes(stats.bytes)}
+            </p>
+          </div>
+        </div>
         <div class='table-scroll'>
           <table>
             <thead>

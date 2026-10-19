@@ -15,46 +15,37 @@ export function AppsPage({ apps, dialog }: AppsPageProps) {
   return (
     <AdminShell title='Apps' section='apps'>
       <div class='page-head'>
-        <h1>Apps</h1>
+        <div>
+          <h1>Apps</h1>
+          <p>Each app gets its own documents, blobs and tokens on this server.</p>
+        </div>
         <button type='button' class='btn btn-primary' data-opens='new-app'>
           <Icon icon={Plus} size={16} />
           New app
         </button>
       </div>
-      <div class='card table-scroll'>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>App ID</th>
-              <th class='right'>Tokens</th>
-              <th class='right'>Documents</th>
-              <th class='right'>Blobs</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {apps.length === 0 ? (
-              <tr class='empty'>
-                <td colspan={6}>Create an app to give it a place to sync.</td>
-              </tr>
-            ) : null}
-            {apps.map((app) => (
-              <tr>
-                <td class='strong'>
-                  <a href={`/admin/apps/${app.id}/blobs`} class='plain'>
-                    {app.name}
-                  </a>
-                </td>
-                <td class='mono muted'>{app.id}</td>
-                <td class='right'>{formatCount(app.token_count)}</td>
-                <td class='right'>{formatCount(app.document_count)}</td>
-                <td class='right'>{formatBytes(app.blob_bytes)}</td>
-                <td class='muted'>{formatDate(app.created_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {apps.length === 0 ? (
+        <div class='card empty-card'>Create an app to give it a place to sync.</div>
+      ) : null}
+      <div class='app-list'>
+        {apps.map((app) => (
+          <article class='card app-card'>
+            <div class='app-card-main'>
+              <div>
+                <a href={`/admin/apps/${app.id}/blobs`} class='app-name'>
+                  {app.name}
+                </a>
+                <div class='mono muted small'>{app.id}</div>
+              </div>
+              <span class='muted small'>Created {formatDate(app.created_at)}</span>
+            </div>
+            <div class='app-card-foot'>
+              <span>{formatCount(app.token_count)} tokens</span>
+              <span>{formatCount(app.document_count)} documents</span>
+              <span>{app.blob_bytes === 0 ? 'No blobs' : formatBytes(app.blob_bytes)}</span>
+            </div>
+          </article>
+        ))}
       </div>
       <Dialog
         id='new-app'
