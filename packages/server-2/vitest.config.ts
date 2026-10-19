@@ -18,7 +18,7 @@ export default defineWorkersConfig(async () => {
           singleWorker: true,
           wrangler: { configPath: './wrangler.jsonc' },
           miniflare: {
-            modulesRules: [{ type: 'Text', include: ['**/*.css'] }],
+            modulesRules: [{ type: 'Text', include: ['**/*.css', '**/*.svg'] }],
             bindings: {
               TEST_MIGRATIONS: migrations,
               TURNSTILE_SECRET: 'test-secret',

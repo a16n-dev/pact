@@ -15,10 +15,10 @@ export function AuthErrorPage({ title, message, appId, redirectUri }: AuthErrorP
       <span class='wordmark' style='margin-bottom: 64px'>
         pact
       </span>
-      <div class='icon-badge icon-badge-warning' style='margin-bottom: 20px'>
-        <Icon icon={TriangleAlert} size={24} color='var(--hz-yellow)' />
+      <div class='icon-badge' style='margin-bottom: 20px'>
+        <Icon icon={TriangleAlert} size={22} />
       </div>
-      <h1 style='margin: 0 0 12px; font-size: 26px'>{title}</h1>
+      <h1 style='margin-bottom: 12px'>{title}</h1>
       <p class='muted' style='margin-bottom: 28px'>
         {message}
       </p>

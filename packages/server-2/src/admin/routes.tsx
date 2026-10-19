@@ -36,12 +36,10 @@ function field(form: Record<string, unknown>, name: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-const hostOf = (url: string) => new URL(url).host;
-
 adminRoutes.get('/', (c) => c.redirect('/admin/apps'));
 
 adminRoutes.get('/apps', async (c) => {
-  return c.html(<AppsPage host={hostOf(c.req.url)} apps={await listApps(c.env.DB)} />);
+  return c.html(<AppsPage apps={await listApps(c.env.DB)} />);
 });
 
 adminRoutes.post('/apps', async (c) => {
@@ -49,10 +47,7 @@ adminRoutes.post('/apps', async (c) => {
   const name = field(form, 'name');
   const id = field(form, 'id');
   const fail = (error: string) =>
-    c.html(
-      <AppsPage host={hostOf(c.req.url)} apps={[]} dialog={{ open: true, name, id, error }} />,
-      400
-    );
+    c.html(<AppsPage apps={[]} dialog={{ open: true, name, id, error }} />, 400);
   if (!isValidLabel(name)) return fail('Give the app a name of up to 100 characters.');
   if (!isValidAppId(id)) {
     return fail('Use lowercase letters, numbers, hyphens and underscores, up to 64 characters.');
@@ -63,7 +58,7 @@ adminRoutes.post('/apps', async (c) => {
 });
 
 adminRoutes.get('/users', async (c) => {
-  return c.html(<UsersPage host={hostOf(c.req.url)} users={await listUsers(c.env.DB)} />);
+  return c.html(<UsersPage users={await listUsers(c.env.DB)} />);
 });
 
 adminRoutes.post('/users', async (c) => {
@@ -72,11 +67,7 @@ adminRoutes.post('/users', async (c) => {
   const password = typeof form.password === 'string' ? form.password : '';
   const fail = async (error: string) =>
     c.html(
-      <UsersPage
-        host={hostOf(c.req.url)}
-        users={await listUsers(c.env.DB)}
-        dialog={{ id: 'new-user', username, error }}
-      />,
+      <UsersPage users={await listUsers(c.env.DB)} dialog={{ id: 'new-user', username, error }} />,
       400
     );
   if (!isValidUsername(username)) return fail('Usernames are 1 to 64 characters.');
@@ -93,7 +84,6 @@ adminRoutes.post('/users/:id/password', async (c) => {
   if (!isValidPassword(password)) {
     return c.html(
       <UsersPage
-        host={hostOf(c.req.url)}
         users={await listUsers(c.env.DB)}
         dialog={{ id: `reset-${userId}`, error: 'Passwords need at least 8 characters.' }}
       />,
@@ -141,7 +131,6 @@ adminRoutes.get('/apps/:id/blobs', async (c) => {
   ]);
   return c.html(
     <BlobsPage
-      host={hostOf(c.req.url)}
       app={app}
       blobs={blobs}
       stats={stats}
@@ -168,7 +157,7 @@ async function tokensPage(
 ) {
   const app = c.get('app');
   const { api, devices } = await listAppTokens(c.env.DB, app.id);
-  return <TokensPage host={hostOf(c.req.url)} app={app} api={api} devices={devices} {...extra} />;
+  return <TokensPage app={app} api={api} devices={devices} {...extra} />;
 }
 
 adminRoutes.get('/apps/:id/tokens', async (c) => c.html(await tokensPage(c, {})));
@@ -212,7 +201,6 @@ async function settingsPage(
   ]);
   return (
     <SettingsPage
-      host={hostOf(c.req.url)}
       app={app}
       redirectUris={redirectUris}
       counts={{
