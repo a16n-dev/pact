@@ -11,7 +11,7 @@ export type AuthErrorPageProps = {
 
 export function AuthErrorPage({ title, message, appId, redirectUri }: AuthErrorPageProps) {
   return (
-    <Document title={`${title} · pact`} bodyClass='login'>
+    <Document title={`${title} · pact`} bodyClass='login' withScript>
       <span class='wordmark' style='margin-bottom: 64px'>
         pact
       </span>
@@ -38,7 +38,10 @@ export function AuthErrorPage({ title, message, appId, redirectUri }: AuthErrorP
           ) : null}
         </dl>
       ) : null}
-      <p class='footer'>You can close this window.</p>
+      {/* A popup closes; a same-tab flow steps back to the app that opened it */}
+      <button type='button' class='btn btn-primary btn-block' style='margin-top: 28px' data-back>
+        Back to the app
+      </button>
     </Document>
   );
 }

@@ -4,6 +4,8 @@ document.addEventListener('click', (e) => {
   if (opener) document.getElementById(opener.dataset.opens).showModal();
   const closer = e.target.closest('[data-closes]');
   if (closer) closer.closest('dialog').close();
+  const back = e.target.closest('[data-back]');
+  if (back) window.opener ? window.close() : history.back();
   const copy = e.target.closest('[data-copy]');
   if (copy) {
     navigator.clipboard.writeText(document.getElementById(copy.dataset.copy).value)
