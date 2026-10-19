@@ -2,7 +2,7 @@
 
 Pact is an intentionally simple client/server architecture for building local-first apps designed to be used by a small group of individuals and agents collaborating in real-time in a high trust environment.
 
-> Pact 2 is being built in `packages/server-2` (spec in its `doc.md`). The Pact 1 client, server, docs and examples described below live in `deprecated/` until it replaces them.
+> Pact 2 is being built in `packages/server-2` (spec in its `doc.md`, API in `api.md`) and `packages/client-2` (scope in its `scope.md`, usage in its `README.md`). The Pact 1 client, server, docs and examples described below live in `deprecated/` until it replaces them.
 
 ## Features
 
@@ -18,14 +18,14 @@ Pact deliberately trades generality for simplicity. It assumes:
 
 - **A small, high-trust group.** One server per group (e.g. a household). Authentication is a single shared server password that's traded for per-client tokens — there's no per-document access control. Everyone who can connect can read and write everything.
 - **Last-write-wins is good enough.** Conflicts resolve by comparing `updatedAt` timestamps. There are no CRDTs, vector clocks, or merge UIs. For a small group editing mostly-disjoint data this is rarely felt; for high-contention concurrent edits to the same field it isn't the right tool.
-- **Schemas are required, and owned by the consumer.** Every collection is declared with a Zod schema (plus id prefix and migrations) via `defineCollection`, and the set of definitions handed to the Store *is* the set of collections that exist — undefined collections are rejected. Beyond validating writes against your schemas, Pact never inspects document bodies except to read the base fields.
+- **Schemas are required, and owned by the consumer.** Every collection is declared with a Zod schema (plus id prefix and migrations) via `defineCollection`, and the set of definitions handed to the Store _is_ the set of collections that exist — undefined collections are rejected. Beyond validating writes against your schemas, Pact never inspects document bodies except to read the base fields.
 
 ## The two packages
 
-| Package | Runs where | Purpose |
-|---------|-----------|---------|
-| `@a16n/pact-client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, sync, realtime, migrations. Pluggable storage via adapters. |
-| `@a16n/pact-server` | Cloudflare Workers | The sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
+| Package             | Runs where            | Purpose                                                                                                                            |
+| ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `@a16n/pact-client` | App / CLI / in-Worker | The `Store` — local CRUD, optimistic writes, sync, realtime, migrations. Pluggable storage via adapters.                           |
+| `@a16n/pact-server` | Cloudflare Workers    | The sync HTTP layer as a composable Hono app, backed by D1 (documents) and R2 (blobs), with a Durable Object for realtime fan-out. |
 
 The two packages are independent — the server has no dependency on the client. Anything that wants to act on the data (an app, a CLI, an agent's MCP server) builds on `@a16n/pact-client` and connects as a sync client.
 
@@ -53,12 +53,12 @@ Every document extends a `BaseDocument`. The consumer adds its own fields on top
 ```ts
 interface BaseDocument {
   id: string;
-  schemaVersion: number;       // per-collection shape version; migrators upgrade old docs on read
-  createdAt: string;           // ISO 8601
-  updatedAt: string;           // ISO 8601 — the last-write-wins clock
-  createdBy: string;           // author id
-  updatedBy: string;           // author id
-  deletedAt: string | null;    // tombstone: null = live, ISO string = soft-deleted at this time
+  schemaVersion: number; // per-collection shape version; migrators upgrade old docs on read
+  createdAt: string; // ISO 8601
+  updatedAt: string; // ISO 8601 — the last-write-wins clock
+  createdBy: string; // author id
+  updatedBy: string; // author id
+  deletedAt: string | null; // tombstone: null = live, ISO string = soft-deleted at this time
   deletedBy: string | null;
 }
 ```
@@ -91,9 +91,9 @@ The `Store` is the single entry point. You construct it with a storage adapter, 
 import { Store, InMemoryAdapter } from '@a16n/pact-client';
 
 const store = await Store.create(
-  new InMemoryAdapter(),  // or a SQLite-backed adapter
-  null,                   // optional BlobAdapter
-  domain,                 // StoreDomain: your collection definitions + hooks
+  new InMemoryAdapter(), // or a SQLite-backed adapter
+  null, // optional BlobAdapter
+  domain, // StoreDomain: your collection definitions + hooks
   { realtime: true }
 );
 
@@ -121,10 +121,10 @@ This means writes never block on the network and always succeed offline.
 
 ```ts
 interface StoreDomain {
-  collections: readonly CollectionDefinition[];  // required — the schemas ARE the collections
-  onSetAuthor?: (store: Store, authorId: string) => Promise<void>;  // materialize the author as a doc
-  blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>;  // blob refs for GC / pull
-  encryption?: { cipher: DocCipher };            // optional E2E encryption
+  collections: readonly CollectionDefinition[]; // required — the schemas ARE the collections
+  onSetAuthor?: (store: Store, authorId: string) => Promise<void>; // materialize the author as a doc
+  blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>; // blob refs for GC / pull
+  encryption?: { cipher: DocCipher }; // optional E2E encryption
 }
 ```
 
@@ -145,8 +145,8 @@ await recipes.delete(id);
 await recipes.createMany(items);
 await recipes.updateMany(updates);
 await recipes.deleteMany(ids);
-await recipes.pull();              // pull this collection's changes from the server
-await recipes.pullDocument(id);    // pull a single doc by id
+await recipes.pull(); // pull this collection's changes from the server
+await recipes.pullDocument(id); // pull a single doc by id
 ```
 
 ## Authors & identity
@@ -159,28 +159,28 @@ An **author id** records who created/updated a document. Two ids are reserved:
 Identity flow:
 
 ```ts
-await store.setAuthor('us-alice');           // records current author in _config/author
+await store.setAuthor('us-alice'); // records current author in _config/author
 await store.reassignLocalAuthor('us-alice'); // rewrites _local docs to a real id so they can sync
 ```
 
-`onSetAuthor` lets a domain that models authors *as documents* (e.g. a `users/` collection) materialize that entity the first time an identity is set.
+`onSetAuthor` lets a domain that models authors _as documents_ (e.g. a `users/` collection) materialize that entity the first time an identity is set.
 
 ## Sync
 
 Sync is HTTP, pull-based for reads and push-based for writes, with last-write-wins reconciliation throughout.
 
-| Operation | What it does |
-|-----------|--------------|
-| optimistic push | every mutation fire-and-forgets the changed docs to `POST /sync/push` |
-| `store.pushAll()` | re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush |
-| `store.pull(collection)` | requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp |
-| `store.pullDocument(c, id)` | pulls a single doc (LWW against the local copy) |
+| Operation                   | What it does                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| optimistic push             | every mutation fire-and-forgets the changed docs to `POST /sync/push`                                              |
+| `store.pushAll()`           | re-sends everything (minus untouched seeds and `_` collections) — the offline-backlog flush                        |
+| `store.pull(collection)`    | requests docs changed since this collection's last-sync timestamp, LWW-merges them locally, advances the timestamp |
+| `store.pullDocument(c, id)` | pulls a single doc (LWW against the local copy)                                                                    |
 
 **Last-write-wins, both directions.** On pull, an incoming doc older than the local copy is skipped (so a not-yet-pushed local edit isn't clobbered by a stale server version). The server's upsert mirrors this: `ON CONFLICT … WHERE excluded.updated_at >= documents.updated_at`. Ties go to the incoming doc.
 
 ## Realtime
 
-When `realtime: true` and the server has the feature enabled, the client opens a WebSocket to `/realtime`. The server doesn't push document *bodies* — it pushes lightweight **invalidations**:
+When `realtime: true` and the server has the feature enabled, the client opens a WebSocket to `/realtime`. The server doesn't push document _bodies_ — it pushes lightweight **invalidations**:
 
 ```
 { "type": "invalidate", "collections": ["recipes", "groceryItems"] }
@@ -230,7 +230,7 @@ interface BlobAdapter {
   write(hash: string, bytes: Uint8Array): Promise<void>;
   delete(hash: string): Promise<void>;
   list(): Promise<string[]>;
-  uriFor(hash: string): string | null;  // renderable URI (e.g. file://) when present locally
+  uriFor(hash: string): string | null; // renderable URI (e.g. file://) when present locally
 }
 ```
 
@@ -253,11 +253,11 @@ Seed-only collections never reach the server at all — every consumer that need
 ```ts
 import { createSyncApp, RealtimeDO } from '@a16n/pact-server';
 
-export { RealtimeDO };  // Durable Object class for realtime fan-out
+export { RealtimeDO }; // Durable Object class for realtime fan-out
 
 export default createSyncApp({
   hooks: { migrate: (collection, data) => myMigrator.migrate(collection, data) },
-  info: { mcp: true },  // extra fields merged into GET /info
+  info: { mcp: true }, // extra fields merged into GET /info
 });
 ```
 
@@ -265,32 +265,32 @@ export default createSyncApp({
 
 ```ts
 interface Env {
-  DB: D1Database;                              // documents + clients + blobs registry (all app-scoped)
-  BLOBS: R2Bucket;                             // blob bytes, keyed <appName>/<hash>
-  APPS?: string;                               // static tenant roster secret: {"appName":"password",...}
-  PROVISION_KEY?: string;                      // master key enabling dynamic POST /apps provisioning
-  SERVER_NAME: string;                         // public name returned by GET /info
-  ENABLE_REALTIME: string;                     // "true" to enable /realtime + broadcast
+  DB: D1Database; // documents + clients + blobs registry (all app-scoped)
+  BLOBS: R2Bucket; // blob bytes, keyed <appName>/<hash>
+  APPS?: string; // static tenant roster secret: {"appName":"password",...}
+  PROVISION_KEY?: string; // master key enabling dynamic POST /apps provisioning
+  SERVER_NAME: string; // public name returned by GET /info
+  ENABLE_REALTIME: string; // "true" to enable /realtime + broadcast
   REALTIME: DurableObjectNamespace<RealtimeDO>;
 }
 ```
 
 ### HTTP API
 
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/status` | none | liveness — `{ status: "ok" }` |
-| GET | `/info` | none | `{ name, protocolVersion: 3, realtime, …info }` — clients read this during connect |
-| POST | `/auth/register` | Bearer **app password** | body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }` |
-| POST | `/apps` | Bearer **PROVISION_KEY** | body `{ appName, password }` — create an app or rotate its password (404 when `PROVISION_KEY` unset) |
-| GET | `/auth/check` | Bearer **token** | validate a token → `{ ok, client }` |
-| GET | `/realtime` | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes |
-| POST | `/sync/push` | Bearer **token** | upsert documents (LWW) |
-| GET | `/sync/pull?collection=&since=` | Bearer **token** | docs changed since a timestamp |
-| GET | `/sync/pull?collection=&id=` | Bearer **token** | a single doc by id |
-| GET | `/sync/blobs` | Bearer **token** | authoritative set of stored blob hashes |
-| PUT | `/sync/blobs/:hash` | Bearer **token** | upload blob bytes (hash = SHA-256 of body) |
-| GET | `/sync/blobs/:hash` | Bearer **token** | download blob bytes |
+| Method | Path                            | Auth                        | Purpose                                                                                                            |
+| ------ | ------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/status`                       | none                        | liveness — `{ status: "ok" }`                                                                                      |
+| GET    | `/info`                         | none                        | `{ name, protocolVersion: 3, realtime, …info }` — clients read this during connect                                 |
+| POST   | `/auth/register`                | Bearer **app password**     | body `{ appName, clientId, clientName }` — trade the app's password for a per-client token → `{ clientId, token }` |
+| POST   | `/apps`                         | Bearer **PROVISION_KEY**    | body `{ appName, password }` — create an app or rotate its password (404 when `PROVISION_KEY` unset)               |
+| GET    | `/auth/check`                   | Bearer **token**            | validate a token → `{ ok, client }`                                                                                |
+| GET    | `/realtime`                     | token (`?token=` or Bearer) | WebSocket upgrade for invalidation pushes                                                                          |
+| POST   | `/sync/push`                    | Bearer **token**            | upsert documents (LWW)                                                                                             |
+| GET    | `/sync/pull?collection=&since=` | Bearer **token**            | docs changed since a timestamp                                                                                     |
+| GET    | `/sync/pull?collection=&id=`    | Bearer **token**            | a single doc by id                                                                                                 |
+| GET    | `/sync/blobs`                   | Bearer **token**            | authoritative set of stored blob hashes                                                                            |
+| PUT    | `/sync/blobs/:hash`             | Bearer **token**            | upload blob bytes (hash = SHA-256 of body)                                                                         |
+| GET    | `/sync/blobs/:hash`             | Bearer **token**            | download blob bytes                                                                                                |
 
 (There is deliberately no remote-wipe route; the wipe functions are exported for operator use only.)
 
