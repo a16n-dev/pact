@@ -120,7 +120,7 @@ const body = await store.collection('notes').text('nt-1', 'body');
 body.insert(0, 'Hello');
 ```
 
-Every transaction on that `Y.Text` is persisted immediately and pushed after a one-second quiet period. Edits from other devices land in the same instance. `yjs` is an optional peer dependency; a store with no text fields never loads it.
+Every transaction on that `Y.Text` is persisted immediately and pushed after a one-second quiet period. Edits from other devices land in the same instance. The `yjs` engine lives behind that subpath, so a store with no text fields never bundles it.
 
 ## What you might need to know
 
