@@ -11,7 +11,6 @@ export type AppRow = {
 
 // An app with the counts the admin panel lists.
 export type AppSummary = AppRow & {
-  token_count: number;
   document_count: number;
   blob_count: number;
   blob_bytes: number;
@@ -30,7 +29,6 @@ export async function listApps(db: D1Database): Promise<AppSummary[]> {
   const { results } = await db
     .prepare(
       `SELECT a.id, a.name, a.seq, a.allow_localhost, a.restricted, a.created_at,
-         (SELECT COUNT(*) FROM tokens t WHERE t.app_id = a.id) AS token_count,
          (SELECT COUNT(*) FROM documents d WHERE d.app_id = a.id) AS document_count,
          (SELECT COUNT(*) FROM blobs b WHERE b.app_id = a.id) AS blob_count,
          (SELECT COALESCE(SUM(size), 0) FROM blobs b WHERE b.app_id = a.id) AS blob_bytes
@@ -89,6 +87,28 @@ export async function removeRedirectUri(db: D1Database, appId: string, uri: stri
     .run();
 }
 
+export async function listOrigins(db: D1Database, appId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare('SELECT origin FROM app_origins WHERE app_id = ?1 ORDER BY origin')
+    .bind(appId)
+    .all<{ origin: string }>();
+  return results.map((row) => row.origin);
+}
+
+export async function addOrigin(db: D1Database, appId: string, origin: string): Promise<void> {
+  await db
+    .prepare('INSERT OR IGNORE INTO app_origins (app_id, origin) VALUES (?1, ?2)')
+    .bind(appId, origin)
+    .run();
+}
+
+export async function removeOrigin(db: D1Database, appId: string, origin: string): Promise<void> {
+  await db
+    .prepare('DELETE FROM app_origins WHERE app_id = ?1 AND origin = ?2')
+    .bind(appId, origin)
+    .run();
+}
+
 export function deleteAppStatements(db: D1Database, appId: string): D1PreparedStatement[] {
   return [
     'DELETE FROM documents WHERE app_id = ?1',
@@ -96,6 +116,7 @@ export function deleteAppStatements(db: D1Database, appId: string): D1PreparedSt
     'DELETE FROM tokens WHERE app_id = ?1',
     'DELETE FROM auth_codes WHERE app_id = ?1',
     'DELETE FROM app_redirect_uris WHERE app_id = ?1',
+    'DELETE FROM app_origins WHERE app_id = ?1',
     'DELETE FROM app_users WHERE app_id = ?1',
     'DELETE FROM apps WHERE id = ?1',
   ].map((sql) => db.prepare(sql).bind(appId));

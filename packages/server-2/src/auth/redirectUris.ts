@@ -34,15 +34,14 @@ export function redirectUriMatches(
   return app.allow_localhost === 1 && isLoopbackUri(requested);
 }
 
-export function allowedOrigins(registered: string[]): Set<string> {
-  const origins = new Set<string>();
-  for (const uri of registered) {
-    try {
-      const url = new URL(uri);
-      if (url.protocol === 'https:') origins.add(url.origin);
-    } catch {
-      // Unparseable URIs can't match anything anyway.
-    }
+// The https origin an entered domain or redirect URI resolves to, or null when it has none.
+export function parseHttpsOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value.includes('://') ? value : `https://${value}`);
+  } catch {
+    return null;
   }
-  return origins;
+  if (url.protocol !== 'https:' || !url.hostname.includes('.')) return null;
+  return url.origin;
 }

@@ -276,6 +276,42 @@ describe('inside an app', () => {
     expect(await (await admin('/apps/app-a/settings')).text()).not.toContain('com.example.app:/cb');
   });
 
+  it('manages app domains, adding one for each https redirect URI', async () => {
+    const bad = await admin('/apps/app-a/origins', { method: 'POST', form: { domain: 'nope' } });
+    expect(bad.status).toBe(400);
+    expect(await bad.text()).toContain('served over https');
+    expect(
+      (await admin('/apps/app-a/origins', { method: 'POST', form: { domain: 'web.example.test' } }))
+        .status
+    ).toBe(303);
+    expect(
+      (
+        await admin('/apps/app-a/redirect-uris', {
+          method: 'POST',
+          form: { uri: 'https://other.example.test/auth/cb' },
+        })
+      ).status
+    ).toBe(303);
+    const html = await (await admin('/apps/app-a/settings')).text();
+    expect(html).toContain('Remove https://web.example.test');
+    expect(html).toContain('Remove https://other.example.test');
+    for (const origin of ['https://web.example.test', 'https://other.example.test']) {
+      expect((await api('/auth/check', a.token, { headers: { origin } })).status).toBe(200);
+    }
+    expect(
+      (
+        await admin('/apps/app-a/origins/remove', {
+          method: 'POST',
+          form: { origin: 'https://web.example.test' },
+        })
+      ).status
+    ).toBe(303);
+    expect(
+      (await api('/auth/check', a.token, { headers: { origin: 'https://web.example.test' } }))
+        .status
+    ).toBe(403);
+  });
+
   it('switches localhost redirects on and off instead of registering them', async () => {
     const loopback = await admin('/apps/app-a/redirect-uris', {
       method: 'POST',

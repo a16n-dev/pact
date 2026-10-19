@@ -2,12 +2,15 @@ import { type Context, Hono } from 'hono';
 import type { Env } from '../lib/env';
 import { requireAdminAccess } from './access';
 import {
+  addOrigin,
   addRedirectUri,
   createApp,
   deleteAppStatements,
   getApp,
   listApps,
+  listOrigins,
   listRedirectUris,
+  removeOrigin,
   removeRedirectUri,
   renameApp,
   setAllowLocalhost,
@@ -18,7 +21,7 @@ import { addAppUser, listAppUsers, removeAppUser, setRestricted } from '../db/ap
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
 import { documentStats, wipeDocumentsStatement } from '../db/documents';
-import { isAllowedRedirectUriForm, isLoopbackUri } from '../auth/redirectUris';
+import { isAllowedRedirectUriForm, isLoopbackUri, parseHttpsOrigin } from '../auth/redirectUris';
 import { isValidAppId, isValidLabel, isValidPassword, isValidUsername } from '../lib/validation';
 import { notifyRealtime } from '../realtime/durableObject';
 import { AppsPage } from './AppsPage';
@@ -233,8 +236,9 @@ async function settingsPage(
   dialog?: { id: SettingsDialogId; value?: string; error?: string }
 ) {
   const app = c.get('app');
-  const [redirectUris, stats, documents, tokens] = await Promise.all([
+  const [redirectUris, origins, stats, documents, tokens] = await Promise.all([
     listRedirectUris(c.env.DB, app.id),
+    listOrigins(c.env.DB, app.id),
     blobStats(c.env.DB, app.id),
     c.env.DB.prepare('SELECT COUNT(*) AS n FROM documents WHERE app_id = ?1')
       .bind(app.id)
@@ -247,6 +251,7 @@ async function settingsPage(
     <SettingsPage
       app={app}
       redirectUris={redirectUris}
+      origins={origins}
       counts={{
         documents: documents?.n ?? 0,
         blobs: stats.count,
@@ -289,6 +294,32 @@ adminRoutes.post('/apps/:id/redirect-uris', async (c) => {
     return fail('Use an https address or a custom scheme like com.example.app:/callback.');
   }
   await addRedirectUri(c.env.DB, app.id, uri);
+  const origin = parseHttpsOrigin(uri);
+  if (origin) await addOrigin(c.env.DB, app.id, origin);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/origins', async (c) => {
+  const app = c.get('app');
+  const domain = field(await c.req.parseBody(), 'domain');
+  const origin = domain.length <= 2048 ? parseHttpsOrigin(domain) : null;
+  if (!origin) {
+    return c.html(
+      await settingsPage(c, {
+        id: 'add-origin',
+        value: domain,
+        error: 'Use a domain served over https, like app.example.com.',
+      }),
+      400
+    );
+  }
+  await addOrigin(c.env.DB, app.id, origin);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/origins/remove', async (c) => {
+  const app = c.get('app');
+  await removeOrigin(c.env.DB, app.id, field(await c.req.parseBody(), 'origin'));
   return c.redirect(`/admin/apps/${app.id}/settings`, 303);
 });
 

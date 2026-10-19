@@ -9,6 +9,7 @@ const TABLES = [
   'tokens',
   'auth_codes',
   'app_redirect_uris',
+  'app_origins',
   'app_users',
   'apps',
   'users',

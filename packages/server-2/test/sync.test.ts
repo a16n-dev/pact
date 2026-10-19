@@ -176,7 +176,7 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-headers')).toBe('authorization, content-type');
   });
 
-  it('allows registered https origins and localhost, and refuses the rest', async () => {
+  it('allows app domains and localhost, and refuses the rest', async () => {
     const a = await seedApp('app-a');
     for (const origin of [
       'https://app.example.test',
