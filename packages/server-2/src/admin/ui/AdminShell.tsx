@@ -1,36 +1,43 @@
 import type { PropsWithChildren } from 'hono/jsx';
 import { Document } from '../../ui/Document';
-import type { AppRow } from '../../db/apps';
-import { HardDrive, type IconNode, KeyRound, LayoutGrid, Settings, Users } from 'lucide';
+import { ChevronRight, LayoutGrid, Users } from 'lucide';
 import { Icon } from '../../ui/Icon';
 
 type AdminSection = 'apps' | 'users';
-export type AppTab = 'blobs' | 'tokens' | 'settings';
+export type Crumb = { label: string; href?: string };
 
 type AdminShellProps = PropsWithChildren<{
   title: string;
   section: AdminSection;
-  app?: { row: AppRow; tab: AppTab };
+  crumbs?: Crumb[];
   narrow?: boolean;
 }>;
 
-const APP_TABS: { id: AppTab; label: string; icon: IconNode }[] = [
-  { id: 'blobs', label: 'Blobs', icon: HardDrive },
-  { id: 'tokens', label: 'Tokens', icon: KeyRound },
-  { id: 'settings', label: 'Settings', icon: Settings },
-];
-
-export function AdminShell({ title, section, app, narrow, children }: AdminShellProps) {
+export function AdminShell({ title, section, crumbs, narrow, children }: AdminShellProps) {
   return (
     <Document title={`${title} · Pact admin`} withScript bodyClass='frame'>
       <header class='topbar'>
         <a href='/admin' class='wordmark'>
           pact
         </a>
+        {crumbs ? (
+          <nav aria-label='Breadcrumb' class='breadcrumb'>
+            {crumbs.map((crumb, i) => (
+              <>
+                {i > 0 ? <Icon icon={ChevronRight} size={14} /> : null}
+                {crumb.href ? (
+                  <a href={crumb.href}>{crumb.label}</a>
+                ) : (
+                  <span aria-current='page'>{crumb.label}</span>
+                )}
+              </>
+            ))}
+          </nav>
+        ) : null}
       </header>
       <aside class='sidebar'>
         <nav aria-label='Admin' class='side-nav'>
-          <a href='/admin/apps' aria-current={section === 'apps' && !app ? 'page' : undefined}>
+          <a href='/admin/apps' aria-current={section === 'apps' ? 'page' : undefined}>
             <Icon icon={LayoutGrid} size={16} />
             Apps
           </a>
@@ -39,20 +46,6 @@ export function AdminShell({ title, section, app, narrow, children }: AdminShell
             Users
           </a>
         </nav>
-        {app ? (
-          <nav aria-label={app.row.name} class='side-nav'>
-            <div class='side-title'>{app.row.name}</div>
-            {APP_TABS.map((entry) => (
-              <a
-                href={`/admin/apps/${app.row.id}/${entry.id}`}
-                aria-current={entry.id === app.tab ? 'page' : undefined}
-              >
-                <Icon icon={entry.icon} size={16} />
-                {entry.label}
-              </a>
-            ))}
-          </nav>
-        ) : null}
       </aside>
       <main class={narrow ? 'content content-narrow' : 'content'}>{children}</main>
     </Document>

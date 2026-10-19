@@ -20,10 +20,6 @@ export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPage
   const errorFor = (id: SettingsDialogId) => (dialog?.id === id ? dialog.error : undefined);
   return (
     <AppShell app={app} tab='settings' narrow>
-      <div class='page-head'>
-        <h1>Settings</h1>
-      </div>
-
       <section class='card' aria-labelledby='h-general'>
         <div class='card-head'>
           <h2 id='h-general'>General</h2>
