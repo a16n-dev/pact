@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from './lib/env';
 import { maxPushDocuments } from './lib/env';
 import { ApiError, errorResponse } from './lib/errors';
-import { preflight } from './cors';
+import { allowAnyOrigin, preflight } from './cors';
 import { oauthRoutes } from './oauth/routes';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
@@ -13,6 +13,7 @@ import { adminRoutes } from './admin/routes';
 export const app = new Hono<{ Bindings: Env }>();
 
 app.get('/.well-known/pact', (c) => {
+  allowAnyOrigin(c);
   const origin = new URL(c.req.url).origin;
   return c.json({
     version: 2,

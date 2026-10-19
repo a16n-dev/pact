@@ -194,6 +194,14 @@ describe('CORS', () => {
     expect(denied.headers.get('access-control-allow-origin')).toBeNull();
     expect(((await denied.json()) as { code: string }).code).toBe('origin_not_allowed');
   });
+
+  it('serves discovery to any origin, since it names no app', async () => {
+    const res = await api('/.well-known/pact', null, {
+      headers: { origin: 'https://app.example.test' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.test');
+  });
 });
 
 describe('auth endpoints', () => {
