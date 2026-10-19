@@ -14,6 +14,7 @@ import {
   type AppRow,
 } from '../db/apps';
 import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
+import { addAppUser, listAppUsers, removeAppUser, setRestricted } from '../db/appUsers';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
 import { documentStats, wipeDocumentsStatement } from '../db/documents';
@@ -25,6 +26,7 @@ import { UsersPage } from './UsersPage';
 import { BlobsPage } from './BlobsPage';
 import { DocumentsPage } from './DocumentsPage';
 import { TokensPage } from './TokensPage';
+import { AccessPage } from './AccessPage';
 import { SettingsPage, type SettingsDialogId } from './SettingsPage';
 
 type AdminEnv = { Bindings: Env; Variables: { app: AppRow } };
@@ -189,6 +191,40 @@ adminRoutes.post('/apps/:id/tokens/:tokenId/revoke', async (c) => {
   await deleteToken(c.env.DB, app.id, tokenId);
   c.executionCtx.waitUntil(notifyRealtime(c.env, app.id, (rt) => rt.closeToken(tokenId)));
   return c.redirect(`/admin/apps/${app.id}/tokens`, 303);
+});
+
+async function accessPage(c: Context<AdminEnv>, dialog?: { error: string }) {
+  const app = c.get('app');
+  const [allowed, users] = await Promise.all([listAppUsers(c.env.DB, app.id), listUsers(c.env.DB)]);
+  return <AccessPage app={app} allowed={allowed} users={users} dialog={dialog} />;
+}
+
+adminRoutes.get('/apps/:id/access', async (c) => c.html(await accessPage(c)));
+
+adminRoutes.post('/apps/:id/access/restrict', async (c) => {
+  const app = c.get('app');
+  await setRestricted(c.env.DB, app.id, field(await c.req.parseBody(), 'enabled') === 'on');
+  return c.redirect(`/admin/apps/${app.id}/access`, 303);
+});
+
+adminRoutes.post('/apps/:id/access/users', async (c) => {
+  const app = c.get('app');
+  const userId = field(await c.req.parseBody(), 'user_id');
+  const users = await listUsers(c.env.DB);
+  if (!users.some((user) => user.id === userId)) {
+    return c.html(await accessPage(c, { error: 'Choose a user on this server.' }), 400);
+  }
+  await addAppUser(c.env.DB, app.id, userId);
+  return c.redirect(`/admin/apps/${app.id}/access`, 303);
+});
+
+adminRoutes.post('/apps/:id/access/users/remove', async (c) => {
+  const app = c.get('app');
+  const tokenIds = await removeAppUser(c.env.DB, app.id, field(await c.req.parseBody(), 'user_id'));
+  c.executionCtx.waitUntil(
+    Promise.all(tokenIds.map((id) => notifyRealtime(c.env, app.id, (rt) => rt.closeToken(id))))
+  );
+  return c.redirect(`/admin/apps/${app.id}/access`, 303);
 });
 
 async function settingsPage(

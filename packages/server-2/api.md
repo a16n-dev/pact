@@ -60,7 +60,7 @@ The server renders its own login page. If any parameter is missing or malformed 
 
 On success the browser lands on `redirect_uri?code=…&state=…`. The code is single-use and expires 60 seconds after it was issued.
 
-If the credentials are wrong the user sees the form again with an error. If the app or redirect URI is unknown the user sees an error page; the client is never redirected, so it should time out or let the user cancel.
+If the credentials are wrong, or the app restricts access and the user isn't on its list, the user sees the form again with the same generic error. If the app or redirect URI is unknown the user sees an error page; the client is never redirected, so it should time out or let the user cancel.
 
 ### 3. Exchange the code
 

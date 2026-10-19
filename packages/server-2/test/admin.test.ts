@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, fetchMock, SELF } from 'cloudflare:test';
-import { api, doc, ORIGIN, push, seedApp } from './helpers';
+import { api, doc, ORIGIN, push, seedApp, seedUser } from './helpers';
 import { base64url, sha256Hex } from '../src/lib/crypto';
 import { getApp } from '../src/db/apps';
+import { issueDeviceToken } from '../src/db/tokens';
 
 const TEAM = 'test.cloudflareaccess.com';
 const AUD = 'aud-123';
@@ -191,6 +192,56 @@ describe('inside an app', () => {
       (await admin(`/apps/app-a/tokens/${a.tokenId}/revoke`, { method: 'POST', form: {} })).status
     ).toBe(303);
     expect((await api('/auth/check', a.token)).status).toBe(401);
+  });
+
+  it('restricts sign-in to listed users and signs out anyone removed', async () => {
+    await seedUser('alex');
+    await seedUser('jo');
+    const users = await env.DB.prepare('SELECT id, username FROM users ORDER BY username').all<{
+      id: string;
+      username: string;
+    }>();
+    const [alex, jo] = users.results;
+    const alexToken = await issueDeviceToken(env.DB, 'app-a', alex!.id, 'device-1', 'Phone');
+
+    expect(
+      (await admin('/apps/app-a/access/restrict', { method: 'POST', form: { enabled: 'on' } }))
+        .status
+    ).toBe(303);
+    expect((await getApp(env.DB, 'app-a'))!.restricted).toBe(1);
+    let html = await (await admin('/apps/app-a/access')).text();
+    expect(html).toContain('Remove alex');
+    expect(html).not.toContain('Remove jo');
+
+    const unknown = await admin('/apps/app-a/access/users', {
+      method: 'POST',
+      form: { user_id: 'nobody' },
+    });
+    expect(unknown.status).toBe(400);
+    expect(
+      (await admin('/apps/app-a/access/users', { method: 'POST', form: { user_id: jo!.id } }))
+        .status
+    ).toBe(303);
+    html = await (await admin('/apps/app-a/access')).text();
+    expect(html).toContain('Remove jo');
+
+    expect((await api('/auth/check', alexToken)).status).toBe(200);
+    expect(
+      (
+        await admin('/apps/app-a/access/users/remove', {
+          method: 'POST',
+          form: { user_id: alex!.id },
+        })
+      ).status
+    ).toBe(303);
+    expect((await api('/auth/check', alexToken)).status).toBe(401);
+    html = await (await admin('/apps/app-a/access')).text();
+    expect(html).not.toContain('Remove alex');
+
+    expect((await admin('/apps/app-a/access/restrict', { method: 'POST', form: {} })).status).toBe(
+      303
+    );
+    expect((await getApp(env.DB, 'app-a'))!.restricted).toBe(0);
   });
 
   it('manages redirect URIs and renames', async () => {
