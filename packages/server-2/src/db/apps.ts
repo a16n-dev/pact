@@ -1,10 +1,11 @@
 // A registered app. `seq` is the app-wide counter that stamps every document version written;
-// `allow_localhost` is a SQLite boolean.
+// `allow_localhost` and `restricted` are SQLite booleans.
 export type AppRow = {
   id: string;
   name: string;
   seq: number;
   allow_localhost: number;
+  restricted: number;
   created_at: number;
 };
 
@@ -18,7 +19,9 @@ export type AppSummary = AppRow & {
 
 export async function getApp(db: D1Database, id: string): Promise<AppRow | null> {
   return db
-    .prepare('SELECT id, name, seq, allow_localhost, created_at FROM apps WHERE id = ?1')
+    .prepare(
+      'SELECT id, name, seq, allow_localhost, restricted, created_at FROM apps WHERE id = ?1'
+    )
     .bind(id)
     .first();
 }
@@ -26,7 +29,7 @@ export async function getApp(db: D1Database, id: string): Promise<AppRow | null>
 export async function listApps(db: D1Database): Promise<AppSummary[]> {
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.name, a.seq, a.allow_localhost, a.created_at,
+      `SELECT a.id, a.name, a.seq, a.allow_localhost, a.restricted, a.created_at,
          (SELECT COUNT(*) FROM tokens t WHERE t.app_id = a.id) AS token_count,
          (SELECT COUNT(*) FROM documents d WHERE d.app_id = a.id) AS document_count,
          (SELECT COUNT(*) FROM blobs b WHERE b.app_id = a.id) AS blob_count,
@@ -93,6 +96,7 @@ export function deleteAppStatements(db: D1Database, appId: string): D1PreparedSt
     'DELETE FROM tokens WHERE app_id = ?1',
     'DELETE FROM auth_codes WHERE app_id = ?1',
     'DELETE FROM app_redirect_uris WHERE app_id = ?1',
+    'DELETE FROM app_users WHERE app_id = ?1',
     'DELETE FROM apps WHERE id = ?1',
   ].map((sql) => db.prepare(sql).bind(appId));
 }

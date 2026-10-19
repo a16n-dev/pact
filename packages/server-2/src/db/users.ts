@@ -68,6 +68,7 @@ export async function deleteUser(db: D1Database, userId: string): Promise<string
   await db.batch([
     db.prepare('DELETE FROM tokens WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM auth_codes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM app_users WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM users WHERE id = ?1').bind(userId),
   ]);
   return results.map((row) => row.id);

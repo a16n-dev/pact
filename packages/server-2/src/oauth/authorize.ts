@@ -38,6 +38,8 @@ export function parseLoginForm(form: unknown): LoginForm {
   return loginFormSchema.parse(form);
 }
 
+export const CREDENTIALS_ERROR = 'Username or password is incorrect.';
+
 export type SignInResult = { user: UserRow } | { error: string; status: 401 | 429 };
 
 // Rate limit, then Turnstile, then credentials. An unknown username costs the same password
@@ -64,6 +66,6 @@ export async function signIn(
     form.password,
     user?.password_hash ?? DUMMY_PASSWORD_HASH
   );
-  if (!user || !passwordOk) return { error: 'Username or password is incorrect.', status: 401 };
+  if (!user || !passwordOk) return { error: CREDENTIALS_ERROR, status: 401 };
   return { user };
 }

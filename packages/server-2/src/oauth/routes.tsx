@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import type { Env } from '../lib/env';
 import { getApp, listRedirectUris } from '../db/apps';
 import { createAuthCode } from '../db/authCodes';
+import { hasAppAccess } from '../db/appUsers';
 import { redirectUriMatches } from '../auth/redirectUris';
 import { enforceOrigin } from '../cors';
-import { parseAuthorizeParams, parseLoginForm, signIn } from './authorize';
+import { CREDENTIALS_ERROR, parseAuthorizeParams, parseLoginForm, signIn } from './authorize';
 import { type OAuthError, parseTokenRequest, readTokenBody, redeemAuthCode } from './token';
 import { LoginPage } from './LoginPage';
 import { AuthErrorPage } from './AuthErrorPage';
@@ -61,6 +62,20 @@ oauthRoutes.post('/authorize', async (c) => {
         redirectUri={params.redirect_uri}
       />,
       400
+    );
+  }
+
+  // A user outside a restricted app's list gets the same message as a wrong password, so the
+  // form reveals neither that the app is restricted nor who is on the list.
+  if (app.restricted === 1 && !(await hasAppAccess(c.env.DB, app.id, result.user.id))) {
+    return c.html(
+      <LoginPage
+        host={new URL(c.req.url).host}
+        turnstileSiteKey={c.env.TURNSTILE_SITE_KEY}
+        username={form.username}
+        error={CREDENTIALS_ERROR}
+      />,
+      401
     );
   }
 

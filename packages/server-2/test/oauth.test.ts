@@ -3,6 +3,7 @@ import { env, fetchMock, SELF } from 'cloudflare:test';
 import { api, ORIGIN, randomVerifier, seedApp, seedUser } from './helpers';
 import { sha256Base64url } from '../src/lib/crypto';
 import { setAllowLocalhost } from '../src/db/apps';
+import { addAppUser, setRestricted } from '../src/db/appUsers';
 
 beforeAll(() => {
   fetchMock.activate();
@@ -138,6 +139,28 @@ describe('sign-in', () => {
     const unknown = await login(flow, 'nobody', 'correcthorse');
     expect(unknown.status).toBe(401);
     expect(await unknown.text()).toContain('Username or password is incorrect.');
+  });
+
+  it('turns away users outside a restricted app with the generic credentials error', async () => {
+    await seedUser('sam', 'correcthorse');
+    await setRestricted(env.DB, 'app-a', true);
+    const ip = '198.51.100.9';
+    mockTurnstile(true);
+    const denied = await login(await startFlow(), 'sam', 'correcthorse', ip);
+    expect(denied.status).toBe(401);
+    expect(await denied.text()).toContain('Username or password is incorrect.');
+
+    const sam = await env.DB.prepare("SELECT id FROM users WHERE username = 'sam'").first<{
+      id: string;
+    }>();
+    await addAppUser(env.DB, 'app-a', sam!.id);
+    mockTurnstile(true);
+    expect((await login(await startFlow(), 'sam', 'correcthorse', ip)).status).toBe(303);
+
+    await setRestricted(env.DB, 'app-a', false);
+    await env.DB.prepare('DELETE FROM app_users').run();
+    mockTurnstile(true);
+    expect((await login(await startFlow(), 'sam', 'correcthorse', ip)).status).toBe(303);
   });
 
   it('fails closed when Turnstile rejects', async () => {

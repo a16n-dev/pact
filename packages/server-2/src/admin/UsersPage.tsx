@@ -17,7 +17,9 @@ export function UsersPage({ users, dialog }: UsersPageProps) {
       <div class='page-head'>
         <div>
           <h1>Users</h1>
-          <p class='muted'>Everyone here can sign in to any app on this server.</p>
+          <p class='muted'>
+            Everyone here can sign in to any app on this server, unless the app restricts access.
+          </p>
         </div>
         <button type='button' class='btn btn-primary' data-opens='new-user'>
           <Icon icon={Plus} size={16} />
