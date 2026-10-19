@@ -53,7 +53,7 @@ oauthRoutes.post('/authorize', async (c) => {
 
   const app = await getApp(c.env.DB, params.app_id);
   const registered = app ? await listRedirectUris(c.env.DB, app.id) : [];
-  if (!app || !redirectUriMatches(registered, params.redirect_uri)) {
+  if (!app || !redirectUriMatches(app, registered, params.redirect_uri)) {
     return c.html(
       <AuthErrorPage
         {...UNKNOWN_APP_ERROR}

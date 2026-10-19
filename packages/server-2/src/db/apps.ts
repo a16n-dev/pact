@@ -1,8 +1,10 @@
-// A registered app. `seq` is the app-wide counter that stamps every document version written.
+// A registered app. `seq` is the app-wide counter that stamps every document version written;
+// `allow_localhost` is a SQLite boolean.
 export type AppRow = {
   id: string;
   name: string;
   seq: number;
+  allow_localhost: number;
   created_at: number;
 };
 
@@ -15,13 +17,16 @@ export type AppSummary = AppRow & {
 };
 
 export async function getApp(db: D1Database, id: string): Promise<AppRow | null> {
-  return db.prepare('SELECT id, name, seq, created_at FROM apps WHERE id = ?1').bind(id).first();
+  return db
+    .prepare('SELECT id, name, seq, allow_localhost, created_at FROM apps WHERE id = ?1')
+    .bind(id)
+    .first();
 }
 
 export async function listApps(db: D1Database): Promise<AppSummary[]> {
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.name, a.seq, a.created_at,
+      `SELECT a.id, a.name, a.seq, a.allow_localhost, a.created_at,
          (SELECT COUNT(*) FROM tokens t WHERE t.app_id = a.id) AS token_count,
          (SELECT COUNT(*) FROM documents d WHERE d.app_id = a.id) AS document_count,
          (SELECT COUNT(*) FROM blobs b WHERE b.app_id = a.id) AS blob_count,
@@ -50,6 +55,13 @@ export async function createApp(
 
 export async function renameApp(db: D1Database, id: string, name: string): Promise<void> {
   await db.prepare('UPDATE apps SET name = ?2 WHERE id = ?1').bind(id, name).run();
+}
+
+export async function setAllowLocalhost(db: D1Database, id: string, allow: boolean): Promise<void> {
+  await db
+    .prepare('UPDATE apps SET allow_localhost = ?2 WHERE id = ?1')
+    .bind(id, allow ? 1 : 0)
+    .run();
 }
 
 export async function listRedirectUris(db: D1Database, appId: string): Promise<string[]> {
