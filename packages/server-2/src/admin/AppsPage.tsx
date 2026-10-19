@@ -32,7 +32,7 @@ export function AppsPage({ apps, dialog }: AppsPageProps) {
           <article class='card app-card'>
             <div class='app-card-main'>
               <div>
-                <a href={`/admin/apps/${app.id}/blobs`} class='app-name'>
+                <a href={`/admin/apps/${app.id}/documents`} class='app-name'>
                   {app.name}
                 </a>
                 <div class='mono muted small'>{app.id}</div>

@@ -240,6 +240,17 @@ describe('inside an app', () => {
     expect((await getApp(env.DB, 'app-a'))!.allow_localhost).toBe(1);
   });
 
+  it('summarises documents by collection', async () => {
+    await push(a.token, [doc('n1', 'one'), doc('n2', 'two'), doc('r1', 'rice', 'recipes')]);
+    expect((await admin('/apps/app-a')).headers.get('location')).toBe(
+      '/admin/apps/app-a/documents'
+    );
+    const html = await (await admin('/apps/app-a/documents')).text();
+    expect(html).toContain('notes');
+    expect(html).toContain('recipes');
+    expect(html).toMatch(/Documents<\/div>\s*<div class="stat-value">3</);
+  });
+
   it('lists and downloads blobs', async () => {
     const bytes = new TextEncoder().encode('blob');
     const hash = await sha256Hex(bytes.buffer as ArrayBuffer);
