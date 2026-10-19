@@ -40,7 +40,6 @@ export function AppsPage({ apps, dialog }: AppsPageProps) {
               <span class='muted small'>Created {formatDate(app.created_at)}</span>
             </div>
             <div class='app-card-foot'>
-              <span>{formatCount(app.token_count)} tokens</span>
               <span>{formatCount(app.document_count)} documents</span>
               <span>{app.blob_bytes === 0 ? 'No blobs' : formatBytes(app.blob_bytes)}</span>
             </div>

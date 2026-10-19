@@ -9,13 +9,14 @@ import { Icon } from '../ui/Icon';
 export type SettingsPageProps = {
   app: AppRow;
   redirectUris: string[];
+  origins: string[];
   counts: { documents: number; blobs: number; blobBytes: number; tokens: number };
   dialog?: { id: SettingsDialogId; value?: string; error?: string };
 };
 
-export type SettingsDialogId = 'rename' | 'add-uri' | 'delete';
+export type SettingsDialogId = 'rename' | 'add-uri' | 'add-origin' | 'delete';
 
-export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPageProps) {
+export function SettingsPage({ app, redirectUris, origins, counts, dialog }: SettingsPageProps) {
   const base = `/admin/apps/${app.id}`;
   const errorFor = (id: SettingsDialogId) => (dialog?.id === id ? dialog.error : undefined);
   return (
@@ -89,6 +90,41 @@ export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPage
         </ul>
       </section>
 
+      <section class='card' aria-labelledby='h-origins'>
+        <div class='card-head'>
+          <div>
+            <h2 id='h-origins'>App domains</h2>
+            <p>
+              Browsers on these domains can call the API. Localhost always can, and adding an https
+              redirect URI adds its domain here too.
+            </p>
+          </div>
+          <button type='button' class='btn' data-opens='add-origin'>
+            Add domain
+          </button>
+        </div>
+        <ul class='uris'>
+          {origins.length === 0 ? (
+            <li class='empty'>Add a domain before a web app hosted there can sync.</li>
+          ) : null}
+          {origins.map((origin) => (
+            <li>
+              <span class='uri'>{origin}</span>
+              <form method='post' action={`${base}/origins/remove`}>
+                <input type='hidden' name='origin' value={origin} />
+                <button
+                  type='submit'
+                  class='btn btn-ghost btn-icon'
+                  aria-label={`Remove ${origin}`}
+                >
+                  <Icon icon={X} size={16} />
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      </section>
+
       <section class='card' aria-labelledby='h-danger'>
         <div class='card-head'>
           <h2 id='h-danger'>Danger zone</h2>
@@ -145,6 +181,22 @@ export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPage
           value={dialog?.id === 'add-uri' ? dialog.value : undefined}
           error={errorFor('add-uri')}
           help='An https address or a custom scheme like com.example.app:/callback.'
+        />
+      </Dialog>
+      <Dialog
+        id='add-origin'
+        title='Add app domain'
+        action={`${base}/origins`}
+        submitLabel='Add domain'
+        open={dialog?.id === 'add-origin'}
+      >
+        <Field
+          id='domain'
+          label='Domain'
+          mono
+          value={dialog?.id === 'add-origin' ? dialog.value : undefined}
+          error={errorFor('add-origin')}
+          help='Just the host, like app.example.com. It must be served over https.'
         />
       </Dialog>
       <Dialog

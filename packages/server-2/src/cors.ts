@@ -1,7 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { Env } from './lib/env';
-import { listRedirectUris } from './db/apps';
-import { allowedOrigins } from './auth/redirectUris';
+import { listOrigins } from './db/apps';
 import { ApiError, errorResponse } from './lib/errors';
 
 const LOCAL_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -25,7 +24,7 @@ export function preflight(allowHeaders: 'sync' | 'any'): MiddlewareHandler<{ Bin
   };
 }
 
-// For routes that name no app, so there is no redirect-URI list to check against
+// For routes that name no app, so there is no origin list to check against
 export function allowAnyOrigin<E extends { Bindings: Env }>(c: Context<E>): void {
   const origin = c.req.header('origin');
   if (!origin) return;
@@ -39,7 +38,7 @@ export async function isOriginAllowed(
   origin: string
 ): Promise<boolean> {
   if (LOCAL_ORIGIN_RE.test(origin)) return true;
-  return allowedOrigins(await listRedirectUris(db, appId)).has(origin);
+  return (await listOrigins(db, appId)).includes(origin);
 }
 
 export async function enforceOrigin<E extends { Bindings: Env }>(
