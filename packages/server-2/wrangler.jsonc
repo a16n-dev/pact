@@ -58,6 +58,6 @@
 
   "ai": { "binding": "AI" },
 
-  // Stylesheets are imported as strings and inlined into server-rendered pages.
-  "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
+  // Stylesheets and the favicon are imported as strings and served from the Worker.
+  "rules": [{ "type": "Text", "globs": ["**/*.css", "**/*.svg"], "fallthrough": true }],
 }

@@ -3,27 +3,29 @@ import { Dialog } from '../ui/Dialog';
 import { Field } from '../ui/Field';
 import type { UserSummary } from '../db/users';
 import { formatCount, formatDate } from './format';
+import { Plus } from 'lucide';
+import { Icon } from '../ui/Icon';
 
 export type UsersPageProps = {
-  host: string;
   users: UserSummary[];
   dialog?: { id: string; username?: string; error?: string };
 };
 
-export function UsersPage({ host, users, dialog }: UsersPageProps) {
+export function UsersPage({ users, dialog }: UsersPageProps) {
   return (
-    <AdminShell title='Users' host={host} section='users'>
-      <main class='container'>
-        <div class='row spread'>
-          <div class='stack' style='gap: 6px'>
-            <h1>Users</h1>
-            <p class='muted'>Everyone here can sign in to any app on this server.</p>
-          </div>
-          <button type='button' class='btn btn-primary' data-opens='new-user'>
-            New user
-          </button>
+    <AdminShell title='Users' section='users'>
+      <div class='page-head'>
+        <div>
+          <h1>Users</h1>
+          <p class='muted'>Everyone here can sign in to any app on this server.</p>
         </div>
-        <div class='table-box'>
+        <button type='button' class='btn btn-primary' data-opens='new-user'>
+          <Icon icon={Plus} size={16} />
+          New user
+        </button>
+      </div>
+      <div class='card'>
+        <div class='table-scroll'>
           <table>
             <thead>
               <tr>
@@ -37,28 +39,22 @@ export function UsersPage({ host, users, dialog }: UsersPageProps) {
             </thead>
             <tbody>
               {users.length === 0 ? (
-                <tr>
-                  <td colspan={4} class='empty'>
-                    Add a user so they can sign in to your apps.
-                  </td>
+                <tr class='empty'>
+                  <td colspan={4}>Add a user so they can sign in to your apps.</td>
                 </tr>
               ) : null}
               {users.map((user) => (
                 <tr>
-                  <td style='font-weight: 500'>{user.username}</td>
+                  <td class='strong'>{user.username}</td>
                   <td class={user.token_count === 0 ? 'right muted' : 'right'}>
                     {formatCount(user.token_count)}
                   </td>
                   <td class='muted'>{formatDate(user.created_at)}</td>
                   <td class='actions'>
-                    <button type='button' class='btn btn-small' data-opens={`reset-${user.id}`}>
+                    <button type='button' class='btn' data-opens={`reset-${user.id}`}>
                       Reset password
                     </button>
-                    <button
-                      type='button'
-                      class='btn btn-small btn-danger'
-                      data-opens={`delete-${user.id}`}
-                    >
+                    <button type='button' class='btn btn-danger' data-opens={`delete-${user.id}`}>
                       Delete
                     </button>
                   </td>
@@ -67,7 +63,7 @@ export function UsersPage({ host, users, dialog }: UsersPageProps) {
             </tbody>
           </table>
         </div>
-      </main>
+      </div>
       <Dialog
         id='new-user'
         title='New user'

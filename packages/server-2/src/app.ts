@@ -9,6 +9,7 @@ import { syncRoutes } from './sync/routes';
 import { realtimeRoutes } from './realtime/routes';
 import { aiRoutes } from './ai/routes';
 import { adminRoutes } from './admin/routes';
+import favicon from './ui/favicon.svg';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -22,6 +23,13 @@ app.get('/.well-known/pact', (c) => {
     max_push_documents: maxPushDocuments(c.env),
   });
 });
+
+app.get('/favicon.svg', (c) =>
+  c.body(favicon, 200, {
+    'content-type': 'image/svg+xml',
+    'cache-control': 'public, max-age=86400',
+  })
+);
 
 app.use('/oauth/token', preflight('sync'));
 app.use('/auth/*', preflight('sync'));

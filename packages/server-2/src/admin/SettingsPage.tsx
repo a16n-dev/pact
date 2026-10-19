@@ -7,7 +7,6 @@ import { X } from 'lucide';
 import { Icon } from '../ui/Icon';
 
 export type SettingsPageProps = {
-  host: string;
   app: AppRow;
   redirectUris: string[];
   counts: { documents: number; blobs: number; blobBytes: number; tokens: number };
@@ -16,46 +15,50 @@ export type SettingsPageProps = {
 
 export type SettingsDialogId = 'rename' | 'add-uri' | 'delete';
 
-export function SettingsPage({ host, app, redirectUris, counts, dialog }: SettingsPageProps) {
+export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPageProps) {
   const base = `/admin/apps/${app.id}`;
   const errorFor = (id: SettingsDialogId) => (dialog?.id === id ? dialog.error : undefined);
   return (
-    <AppShell host={host} app={app} tab='settings' narrow>
-      <section aria-labelledby='h-general'>
-        <h2 id='h-general'>General</h2>
-        <div class='card'>
-          <div class='card-row'>
-            <div>
-              <div class='label'>Name</div>
-              <div>{app.name}</div>
-            </div>
-            <button type='button' class='btn' style='height: 40px' data-opens='rename'>
-              Rename
-            </button>
+    <AppShell app={app} tab='settings' narrow>
+      <div class='page-head'>
+        <h1>Settings</h1>
+      </div>
+
+      <section class='card' aria-labelledby='h-general'>
+        <div class='card-head'>
+          <h2 id='h-general'>General</h2>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='label'>Name</div>
+            <div>{app.name}</div>
           </div>
-          <div class='card-row'>
-            <div>
-              <div class='label'>App ID</div>
-              <div class='mono'>{app.id}</div>
-            </div>
+          <button type='button' class='btn' data-opens='rename'>
+            Rename
+          </button>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='label'>App ID</div>
+            <div class='mono'>{app.id}</div>
           </div>
         </div>
       </section>
 
-      <section aria-labelledby='h-redirects' style='margin-top: 16px'>
-        <div class='row spread' style='align-items: flex-end'>
-          <div class='stack' style='gap: 4px'>
+      <section class='card' aria-labelledby='h-redirects'>
+        <div class='card-head'>
+          <div>
             <h2 id='h-redirects'>Redirect URIs</h2>
-            <p class='muted small'>
+            <p>
               Sign-in can only send people back to these addresses. For local development, a{' '}
               <code>localhost</code> address works on any port.
             </p>
           </div>
-          <button type='button' class='btn' style='height: 40px' data-opens='add-uri'>
+          <button type='button' class='btn' data-opens='add-uri'>
             Add URI
           </button>
         </div>
-        <ul class='uris card'>
+        <ul class='uris'>
           {redirectUris.length === 0 ? (
             <li class='empty'>Add a redirect URI before anyone can sign in to this app.</li>
           ) : null}
@@ -73,38 +76,31 @@ export function SettingsPage({ host, app, redirectUris, counts, dialog }: Settin
         </ul>
       </section>
 
-      <section aria-labelledby='h-danger' style='margin-top: 16px'>
-        <h2 id='h-danger' class='danger-title'>
-          Danger zone
-        </h2>
-        <div class='card card-danger'>
-          <div class='card-row'>
-            <div>
-              <div class='title'>Wipe data</div>
-              <div class='muted small'>
-                Deletes every document and blob but keeps the app, its settings and its tokens.
-              </div>
+      <section class='card' aria-labelledby='h-danger'>
+        <div class='card-head'>
+          <h2 id='h-danger'>Danger zone</h2>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='title'>Wipe data</div>
+            <div class='muted small'>
+              Deletes every document and blob but keeps the app, its settings and its tokens.
             </div>
-            <button type='button' class='btn btn-danger' style='height: 40px' data-opens='wipe'>
-              Wipe data
-            </button>
           </div>
-          <div class='card-row'>
-            <div>
-              <div class='title'>Delete app</div>
-              <div class='muted small'>
-                Deletes the app and all of its data, and revokes every token.
-              </div>
+          <button type='button' class='btn btn-danger' data-opens='wipe'>
+            Wipe data
+          </button>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='title'>Delete app</div>
+            <div class='muted small'>
+              Deletes the app and all of its data, and revokes every token.
             </div>
-            <button
-              type='button'
-              class='btn btn-danger-filled'
-              style='height: 40px'
-              data-opens='delete'
-            >
-              Delete app
-            </button>
           </div>
+          <button type='button' class='btn btn-danger-filled' data-opens='delete'>
+            Delete app
+          </button>
         </div>
       </section>
 
