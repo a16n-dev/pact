@@ -31,4 +31,5 @@ catalog:
   typescript-eslint: ^8
   vitest: ^3
   wrangler: ^4
+  yjs: ^13.6.27
   zod: 4.4.1
