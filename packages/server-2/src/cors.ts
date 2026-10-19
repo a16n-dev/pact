@@ -25,6 +25,14 @@ export function preflight(allowHeaders: 'sync' | 'any'): MiddlewareHandler<{ Bin
   };
 }
 
+// For routes that name no app, so there is no redirect-URI list to check against
+export function allowAnyOrigin<E extends { Bindings: Env }>(c: Context<E>): void {
+  const origin = c.req.header('origin');
+  if (!origin) return;
+  c.header('access-control-allow-origin', origin);
+  c.header('vary', 'origin');
+}
+
 export async function isOriginAllowed(
   db: D1Database,
   appId: string,

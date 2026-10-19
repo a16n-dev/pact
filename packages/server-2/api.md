@@ -182,7 +182,7 @@ The socket closes with code 1000 and reason `signed out` when the token is signe
 
 ## CORS
 
-Browser clients work from these origins without configuration: `http://localhost:*` and `http://127.0.0.1:*`, plus the origin of every `https` redirect URI registered for the app. A request from any other origin gets `403 origin_not_allowed`. Requests without an `Origin` header, such as native apps and scripts, aren't checked.
+Browser clients work from these origins without configuration: `http://localhost:*` and `http://127.0.0.1:*`, plus the origin of every `https` redirect URI registered for the app. A request from any other origin gets `403 origin_not_allowed`. Requests without an `Origin` header, such as native apps and scripts, aren't checked. Discovery names no app, so it's served to any origin.
 
 Preflights succeed for any origin. On `/oauth/token`, `/auth/*` and `/sync/*` the allowed request headers are `authorization` and `content-type`; on `/ai/*` any requested header is allowed. The realtime upgrade applies the same origin rule.
 
