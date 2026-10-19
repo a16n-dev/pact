@@ -54,7 +54,7 @@ OAuth 2.0 authorization code with PKCE (S256 only). The client opens a browser t
 
 The server renders its own login page. If any parameter is missing or malformed it renders an error page (400) and never redirects.
 
-**Redirect URIs** are registered per app by the admin. Matching is an exact string comparison, with one exception: a registered loopback URI (`http://localhost/…` or `http://127.0.0.1/…`) matches on any port, so local dev servers can use whatever port is free. Allowed forms are `https://…`, loopback `http://…`, and private-use schemes for native apps such as `com.example.app:/callback`.
+**Redirect URIs** are registered per app by the admin and matched by exact string comparison. Allowed forms are `https://…` and private-use schemes for native apps such as `com.example.app:/callback`. When the admin turns on the app's **Allow localhost** switch, any `http://localhost/…` or `http://127.0.0.1/…` URI on any port is accepted too, so local dev servers can use whatever port is free.
 
 ### 2. Receive the redirect
 

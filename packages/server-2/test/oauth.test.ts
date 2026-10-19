@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, fetchMock, SELF } from 'cloudflare:test';
 import { api, ORIGIN, randomVerifier, seedApp, seedUser } from './helpers';
 import { sha256Base64url } from '../src/lib/crypto';
+import { setAllowLocalhost } from '../src/db/apps';
 
 beforeAll(() => {
   fetchMock.activate();
@@ -165,7 +166,7 @@ describe('sign-in', () => {
     expect(await badUri.text()).toContain('https://evil.example/cb');
   });
 
-  it('matches loopback redirect URIs on any port', async () => {
+  it('accepts any loopback redirect URI only while the app allows localhost', async () => {
     mockTurnstile(true);
     const res = await login(
       await startFlow('app-a', 'http://localhost:5173/callback'),
@@ -174,6 +175,15 @@ describe('sign-in', () => {
     );
     expect(res.status).toBe(303);
     expect(res.headers.get('location')).toMatch(/^http:\/\/localhost:5173\/callback\?code=/);
+
+    await setAllowLocalhost(env.DB, 'app-a', false);
+    mockTurnstile(true);
+    const refused = await login(
+      await startFlow('app-a', 'http://127.0.0.1:5173/callback'),
+      'alex',
+      'correcthorse'
+    );
+    expect(refused.status).toBe(400);
   });
 
   it('rejects a code with the wrong verifier, app or redirect URI', async () => {

@@ -12,6 +12,10 @@ document.addEventListener('click', (e) => {
       .then(() => { copy.querySelector('span').textContent = 'Copied'; });
   }
 });
+document.addEventListener('change', (e) => {
+  const form = e.target.closest('form[data-autosubmit]');
+  if (form) form.requestSubmit();
+});
 document.addEventListener('submit', (e) => {
   const button = e.target.querySelector('button[type=submit]');
   if (button) button.classList.add('pending');

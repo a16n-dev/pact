@@ -1,5 +1,5 @@
 import { env, SELF } from 'cloudflare:test';
-import { createApp, addRedirectUri } from '../src/db/apps';
+import { createApp, addRedirectUri, setAllowLocalhost } from '../src/db/apps';
 import { createUser } from '../src/db/users';
 import { mintApiToken } from '../src/db/tokens';
 import { base64url } from '../src/lib/crypto';
@@ -8,10 +8,12 @@ export const ORIGIN = 'https://sync.example.test';
 
 export async function seedApp(
   id = 'app-a',
-  redirectUris: string[] = ['https://app.example.test/callback', 'http://localhost/callback']
+  redirectUris: string[] = ['https://app.example.test/callback'],
+  allowLocalhost = true
 ): Promise<{ id: string; token: string; tokenId: string }> {
   await createApp(env.DB, id, `App ${id}`);
   for (const uri of redirectUris) await addRedirectUri(env.DB, id, uri);
+  await setAllowLocalhost(env.DB, id, allowLocalhost);
   const { token, id: tokenId } = await mintApiToken(env.DB, id, 'test script');
   return { id, token, tokenId };
 }

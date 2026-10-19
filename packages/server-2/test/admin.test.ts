@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { env, fetchMock, SELF } from 'cloudflare:test';
 import { api, doc, ORIGIN, push, seedApp } from './helpers';
 import { base64url, sha256Hex } from '../src/lib/crypto';
+import { getApp } from '../src/db/apps';
 
 const TEAM = 'test.cloudflareaccess.com';
 const AUD = 'aud-123';
@@ -221,6 +222,22 @@ describe('inside an app', () => {
       ).status
     ).toBe(303);
     expect(await (await admin('/apps/app-a/settings')).text()).not.toContain('com.example.app:/cb');
+  });
+
+  it('switches localhost redirects on and off instead of registering them', async () => {
+    const loopback = await admin('/apps/app-a/redirect-uris', {
+      method: 'POST',
+      form: { uri: 'http://localhost:3000/cb' },
+    });
+    expect(loopback.status).toBe(400);
+    expect(await loopback.text()).toContain('Allow localhost');
+
+    expect((await admin('/apps/app-a/localhost', { method: 'POST', form: {} })).status).toBe(303);
+    expect((await getApp(env.DB, 'app-a'))!.allow_localhost).toBe(0);
+    expect(
+      (await admin('/apps/app-a/localhost', { method: 'POST', form: { enabled: 'on' } })).status
+    ).toBe(303);
+    expect((await getApp(env.DB, 'app-a'))!.allow_localhost).toBe(1);
   });
 
   it('lists and downloads blobs', async () => {

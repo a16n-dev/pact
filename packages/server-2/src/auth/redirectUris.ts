@@ -1,6 +1,12 @@
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
-function isLoopback(url: URL): boolean {
+export function isLoopbackUri(uri: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return false;
+  }
   return url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
 }
 
@@ -12,33 +18,20 @@ export function isAllowedRedirectUriForm(uri: string): boolean {
     return false;
   }
   if (url.protocol === 'https:') return true;
-  if (url.protocol === 'http:') return isLoopback(url);
+  if (url.protocol === 'http:') return isLoopbackUri(uri);
   // Private-use schemes for native apps (RFC 8252 §7.1), such as `com.example.app:/callback`.
   return url.protocol.includes('.') && !url.protocol.startsWith('.');
 }
 
-// Exact string comparison, except that a registered loopback URI matches on any port so local
-// dev servers can pick whatever port is free (RFC 8252 §7.3).
-export function redirectUriMatches(registered: string[], requested: string): boolean {
+// Exact string comparison against the registered URIs, or any loopback URI on any port when the
+// app allows localhost (RFC 8252 §7.3).
+export function redirectUriMatches(
+  app: { allow_localhost: number },
+  registered: string[],
+  requested: string
+): boolean {
   if (registered.includes(requested)) return true;
-  let url: URL;
-  try {
-    url = new URL(requested);
-  } catch {
-    return false;
-  }
-  if (!isLoopback(url)) return false;
-  return registered.some((uri) => {
-    let candidate: URL;
-    try {
-      candidate = new URL(uri);
-    } catch {
-      return false;
-    }
-    if (!isLoopback(candidate)) return false;
-    candidate.port = url.port;
-    return candidate.href === url.href;
-  });
+  return app.allow_localhost === 1 && isLoopbackUri(requested);
 }
 
 export function allowedOrigins(registered: string[]): Set<string> {

@@ -10,13 +10,14 @@ import {
   listRedirectUris,
   removeRedirectUri,
   renameApp,
+  setAllowLocalhost,
   type AppRow,
 } from '../db/apps';
 import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
 import { wipeDocumentsStatement } from '../db/documents';
-import { isAllowedRedirectUriForm } from '../auth/redirectUris';
+import { isAllowedRedirectUriForm, isLoopbackUri } from '../auth/redirectUris';
 import { isValidAppId, isValidLabel, isValidPassword, isValidUsername } from '../lib/validation';
 import { notifyRealtime } from '../realtime/durableObject';
 import { AppsPage } from './AppsPage';
@@ -236,18 +237,21 @@ adminRoutes.post('/apps/:id/rename', async (c) => {
 adminRoutes.post('/apps/:id/redirect-uris', async (c) => {
   const app = c.get('app');
   const uri = field(await c.req.parseBody(), 'uri');
+  const fail = async (error: string) =>
+    c.html(await settingsPage(c, { id: 'add-uri', value: uri, error }), 400);
+  if (isLoopbackUri(uri)) {
+    return fail('Turn on "Allow localhost" instead; it covers every localhost address and port.');
+  }
   if (!uri || uri.length > 2048 || !isAllowedRedirectUriForm(uri)) {
-    return c.html(
-      await settingsPage(c, {
-        id: 'add-uri',
-        value: uri,
-        error:
-          'Use an https address, a localhost address, or a custom scheme like com.example.app:/callback.',
-      }),
-      400
-    );
+    return fail('Use an https address or a custom scheme like com.example.app:/callback.');
   }
   await addRedirectUri(c.env.DB, app.id, uri);
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/localhost', async (c) => {
+  const app = c.get('app');
+  await setAllowLocalhost(c.env.DB, app.id, field(await c.req.parseBody(), 'enabled') === 'on');
   return c.redirect(`/admin/apps/${app.id}/settings`, 303);
 });
 

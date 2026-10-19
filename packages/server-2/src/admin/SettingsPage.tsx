@@ -49,14 +49,31 @@ export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPage
         <div class='card-head'>
           <div>
             <h2 id='h-redirects'>Redirect URIs</h2>
-            <p>
-              Sign-in can only send people back to these addresses. For local development, a{' '}
-              <code>localhost</code> address works on any port.
-            </p>
+            <p>Sign-in can only send people back to these addresses.</p>
           </div>
           <button type='button' class='btn' data-opens='add-uri'>
             Add URI
           </button>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='title'>Allow localhost</div>
+            <div class='muted small'>
+              Lets local builds sign in from any <code>http://localhost</code> or{' '}
+              <code>http://127.0.0.1</code> address on any port.
+            </div>
+          </div>
+          <form method='post' action={`${base}/localhost`} data-autosubmit>
+            <label class='switch'>
+              <input
+                type='checkbox'
+                name='enabled'
+                checked={app.allow_localhost === 1}
+                aria-label='Allow localhost'
+              />
+              <span class='switch-track' aria-hidden='true' />
+            </label>
+          </form>
         </div>
         <ul class='uris'>
           {redirectUris.length === 0 ? (
@@ -131,7 +148,7 @@ export function SettingsPage({ app, redirectUris, counts, dialog }: SettingsPage
           mono
           value={dialog?.id === 'add-uri' ? dialog.value : undefined}
           error={errorFor('add-uri')}
-          help='An https address, a localhost address, or a custom scheme like com.example.app:/callback.'
+          help='An https address or a custom scheme like com.example.app:/callback.'
         />
       </Dialog>
       <Dialog
