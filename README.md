@@ -2,7 +2,7 @@
 
 Pact is an intentionally simple client/server architecture for building local-first apps designed to be used by a small group of individuals and agents collaborating in real-time in a high trust environment.
 
-> Pact 2 is being built in `packages/server-2` (spec in its `doc.md`, API in `api.md`) and `packages/client-2` (scope in its `scope.md`, usage in its `README.md`). The Pact 1 client, server, docs and examples described below live in `deprecated/` until it replaces them.
+> Pact 2 lives in `packages/server-2` (API contract in its `api.md`) and `packages/client-2` (usage in its `README.md`). The Pact 1 client, server, docs and examples described below live in `deprecated/` until it replaces them.
 
 ## Features
 
