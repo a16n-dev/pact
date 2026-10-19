@@ -19,31 +19,29 @@ const TABS: { id: AppTab; label: string }[] = [
 
 export function AppShell({ host, app, tab, narrow, children }: AppShellProps) {
   return (
-    <AdminShell title={app.name} host={host} section='apps'>
-      <div class='app-header'>
-        <div>
-          <nav aria-label='Breadcrumb' class='breadcrumb'>
-            <a href='/admin/apps'>Apps</a>
-            <span class='sep'>/</span>
-            <span class='muted'>{app.name}</span>
-          </nav>
-          <div class='row' style='gap: 6px 14px; align-items: baseline'>
-            <h1>{app.name}</h1>
-            <span class='mono muted'>{app.id}</span>
-          </div>
-          <nav aria-label='App' class='tabs'>
-            {TABS.map((entry) => (
-              <a
-                href={`/admin/apps/${app.id}/${entry.id}`}
-                aria-current={entry.id === tab ? 'page' : undefined}
-              >
-                {entry.label}
-              </a>
-            ))}
-          </nav>
+    <AdminShell
+      title={app.name}
+      host={host}
+      section='apps'
+      crumbs={[{ label: 'Apps', href: '/admin/apps' }, { label: app.name }]}
+    >
+      <main class={narrow ? 'container container-narrow' : 'container'}>
+        <div class='row' style='gap: 6px 14px; align-items: baseline'>
+          <h1>{app.name}</h1>
+          <span class='mono muted'>{app.id}</span>
         </div>
-      </div>
-      <main class={narrow ? 'container container-narrow' : 'container'}>{children}</main>
+        <nav aria-label='App' class='segmented'>
+          {TABS.map((entry) => (
+            <a
+              href={`/admin/apps/${app.id}/${entry.id}`}
+              aria-current={entry.id === tab ? 'page' : undefined}
+            >
+              {entry.label}
+            </a>
+          ))}
+        </nav>
+        {children}
+      </main>
     </AdminShell>
   );
 }

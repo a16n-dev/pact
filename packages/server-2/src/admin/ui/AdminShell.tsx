@@ -1,31 +1,68 @@
 import type { PropsWithChildren } from 'hono/jsx';
+import { Boxes, ChevronRight, ShieldCheck, Users } from 'lucide';
 import { Document } from '../../ui/Document';
+import { Icon } from '../../ui/Icon';
 
 type AdminSection = 'apps' | 'users';
 
-type AdminShellProps = PropsWithChildren<{ title: string; host: string; section: AdminSection }>;
+export type Crumb = { label: string; href?: string };
 
-export function AdminShell({ title, host, section, children }: AdminShellProps) {
+type AdminShellProps = PropsWithChildren<{
+  title: string;
+  host: string;
+  section: AdminSection;
+  crumbs?: Crumb[];
+}>;
+
+const SECTIONS = [
+  { id: 'apps', label: 'Apps', icon: Boxes },
+  { id: 'users', label: 'Users', icon: Users },
+] as const;
+
+export function AdminShell({ title, host, section, crumbs, children }: AdminShellProps) {
+  const trail = crumbs ?? [{ label: SECTIONS.find((entry) => entry.id === section)!.label }];
   return (
     <Document title={`${title} · pact admin`} withScript>
-      <header class='topbar'>
-        <div class='row' style='gap: 10px; align-items: baseline'>
-          <a href='/admin' class='wordmark'>
-            pact
+      <div class='shell'>
+        <aside class='sidebar'>
+          <a href='/admin' class='brand'>
+            <span class='wordmark'>pact</span>
+            <span class='host'>{host}</span>
           </a>
-          <span class='host'>{host}</span>
+          <nav aria-label='Admin'>
+            {SECTIONS.map((entry) => (
+              <a
+                href={`/admin/${entry.id}`}
+                aria-current={entry.id === section ? 'page' : undefined}
+              >
+                <Icon icon={entry.icon} size={18} />
+                {entry.label}
+              </a>
+            ))}
+          </nav>
+          <div class='sidebar-foot'>
+            <Icon icon={ShieldCheck} size={16} />
+            Cloudflare Access
+          </div>
+        </aside>
+        <div class='content'>
+          <header class='topbar'>
+            <nav aria-label='Breadcrumb' class='breadcrumb'>
+              {trail.map((crumb, i) => (
+                <>
+                  {i > 0 ? <Icon icon={ChevronRight} size={14} /> : null}
+                  {crumb.href ? (
+                    <a href={crumb.href}>{crumb.label}</a>
+                  ) : (
+                    <span aria-current='page'>{crumb.label}</span>
+                  )}
+                </>
+              ))}
+            </nav>
+          </header>
+          {children}
         </div>
-        <nav aria-label='Admin'>
-          <a href='/admin/apps' aria-current={section === 'apps' ? 'page' : undefined}>
-            Apps
-          </a>
-          <a href='/admin/users' aria-current={section === 'users' ? 'page' : undefined}>
-            Users
-          </a>
-        </nav>
-        <span class='access'>Cloudflare Access</span>
-      </header>
-      {children}
+      </div>
     </Document>
   );
 }
