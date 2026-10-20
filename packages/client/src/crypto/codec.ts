@@ -14,7 +14,8 @@ import { ENVELOPE_PREFIX, type DocCipher } from './types';
  */
 export type RecordCodec = {
   encode(collection: string, id: string, record: StoredRecord): Promise<AdapterRecord>;
-  decode(collection: string, id: string, stored: AdapterRecord): Promise<StoredRecord>;
+  /** Null only with `hideUndecryptable`, for an envelope this store cannot open. */
+  decode(collection: string, id: string, stored: AdapterRecord): Promise<StoredRecord | null>;
   toWire(stored: AdapterRecord): string;
   /** Null when the data is an envelope this store cannot open, or is not a record at all. */
   fromWire(collection: string, id: string, data: string): Promise<StoredRecord | null>;
@@ -38,13 +39,18 @@ function parseRecord(json: string): StoredRecord | null {
   return result.success ? (result.data as StoredRecord) : null;
 }
 
-export function plainCodec(): RecordCodec {
+export type CodecOptions = {
+  hideUndecryptable?: boolean;
+};
+
+export function plainCodec(options: CodecOptions = {}): RecordCodec {
   return {
     async encode(_collection, _id, record) {
       return record;
     },
     async decode(collection, id, stored) {
       if (isSealedRecord(stored)) {
+        if (options.hideUndecryptable) return null;
         throw new Error(`${collection}/${id} is encrypted but the store has no cipher`);
       }
       return stored;
@@ -61,7 +67,7 @@ export function plainCodec(): RecordCodec {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export function encryptedCodec(cipher: DocCipher): RecordCodec {
+export function encryptedCodec(cipher: DocCipher, options: CodecOptions = {}): RecordCodec {
   const open = async (
     collection: string,
     id: string,
@@ -86,7 +92,9 @@ export function encryptedCodec(cipher: DocCipher): RecordCodec {
     async decode(collection, id, stored) {
       if (!isSealedRecord(stored)) return stored;
       const record = await open(collection, id, stored.enc);
-      if (!record) throw new Error(`Cannot decrypt ${collection}/${id} with this key`);
+      if (!record && !options.hideUndecryptable) {
+        throw new Error(`Cannot decrypt ${collection}/${id} with this key`);
+      }
       return record;
     },
     toWire(stored) {

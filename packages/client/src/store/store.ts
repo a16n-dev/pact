@@ -22,6 +22,7 @@ import {
   greatestClock,
   isSealedRecord,
   mergeRecords,
+  type SealedRecord,
   type StoredEntry,
   type StoredRecord,
 } from '../record';
@@ -82,6 +83,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private readonly adapter: DatabaseAdapter;
   private readonly codec: RecordCodec;
   private readonly cipher: DocCipher | null;
+  private readonly hideUndecryptable: boolean;
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
   private readonly definitionsByKey: ReadonlyMap<string, CollectionDefinition>;
   private readonly migrator: Migrator;
@@ -109,7 +111,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private constructor(options: StoreOptions<Defs>, node: string) {
     this.adapter = options.adapter;
     this.cipher = options.encryption?.cipher ?? null;
-    this.codec = this.cipher ? encryptedCodec(this.cipher) : plainCodec();
+    this.hideUndecryptable = options.onUndecryptable === 'hide';
+    const codecOptions = { hideUndecryptable: this.hideUndecryptable };
+    this.codec = this.cipher ? encryptedCodec(this.cipher, codecOptions) : plainCodec(codecOptions);
     this.blobAdapter = options.blobs ?? null;
     const defs = options.collections;
     this.definitions = new Map(defs.map((d) => [d.name, d]));
@@ -142,6 +146,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       definitionByKey: (key) => (key === TASKS.key ? TASKS : this.definitionsByKey.get(key)),
       definitionByName: (name) => (name === TASKS.name ? TASKS : this.definitions.get(name)),
       applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
+      applySealed: (def, id, sealed) => this.applySealed(def, id, sealed),
+      hideUndecryptable: this.hideUndecryptable,
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
       emit: (collection) => this.emit(collection),
@@ -402,11 +408,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     def: CollectionDefinition
   ): Promise<Array<{ id: string; raw: StoredRecord }>> {
     const entries = await this.adapter.getAll(def.key);
-    return Promise.all(
+    const decoded = await Promise.all(
       entries.map(async ({ id, record }) => ({
         id,
         raw: await this.codec.decode(def.key, id, record),
       }))
+    );
+    return decoded.filter(
+      (entry): entry is { id: string; raw: StoredRecord } => entry.raw !== null
     );
   }
 
@@ -761,6 +770,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     entry: StoredEntry
   ): Promise<AnyDocument | null> {
     const raw = await this.codec.decode(def.key, entry.id, entry.record);
+    if (!raw) return null;
     const record = await this.materialise(def, entry.id, raw);
     return record ? this.readDoc(def, entry.id, record) : null;
   }
@@ -798,6 +808,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       if (!this.validateIncoming(def, migrated)) return this.hold(def, id, incoming);
       const local = await this.loadRecord(def, id);
       if (!local) {
+        if (await this.outranksIncoming(def, id, greatestClock(migrated))) return 'unchanged';
         if (def.textEngine) migrated.text = this.openText(def, id, migrated.text).encode();
         await this.putRecord(def, id, migrated);
         return 'applied';
@@ -812,6 +823,45 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const { record, changed } = mergeRecords(local, migrated, def.merge, mergeText);
       if (!changed) return 'unchanged';
       await this.putRecord(def, id, record);
+      return 'applied';
+    });
+  }
+
+  // In hide mode a record sealed under another key sits where the local
+  // record would be, and still competes by clock with whatever arrives.
+  private async outranksIncoming(
+    def: CollectionDefinition,
+    id: string,
+    incomingClock: string | undefined
+  ): Promise<boolean> {
+    if (!this.hideUndecryptable) return false;
+    const stored = await this.adapter.get(def.key, id);
+    if (!stored || !isSealedRecord(stored)) return false;
+    return incomingClock === undefined || compareClocks(stored.hlc, incomingClock) >= 0;
+  }
+
+  /**
+   * Stores a pulled envelope this key cannot open, so a store holding the
+   * right key can read it later. Newest clock wins wholesale against the
+   * local record, whichever key sealed that.
+   */
+  private applySealed(
+    def: CollectionDefinition,
+    id: string,
+    sealed: SealedRecord
+  ): Promise<ApplyResult> {
+    return this.serialise(def.name, id, async () => {
+      const stored = await this.adapter.get(def.key, id);
+      const local = stored ? await this.codec.decode(def.key, id, stored) : null;
+      const mine = local
+        ? greatestClock(local)
+        : stored && isSealedRecord(stored)
+          ? stored.hlc
+          : undefined;
+      if (mine !== undefined && compareClocks(mine, sealed.hlc) >= 0) return 'unchanged';
+      await this.adapter.put(def.key, id, sealed);
+      this.indexes?.onRemove(def.name, id);
+      this.textCache.drop(def.name, id);
       return 'applied';
     });
   }
@@ -833,8 +883,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<ApplyResult> {
     const key = outboxKey(def.key, id);
     const existing = await this.getConfigFrom<HeldEntry>(HELD, key);
-    if (existing) {
-      const held = await this.codec.decode(def.key, id, existing.data);
+    const held = existing ? await this.codec.decode(def.key, id, existing.data) : null;
+    if (held) {
       const mine = greatestClock(held);
       const theirs = greatestClock(incoming);
       if (mine !== undefined && theirs !== undefined && compareClocks(mine, theirs) >= 0)
@@ -885,6 +935,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const def = this.definitionsByKey.get(entry.collection);
       if (!def) continue;
       const incoming = await this.codec.decode(def.key, entry.docId, entry.data);
+      if (!incoming) continue;
       if ((await this.applyIncoming(def, entry.docId, incoming)) === 'held') continue;
       await this.adapter.delete(HELD, key);
       touched.add(def.name);
@@ -893,7 +944,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   private async verifyEncryptionKey(): Promise<void> {
-    if (!this.cipher) return;
+    if (!this.cipher || this.hideUndecryptable) return;
     const existing = await this.getConfig<EncryptionConfig>('encryption');
     if (!existing) {
       const check = await this.cipher.seal(encoder.encode(KEYCHECK_SENTINEL), KEYCHECK_AAD);

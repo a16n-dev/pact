@@ -27,6 +27,12 @@ describe('plainCodec', () => {
       /no cipher/
     );
   });
+
+  it('hides envelopes instead when asked', async () => {
+    const hiding = plainCodec({ hideUndecryptable: true });
+    expect(await hiding.decode('notes', 'n-1', { enc: 'pactenc$1$a$b', hlc: '' })).toBeNull();
+    expect(await hiding.decode('notes', 'n-1', record)).toBe(record);
+  });
 });
 
 describe('encryptedCodec', () => {
@@ -46,6 +52,12 @@ describe('encryptedCodec', () => {
     );
     expect(await other.fromWire('notes', 'n-1', stored.enc)).toBeNull();
     await expect(other.decode('notes', 'n-1', stored)).rejects.toThrow(/Cannot decrypt/);
+
+    const hiding = encryptedCodec(
+      createWebCryptoCipher(await deriveEncryptionKey('x', 'salt', 1_000)),
+      { hideUndecryptable: true }
+    );
+    expect(await hiding.decode('notes', 'n-1', stored)).toBeNull();
   });
 
   it('passes plaintext through on both paths', async () => {
