@@ -190,6 +190,17 @@ const store = await Store.create({
 
 Records are sealed at rest and on the wire; the server sees only `collection`, `id` and the clock. A wrong key fails at startup on any install that already holds data. Every client of the app must hold the same key: a version sealed under another key is skipped on pull, so clients with different keys never see each other's documents. To turn encryption on for existing data, call `store.encryption.encryptLocal()` and then `store.sync.push()`.
 
+`onUndecryptable: 'hide'` relaxes that to a key per record. Any key opens the store, with or without a cipher of its own; each record is readable only by the key that sealed it, and the rest read as missing while staying intact at rest. A pulled version sealed under another key is kept locally rather than skipped, so a store that later opens with that key can read it, and the newest clock wins wholesale when two keys write the same document. Backups carry only what the key can open.
+
+```ts
+const store = await Store.create({
+  adapter,
+  collections: [todos],
+  encryption: { cipher: createWebCryptoCipher(key) },
+  onUndecryptable: 'hide',
+});
+```
+
 ### Indexes
 
 ```ts

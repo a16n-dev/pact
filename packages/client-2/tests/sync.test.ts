@@ -8,7 +8,7 @@ import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCry
 import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
 import { FakeServer } from './fakeServer';
-import type { StoredRecord } from '../src/record';
+import { isSealedRecord, type StoredRecord } from '../src/record';
 
 const notes = defineCollection({
   name: 'notes',
@@ -45,7 +45,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-type Options = { adapter?: InMemoryAdapter; cipher?: DocCipher; collections?: any[] };
+type Options = {
+  adapter?: InMemoryAdapter;
+  cipher?: DocCipher;
+  collections?: any[];
+  onUndecryptable?: 'throw' | 'hide';
+};
 
 async function signedInStore(deviceName: string, opts: Options = {}) {
   const adapter = opts.adapter ?? new InMemoryAdapter();
@@ -53,6 +58,7 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
     adapter,
     collections: opts.collections ?? [notes, docs, local],
     encryption: opts.cipher ? { cipher: opts.cipher } : undefined,
+    onUndecryptable: opts.onUndecryptable,
   });
   const begun = await store.sync.beginSignIn({
     url: server.origin,
@@ -446,6 +452,40 @@ describe('encryption on the wire', () => {
     const result = await c.store.sync.pull();
     expect(result.skipped.sealed).toBeGreaterThanOrEqual(1);
     expect(await c.store.collection('notes').get('nt-1')).toBeNull();
+  });
+
+  it('hide mode keeps other keys’ envelopes locally and the newest write wins', async () => {
+    const key1 = createWebCryptoCipher(await deriveEncryptionKey('one', 'app', 1_000));
+    const key2 = createWebCryptoCipher(await deriveEncryptionKey('two', 'app', 1_000));
+    const a = await signedInStore('A', { cipher: key1, onUndecryptable: 'hide' });
+    const b = await signedInStore('B', { cipher: key2, onUndecryptable: 'hide' });
+    a.store.dispose();
+    b.store.dispose();
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'secret' });
+    await a.store.sync.drain();
+
+    const pulled = await b.store.sync.pull();
+    expect(pulled.applied).toBe(1);
+    expect(pulled.skipped.sealed).toBe(0);
+    expect(await b.store.collection('notes').get('nt-1')).toBeNull();
+    const raw = await b.adapter.get('n', 'nt-1');
+    expect(raw && isSealedRecord(raw)).toBe(true);
+    expect(await b.store.sync.pull()).toMatchObject({ applied: 0 });
+
+    const bUnderKey1 = await Store.create({
+      adapter: b.adapter,
+      collections: [notes, docs, local],
+      encryption: { cipher: key1 },
+      onUndecryptable: 'hide',
+    });
+    bUnderKey1.dispose();
+    expect((await bUnderKey1.collection('notes').get('nt-1'))?.title).toBe('secret');
+
+    await b.store.collection('notes').upsert({ id: 'nt-1', title: 'mine now' });
+    await b.store.sync.drain();
+    await a.store.sync.pull();
+    expect(await a.store.collection('notes').get('nt-1')).toBeNull();
+    expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('mine now');
   });
 });
 
