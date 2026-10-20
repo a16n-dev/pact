@@ -4,5 +4,6 @@ export const LIMITS = {
   pullPageSize: 500,
   blobPageSize: 100,
   authCodeTtlMs: 60_000,
+  loginSessionTtlMs: 30 * 24 * 60 * 60_000,
   lastSeenWriteIntervalMs: 5 * 60_000,
 };

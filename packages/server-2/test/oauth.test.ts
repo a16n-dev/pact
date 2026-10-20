@@ -4,6 +4,7 @@ import { api, ORIGIN, randomVerifier, seedApp, seedUser } from './helpers';
 import { sha256Base64url } from '../src/lib/crypto';
 import { setAllowLocalhost } from '../src/db/apps';
 import { addAppUser, setRestricted } from '../src/db/appUsers';
+import { resetPassword } from '../src/db/users';
 
 beforeAll(() => {
   fetchMock.activate();
@@ -47,6 +48,41 @@ function login(flow: Flow, username: string, password: string, ip = '203.0.113.1
     body: new URLSearchParams({ username, password, 'cf-turnstile-response': 'tok' }),
     redirect: 'manual',
   });
+}
+
+function loginCookie(res: Response): string {
+  const header = res.headers.get('set-cookie') ?? '';
+  expect(header).toMatch(/^pact_login=/);
+  return header.split(';')[0]!;
+}
+
+function withCookie(flow: Flow, cookie: string, intent?: 'continue' | 'switch') {
+  return SELF.fetch(flow.authorizeUrl, {
+    method: intent ? 'POST' : 'GET',
+    headers: {
+      cookie,
+      ...(intent ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+    },
+    body: intent ? new URLSearchParams({ intent }) : undefined,
+    redirect: 'manual',
+  });
+}
+
+// Each remembered sign-in uses its own user and IP so these tests stay clear of the login
+// rate limiter shared across the file.
+let rememberedSignIns = 0;
+async function signInAndRemember(): Promise<string> {
+  rememberedSignIns += 1;
+  await seedUser('remy', 'correcthorse');
+  mockTurnstile(true);
+  const res = await login(
+    await startFlow(),
+    'remy',
+    'correcthorse',
+    `192.0.2.${rememberedSignIns}`
+  );
+  expect(res.status).toBe(303);
+  return loginCookie(res);
 }
 
 async function exchange(flow: Flow, code: string, appId = 'app-a', verifier = flow.verifier) {
@@ -232,6 +268,68 @@ describe('sign-in', () => {
       json: { grant_type: 'authorization_code' },
     });
     expect(await missing.json()).toEqual({ error: 'invalid_request' });
+  });
+
+  it('remembers the browser and offers to continue without a password', async () => {
+    const cookie = await signInAndRemember();
+    expect(cookie).not.toContain('correcthorse');
+
+    const page = await withCookie(await startFlow(), cookie);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('Continue as remy');
+    expect(html).toContain('Use a different account');
+    expect(html).not.toContain('cf-turnstile');
+
+    const flow = await startFlow();
+    const res = await withCookie(flow, cookie, 'continue');
+    expect(res.status).toBe(303);
+    const code = new URL(res.headers.get('location')!).searchParams.get('code')!;
+    expect((await exchange(flow, code)).status).toBe(200);
+  });
+
+  it('sets a hardened cookie scoped to the authorize path', async () => {
+    mockTurnstile(true);
+    const res = await login(await startFlow(), 'alex', 'correcthorse', '192.0.2.100');
+    const header = res.headers.get('set-cookie')!;
+    expect(header).toContain('Path=/oauth/authorize');
+    expect(header).toContain('HttpOnly');
+    expect(header).toContain('Secure');
+    expect(header).toContain('SameSite=Lax');
+    expect(header).toMatch(/Max-Age=\d+/);
+  });
+
+  it('forgets the browser when the user picks a different account', async () => {
+    const cookie = await signInAndRemember();
+    const res = await withCookie(await startFlow(), cookie, 'switch');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('cf-turnstile');
+    expect(res.headers.get('set-cookie')).toMatch(/^pact_login=;.*Max-Age=0/);
+
+    const stale = await withCookie(await startFlow(), cookie);
+    expect(await stale.text()).not.toContain('Continue as');
+    expect((await withCookie(await startFlow(), cookie, 'continue')).status).toBe(200);
+  });
+
+  it('ignores an expired or revoked session', async () => {
+    const cookie = await signInAndRemember();
+    await env.DB.prepare('UPDATE login_sessions SET expires_at = 0').run();
+    expect(await (await withCookie(await startFlow(), cookie)).text()).not.toContain('Continue as');
+
+    const fresh = await signInAndRemember();
+    const remy = await env.DB.prepare("SELECT id FROM users WHERE username = 'remy'").first<{
+      id: string;
+    }>();
+    await resetPassword(env.DB, remy!.id, 'newpassword');
+    expect(await (await withCookie(await startFlow(), fresh)).text()).not.toContain('Continue as');
+  });
+
+  it('tells a remembered user plainly when an app is restricted', async () => {
+    const cookie = await signInAndRemember();
+    await setRestricted(env.DB, 'app-a', true);
+    const res = await withCookie(await startFlow(), cookie, 'continue');
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('sign in to this app. Try a different account');
   });
 
   it('rate limits repeated attempts', async () => {

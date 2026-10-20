@@ -8,6 +8,7 @@ const TABLES = [
   'blobs',
   'tokens',
   'auth_codes',
+  'login_sessions',
   'app_redirect_uris',
   'app_origins',
   'app_users',

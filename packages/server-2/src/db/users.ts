@@ -54,10 +54,12 @@ export async function resetPassword(
   userId: string,
   password: string
 ): Promise<void> {
-  await db
-    .prepare('UPDATE users SET password_hash = ?2 WHERE id = ?1')
-    .bind(userId, await hashPassword(password))
-    .run();
+  await db.batch([
+    db
+      .prepare('UPDATE users SET password_hash = ?2 WHERE id = ?1')
+      .bind(userId, await hashPassword(password)),
+    db.prepare('DELETE FROM login_sessions WHERE user_id = ?1').bind(userId),
+  ]);
 }
 
 export async function deleteUser(db: D1Database, userId: string): Promise<string[]> {
@@ -69,6 +71,7 @@ export async function deleteUser(db: D1Database, userId: string): Promise<string
     db.prepare('DELETE FROM tokens WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM auth_codes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM app_users WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM login_sessions WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM users WHERE id = ?1').bind(userId),
   ]);
   return results.map((row) => row.id);

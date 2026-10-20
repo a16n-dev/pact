@@ -54,6 +54,8 @@ OAuth 2.0 authorization code with PKCE (S256 only). The client opens a browser t
 
 The server renders its own login page. If any parameter is missing or malformed it renders an error page (400) and never redirects.
 
+After a successful sign-in the browser is remembered for 30 days with a cookie scoped to this page, so the next app to open it is offered **Continue as &lt;username&gt;** without a password. The user can pick **Use a different account** to forget the browser; resetting or deleting the user does the same.
+
 **Redirect URIs** are registered per app by the admin and matched by exact string comparison. Allowed forms are `https://…` and private-use schemes for native apps such as `com.example.app:/callback`. When the admin turns on the app's **Allow localhost** switch, any `http://localhost/…` or `http://127.0.0.1/…` URI on any port is accepted too, so local dev servers can use whatever port is free.
 
 ### 2. Receive the redirect

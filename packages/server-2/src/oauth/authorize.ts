@@ -27,8 +27,9 @@ export function parseAuthorizeParams(query: Record<string, string>): AuthorizePa
 // Form fields may be missing or files; anything unusable becomes an empty value and fails the
 // sign-in rather than the request.
 const loginFormSchema = z.object({
-  username: z.string().trim().catch(''),
-  password: z.string().catch(''),
+  intent: z.enum(['continue', 'switch']).optional().catch(undefined),
+  username: z.string().trim().catch('').default(''),
+  password: z.string().catch('').default(''),
   'cf-turnstile-response': z.string().optional().catch(undefined),
 });
 
