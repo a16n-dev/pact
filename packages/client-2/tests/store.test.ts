@@ -326,6 +326,56 @@ describe('encryption', () => {
     ).rejects.toThrow(/does not match/);
   });
 
+  it('hide mode lets keys coexist, each reading only what it sealed', async () => {
+    const adapter = new InMemoryAdapter();
+    const one = createWebCryptoCipher(await key());
+    const two = createWebCryptoCipher(await deriveEncryptionKey('other', 'salt', 1_000));
+    const under = (cipher?: typeof one) =>
+      Store.create({
+        adapter,
+        collections: [widgets],
+        encryption: cipher ? { cipher } : undefined,
+        onUndecryptable: 'hide',
+      });
+
+    const first = await under(one);
+    await first.collection('widgets').create({ id: 'w-1', name: 'one' });
+    const second = await under(two);
+    await second.collection('widgets').create({ id: 'w-2', name: 'two' });
+    expect(await second.collection('widgets').get('w-1')).toBeNull();
+    expect((await second.collection('widgets').list()).map((d) => d.id)).toEqual(['w-2']);
+
+    expect((await (await under(one)).collection('widgets').list()).map((d) => d.id)).toEqual([
+      'w-1',
+    ]);
+    expect(await (await under()).collection('widgets').list()).toEqual([]);
+    const raw = await adapter.get('widgets', 'w-1');
+    expect(raw && isSealedRecord(raw)).toBe(true);
+  });
+
+  it('hide mode lets a write replace a record sealed under another key', async () => {
+    const adapter = new InMemoryAdapter();
+    const one = createWebCryptoCipher(await key());
+    const two = createWebCryptoCipher(await deriveEncryptionKey('other', 'salt', 1_000));
+    const first = await Store.create({
+      adapter,
+      collections: [widgets],
+      encryption: { cipher: one },
+      onUndecryptable: 'hide',
+    });
+    await first.collection('widgets').create({ id: 'w-1', name: 'one' });
+    const second = await Store.create({
+      adapter,
+      collections: [widgets],
+      encryption: { cipher: two },
+      onUndecryptable: 'hide',
+    });
+    await expect(second.collection('widgets').update('w-1', { name: 'x' })).rejects.toThrow();
+    await second.collection('widgets').upsert({ id: 'w-1', name: 'two' });
+    expect((await second.collection('widgets').get('w-1'))?.name).toBe('two');
+    expect(await first.collection('widgets').get('w-1')).toBeNull();
+  });
+
   it('encryptLocal seals existing plaintext rows once', async () => {
     const adapter = new InMemoryAdapter();
     const plain = await Store.create({ adapter, collections: [widgets] });

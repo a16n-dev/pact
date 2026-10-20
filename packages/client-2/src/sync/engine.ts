@@ -2,7 +2,14 @@ import type { DatabaseAdapter } from '../adapters/adapter';
 import type { CollectionDefinition } from '../collection';
 import { ClockDriftError, type HybridClock } from '../clock';
 import type { RecordCodec } from '../crypto/codec';
-import { greatestClock, isSealedRecord, type AdapterRecord, type StoredRecord } from '../record';
+import {
+  greatestClock,
+  isSealedRecord,
+  type AdapterRecord,
+  type SealedRecord,
+  type StoredRecord,
+} from '../record';
+import { ENVELOPE_PREFIX } from '../crypto/types';
 import { CONFIG, OUTBOX, configRecord, type OutboxEntry } from '../store/internal';
 import type {
   PullResult,
@@ -60,6 +67,8 @@ export type SyncStoreAccess = {
   definitionByKey(key: string): CollectionDefinition | undefined;
   definitionByName(name: string): CollectionDefinition | undefined;
   applyIncoming(def: CollectionDefinition, id: string, record: StoredRecord): Promise<ApplyResult>;
+  applySealed(def: CollectionDefinition, id: string, sealed: SealedRecord): Promise<ApplyResult>;
+  hideUndecryptable: boolean;
   heldEntries(): Promise<HeldEntry[]>;
   /** Everything but `_config`, for `resync()`. */
   clearLocalData(): Promise<void>;
@@ -349,11 +358,13 @@ export class SyncEngine {
         continue;
       }
       const record = await this.store.codec.fromWire(def.key, version.id, version.data);
-      if (!record) {
+      const result = record
+        ? await this.store.applyIncoming(def, version.id, record)
+        : await this.applyUnopenable(def, version);
+      if (result === null) {
         total.skipped.sealed += 1;
         continue;
       }
-      const result = await this.store.applyIncoming(def, version.id, record);
       if (result === 'held') total.held += 1;
       if (result === 'applied') {
         total.applied += 1;
@@ -425,6 +436,16 @@ export class SyncEngine {
     } finally {
       this.drainTask = null;
     }
+  }
+
+  // Null when the version is dropped: not an envelope at all, or one this
+  // store must not keep because keys are not allowed to coexist.
+  private async applyUnopenable(
+    def: CollectionDefinition,
+    version: WireVersion
+  ): Promise<ApplyResult | null> {
+    if (!this.store.hideUndecryptable || !version.data.startsWith(ENVELOPE_PREFIX)) return null;
+    return this.store.applySealed(def, version.id, { enc: version.data, hlc: version.hlc });
   }
 
   private async outboxEntries(): Promise<Array<{ key: string; entry: OutboxEntry }>> {

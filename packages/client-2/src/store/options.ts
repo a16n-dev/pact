@@ -35,6 +35,18 @@ export type StoreOptions<
    * documents.
    */
   encryption?: { cipher: DocCipher };
+  /**
+   * What to make of a record sealed under a key this store does not hold.
+   * `'throw'` (the default) keeps one key per app: opening an install that
+   * holds data with a different key fails fast, and so does reading such a
+   * record. `'hide'` lets keys coexist, with or without a cipher of its own:
+   * any key opens the store, each record is readable only by the key that
+   * sealed it, and the rest read as missing while staying intact at rest and
+   * on the wire. A pulled record sealed under another key is kept locally
+   * and competes by clock, so the newest write wins wholesale. AES-GCM cannot
+   * tell a wrong key from tampering, so `'hide'` hides tampered envelopes too.
+   */
+  onUndecryptable?: 'throw' | 'hide';
 };
 
 /** Subscriber for `store.on('change')`. Blob activity arrives as `_blobs`. */
