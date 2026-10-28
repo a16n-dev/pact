@@ -188,13 +188,22 @@ Browser clients work from `http://localhost:*` and `http://127.0.0.1:*` without 
 
 Preflights succeed for any origin. On `/oauth/token`, `/auth/*` and `/sync/*` the allowed request headers are `authorization` and `content-type`; on `/ai/*` any requested header is allowed. The realtime upgrade applies the same origin rule.
 
-## AI completions
+## AI
 
-`POST /ai/chat/completions`. Requires auth; any token works, including API tokens.
+`/ai/*`. Requires auth; any token works, including API tokens.
 
-The request and response are in the OpenAI chat-completions shape, so an AI SDK client can use `<origin>/ai` as its base URL and the Pact token as its API key. `model` is required and takes the form `provider/model`, for example `openai/gpt-4.1-mini`. Everything else in the body is passed through, including `stream: true`, and the upstream response, streamed or not, comes back unchanged with its `Content-Type`.
+Everything under `/ai` is forwarded to the server's [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/), so `<origin>/ai/<provider>` is a drop-in base URL for that provider's own SDK with the Pact token as the API key. The gateway supplies the provider credentials, so send none of your own. The method, path, query string, body and response all pass through unchanged, streaming included. Some examples:
 
-A missing `model` is `400 bad_request`. An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is.
+| Provider SDK                    | Base URL                                              |
+| ------------------------------- | ----------------------------------------------------- |
+| Anthropic                       | `<origin>/ai/anthropic`                               |
+| OpenAI                          | `<origin>/ai/openai`                                  |
+| Google AI Studio                | `<origin>/ai/google-ai-studio`                        |
+| OpenAI-compatible, any provider | `<origin>/ai/compat` with `model` as `provider/model` |
+
+The server strips `Authorization`, `x-api-key` and any `cf-*` header before forwarding, so a request can't bring its own provider key or change gateway settings. Which gateway is used is fixed by the server's configuration, and every request is logged there with the app and token that made it.
+
+An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is. A server with no gateway configured answers `503 ai_not_configured`.
 
 ## Errors
 
@@ -213,6 +222,7 @@ JSON endpoints return `{ "error": "<human-readable message>", "code": "<code>" }
 | 426    | `bad_request`        | `/realtime` called without a WebSocket upgrade          |
 | 500    | `internal_error`     | unexpected server failure                               |
 | 502    | `ai_upstream_error`  | AI Gateway returned an error or failed                  |
+| 503    | `ai_not_configured`  | the server has no AI Gateway configured                 |
 
 A 401 means the token is gone for good: clear it and send the user through sign-in again.
 

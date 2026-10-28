@@ -5,11 +5,13 @@ export type Env = {
   BLOBS: R2Bucket;
   REALTIME: DurableObjectNamespace<RealtimeDO>;
   LOGIN_LIMITER: RateLimit;
-  AI: Ai;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
+  CLOUDFLARE_ACCOUNT_ID: string;
+  AI_GATEWAY_ID: string;
+  AI_GATEWAY_TOKEN?: string;
   MAX_PUSH_DOCUMENTS?: string;
 };
 

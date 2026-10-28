@@ -22,10 +22,14 @@ const { values: args } = parseArgs({
 
 const rl = createInterface({ input: stdin, output: stdout });
 
+async function askOptional(question: string): Promise<string> {
+  return (await rl.question(`${question} `)).trim();
+}
+
 async function ask(question: string, fallback?: string): Promise<string> {
   if (fallback) return fallback;
   let answer = '';
-  while (!answer) answer = (await rl.question(`${question} `)).trim();
+  while (!answer) answer = await askOptional(question);
   return answer;
 }
 
@@ -144,6 +148,25 @@ async function ensureAccess(domain: string, account: string): Promise<void> {
   setConfigValue('ACCESS_AUD', await ask('  Application Audience (AUD) tag:'));
 }
 
+async function ensureAiGateway(account: string): Promise<string | null> {
+  step('AI Gateway');
+  setConfigValue('CLOUDFLARE_ACCOUNT_ID', account);
+  if (configValue('AI_GATEWAY_ID')) {
+    console.log('  already configured; keeping the existing token');
+    return null;
+  }
+  console.log(
+    `  Open https://dash.cloudflare.com/${account}/ai/ai-gateway, pick or create the gateway apps will use, and set up Unified Billing or provider keys on it.`
+  );
+  console.log(
+    '  Then create an API token with the "AI Gateway: Run" permission, or leave the ID blank to skip AI.'
+  );
+  const gatewayId = await askOptional('  Gateway ID (like default):');
+  if (!gatewayId) return null;
+  setConfigValue('AI_GATEWAY_ID', gatewayId);
+  return ask('  API token:');
+}
+
 function setRoute(domain: string): void {
   if (config.includes('"custom_domain": true')) return;
   config = config.replace(
@@ -161,6 +184,7 @@ try {
   setRoute(domain);
   const turnstileSecret = await ensureTurnstile(domain, account);
   await ensureAccess(domain, account);
+  const aiGatewayToken = await ensureAiGateway(account);
   saveConfig();
 
   step('Migrations');
@@ -172,6 +196,10 @@ try {
   if (turnstileSecret) {
     step('Turnstile secret');
     wrangler(['secret', 'put', 'TURNSTILE_SECRET'], turnstileSecret);
+  }
+  if (aiGatewayToken) {
+    step('AI Gateway token');
+    wrangler(['secret', 'put', 'AI_GATEWAY_TOKEN'], aiGatewayToken);
   }
 
   console.log(`\nDone. Open https://${domain}/admin to create your first app and user.`);

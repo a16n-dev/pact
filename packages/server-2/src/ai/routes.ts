@@ -1,25 +1,58 @@
 import { Hono } from 'hono';
+import type { StatusCode } from 'hono/utils/http-status';
 import { type AuthedEnv, requireAuth } from '../auth/bearer';
-import { ApiError, badRequest } from '../lib/errors';
+import type { Env } from '../lib/env';
+import { ApiError } from '../lib/errors';
 
 export const aiRoutes = new Hono<AuthedEnv>();
 
 aiRoutes.use('*', requireAuth);
 
-// Models are `provider/model` and are billed through the account's `default` AI Gateway
-// (Unified Billing), so the server holds no provider keys.
-aiRoutes.post('/chat/completions', async (c) => {
-  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!body || typeof body.model !== 'string' || !body.model) {
-    throw badRequest('model is required');
+const MOUNT_PATH = '/ai';
+
+// The Pact token must not reach the gateway, a client-supplied provider key would bypass
+// Unified Billing, and client `cf-*` headers could override the gateway's own settings.
+function isForwardedRequestHeader(name: string): boolean {
+  return (
+    !['authorization', 'x-api-key', 'cookie', 'host', 'origin'].includes(name) &&
+    !name.startsWith('cf-')
+  );
+}
+
+// CORS headers are the server's to set, and the runtime re-derives the framing headers for the
+// body it sends.
+function isForwardedResponseHeader(name: string): boolean {
+  return (
+    !['set-cookie', 'content-encoding', 'content-length', 'transfer-encoding'].includes(name) &&
+    !name.startsWith('access-control-')
+  );
+}
+
+function gatewayConfig(env: Env): { account: string; gateway: string; token: string } {
+  const { CLOUDFLARE_ACCOUNT_ID: account, AI_GATEWAY_ID: gateway, AI_GATEWAY_TOKEN: token } = env;
+  if (!account || !gateway || !token) {
+    throw new ApiError(503, 'ai_not_configured', 'This server has no AI Gateway configured');
   }
-  const token = c.get('token');
+  return { account, gateway, token };
+}
+
+aiRoutes.all('/*', async (c) => {
+  const { account, gateway, token } = gatewayConfig(c.env);
+  const url = new URL(c.req.url);
+  const upstreamPath = url.pathname.slice(MOUNT_PATH.length);
+  const upstreamUrl = `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}${upstreamPath}${url.search}`;
+
+  const headers = new Headers();
+  for (const [name, value] of c.req.raw.headers) {
+    if (isForwardedRequestHeader(name)) headers.set(name, value);
+  }
+  headers.set('cf-aig-authorization', `Bearer ${token}`);
+  const pactToken = c.get('token');
+  headers.set('cf-aig-metadata', JSON.stringify({ app: pactToken.app_id, token: pactToken.id }));
+
   let upstream: Response;
   try {
-    upstream = (await c.env.AI.run(body.model as never, body, {
-      gateway: { id: 'default', metadata: { app: token.app_id, token: token.id } },
-      returnRawResponse: true,
-    })) as unknown as Response;
+    upstream = await fetch(upstreamUrl, { method: c.req.method, headers, body: c.req.raw.body });
   } catch (error) {
     throw new ApiError(
       502,
@@ -27,13 +60,12 @@ aiRoutes.post('/chat/completions', async (c) => {
       error instanceof Error ? error.message : 'AI request failed'
     );
   }
-  if (!upstream.ok && upstream.status >= 500) {
+  if (upstream.status >= 500) {
     throw new ApiError(502, 'ai_upstream_error', `AI Gateway returned ${upstream.status}`);
   }
-  const headers = new Headers();
-  for (const name of ['content-type', 'cache-control']) {
-    const value = upstream.headers.get(name);
-    if (value) headers.set(name, value);
+  const responseHeaders: Record<string, string> = {};
+  for (const [name, value] of upstream.headers) {
+    if (isForwardedResponseHeader(name)) responseHeaders[name] = value;
   }
-  return new Response(upstream.body, { status: upstream.status, headers });
+  return c.newResponse(upstream.body, upstream.status as StatusCode, responseHeaders);
 });

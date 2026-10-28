@@ -10,7 +10,8 @@ type ErrorCode =
   | 'too_many_documents'
   | 'document_too_large'
   | 'blob_too_large'
-  | 'ai_upstream_error';
+  | 'ai_upstream_error'
+  | 'ai_not_configured';
 
 export class ApiError extends Error {
   constructor(
