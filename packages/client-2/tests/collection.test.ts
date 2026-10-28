@@ -16,6 +16,21 @@ describe('defineCollection', () => {
     expect(def.generateId()).toMatch(/^n-[A-Za-z0-9]{10}$/);
   });
 
+  it('defaults to random ids and rejects idLength on slug ids', () => {
+    const def = defineCollection({ name: 'n', idPrefix: 'n', merge: 'field', schema: (b) => b });
+    expect(def.ids).toBe('random');
+    expect(() =>
+      defineCollection({
+        name: 'n',
+        idPrefix: 'n',
+        ids: 'slug',
+        idLength: 4,
+        merge: 'field',
+        schema: (b) => b,
+      })
+    ).toThrow(/cannot set idLength/);
+  });
+
   it('finds text fields declared with yText()', () => {
     const def = defineCollection({
       name: 'notes',

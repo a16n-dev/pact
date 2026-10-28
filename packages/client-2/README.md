@@ -47,6 +47,8 @@ const todos = defineCollection({
 
 The schema extends a base of `id`, `createdAt`, `updatedAt` and `deletedAt`. Every id carries the collection's prefix (`td-Ab3xY9kQz2`), enforced at runtime and in the type system. See `CollectionConfig` for `key`, `synced`, `merge` and `migrations`.
 
+Ids are random by default. A collection keyed by its content, such as ingredients deduplicated by name, sets `ids: 'slug'` instead: `create` then requires an `id` (`in-garlic`), so every device that adds "garlic" writes the same document. How the slug is built is up to the app. Pact only checks the id's shape and length.
+
 ### Reading and writing
 
 ```ts
@@ -57,6 +59,7 @@ await col.get('td-123'); // null when missing or deleted
 await col.list();
 await col.update('td-123', { done: true }); // partial: omitted fields keep their value and clock
 await col.upsert({ id: 'td-123', title: 'Do laundry' });
+await col.getOrCreate({ id: 'td-123', title: 'Do laundry' }); // the existing doc, untouched, or a new one
 await col.delete('td-123'); // soft: the tombstone syncs
 ```
 

@@ -1,5 +1,6 @@
 import type { Text as YText } from 'yjs';
 import type { BaseDocument } from '../types';
+import type { IdKind } from '../collection';
 import type { IndexKeyInput } from './indexes';
 
 /**
@@ -7,6 +8,12 @@ import type { IndexKeyInput } from './indexes';
  * defaulted fields are optional. Text fields take a string.
  */
 export type DocumentInput<T extends BaseDocument> = Omit<T, keyof BaseDocument>;
+
+// Distributes over the `IdKind` union, so a collection whose kind is not
+// statically known accepts either shape.
+type CreateInput<T extends BaseDocument, Input, Ids extends IdKind> = Ids extends 'slug'
+  ? Input & { id: T['id'] }
+  : Input & { id?: T['id'] };
 
 /**
  * Obtained via `store.collection(name)`. The document type, `IndexNames`,
@@ -18,6 +25,7 @@ export type Collection<
   IndexNames extends string = string,
   TextFields extends string = string,
   Input extends object = DocumentInput<T>,
+  Ids extends IdKind = IdKind,
 > = {
   /**
    * Soft-deleted docs read as null unless `includeDeleted` is set; then
@@ -35,9 +43,14 @@ export type Collection<
    * lags a write. Throws on an unknown index name.
    */
   listByIndex(index: IndexNames, key: IndexKeyInput): Promise<T[]>;
-  /** The id is generated (prefix + random) unless supplied. */
-  create(input: Input & { id?: T['id'] }): Promise<T>;
-  createMany(items: Array<Input & { id?: T['id'] }>): Promise<T[]>;
+  /** Random-id collections generate the id unless supplied; slug-id collections require it. */
+  create(input: CreateInput<T, Input, Ids>): Promise<T>;
+  createMany(items: Array<CreateInput<T, Input, Ids>>): Promise<T[]>;
+  /**
+   * The live doc at `id` if there is one, untouched; otherwise the doc is
+   * created. A soft-deleted doc counts as absent and is revived with these fields.
+   */
+  getOrCreate(input: Input & { id: T['id'] }): Promise<T>;
   /** A partial merge: fields you omit keep their value and clock. Throws when the doc does not exist. */
   update(id: string, input: Partial<Input>): Promise<T>;
   updateMany(updates: Array<{ id: string } & Partial<Input>>): Promise<T[]>;
