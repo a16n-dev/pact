@@ -22,8 +22,39 @@ export type DocId<Prefix extends string = string> = `${Prefix}-${string}`;
 export const docId = <Prefix extends string>(prefix: Prefix) =>
   z.templateLiteral([prefix, '-', z.string()]);
 
-const baseSchemaFor = <Prefix extends string>(idPrefix: Prefix) =>
-  BaseDocumentSchema.extend({ id: docId(idPrefix) });
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Lowercase words joined by single hyphens, with accents dropped:
+ * `Crème fraîche!` becomes `creme-fraiche`. Empty when the text has no
+ * letters or digits.
+ */
+export const slugify = (text: string): string =>
+  text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+/** The id for `text` in a slug-id collection, or null when the text has nothing to slug. */
+export const slugId = <Prefix extends string>(
+  prefix: Prefix,
+  text: string
+): DocId<Prefix> | null => {
+  const slug = slugify(text);
+  return slug ? `${prefix}-${slug}` : null;
+};
+
+const idSchemaFor = <Prefix extends string>(idPrefix: Prefix, ids: IdKind) =>
+  ids === 'slug'
+    ? docId(idPrefix).refine((id: string) => SLUG_PATTERN.test(id.slice(idPrefix.length + 1)), {
+        message: `Expected a slug id such as ${idPrefix}-garlic; build it with slugId()`,
+      })
+    : docId(idPrefix);
+
+const baseSchemaFor = <Prefix extends string>(idPrefix: Prefix, ids: IdKind = 'random') =>
+  BaseDocumentSchema.extend({ id: idSchemaFor(idPrefix, ids) });
 
 export type CollectionBaseSchema<Prefix extends string = string> = ReturnType<
   typeof baseSchemaFor<Prefix>
@@ -180,7 +211,7 @@ export function defineCollection<
   if (idPrefix.includes('-')) {
     throw new Error(`Collection id prefix "${idPrefix}" must not contain "-"`);
   }
-  const schema = def.schema(baseSchemaFor(idPrefix));
+  const schema = def.schema(baseSchemaFor(idPrefix, ids));
   const text = findTextFields(schema);
   if (merge === 'document' && text.fields.length > 0) {
     throw new Error(`Collection "${name}" merges by document and cannot declare text fields`);
