@@ -11,6 +11,7 @@ import { yText } from '../src/yjs';
 const widgets = defineCollection({
   name: 'widgets',
   idPrefix: 'w',
+  merge: 'field',
   schema: (base) =>
     base.extend({
       name: z.string(),
@@ -24,6 +25,7 @@ const notes = defineCollection({
   name: 'notes',
   key: 'n',
   idPrefix: 'nt',
+  merge: 'field',
   schema: (base) => base.extend({ title: z.string(), body: yText() }),
 });
 
@@ -238,6 +240,7 @@ describe('migrations', () => {
   const v2 = defineCollection({
     name: 'widgets',
     idPrefix: 'w',
+    merge: 'field',
     schema: (base) => base.extend({ title: z.string(), count: z.number() }),
     migrations: {
       current: 2,
@@ -278,6 +281,7 @@ describe('indexes', () => {
   const indexed = defineCollection({
     name: 'widgets',
     idPrefix: 'w',
+    merge: 'field',
     schema: (base) => base.extend({ name: z.string(), tags: z.array(z.string()).default([]) }),
   }).withIndexes({ tag: (doc) => doc.tags, name: (doc) => doc.name });
 

@@ -36,6 +36,7 @@ import { defineCollection } from '@a16n/pact-client';
 const todos = defineCollection({
   name: 'todos',
   idPrefix: 'td',
+  merge: 'field',
   schema: (base) =>
     base.extend({
       title: z.string().min(1),
@@ -113,6 +114,7 @@ import { yText } from '@a16n/pact-client/yjs';
 const notes = defineCollection({
   name: 'notes',
   idPrefix: 'nt',
+  merge: 'field',
   schema: (base) => base.extend({ title: z.string(), body: yText() }),
 });
 
@@ -130,6 +132,7 @@ Every transaction on that `Y.Text` is persisted immediately and pushed after a o
 const todos = defineCollection({
   name: 'todos',
   idPrefix: 'td',
+  merge: 'field',
   schema: (base) => base.extend({ title: z.string(), completed: z.boolean() }),
   migrations: {
     current: 2,
@@ -142,7 +145,11 @@ Documents upgrade lazily as they are read. A field that survives a migration kee
 
 ### Merge modes
 
-`merge: 'document'` on a collection gives the whole record one clock, so the latest write wins wholesale. Use it for records that only make sense as a unit. Document-level collections cannot have text fields.
+Every collection declares how concurrent edits to the same record combine, and the choice cannot be changed once data exists.
+
+`merge: 'field'` gives each field its own clock, so edits to different fields from different devices both survive. Use it for most records.
+
+`merge: 'document'` gives the whole record one clock, so the latest write wins wholesale. Use it for records that only make sense as a unit. Document-level collections cannot have text fields.
 
 ### Blobs
 
