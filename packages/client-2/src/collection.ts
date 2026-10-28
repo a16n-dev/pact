@@ -35,6 +35,13 @@ export type CollectionBaseSchema<Prefix extends string = string> = ReturnType<
  */
 export type MergeMode = 'field' | 'document';
 
+/**
+ * `random`: `create` generates the id. `slug`: the caller supplies the part
+ * after the prefix (`in-garlic`) and `create` requires `id`, so every device
+ * writes a content-keyed document to the same id.
+ */
+export type IdKind = 'random' | 'slug';
+
 export type CollectionDefinition<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
@@ -43,6 +50,7 @@ export type CollectionDefinition<
   // contravariant in the document type, so only the `never` bound accepts an
   // index map written for a specific document shape.
   Idx extends IndexMap<never> = IndexMap<never>,
+  Ids extends IdKind = IdKind,
 > = {
   name: Name;
   /**
@@ -55,6 +63,7 @@ export type CollectionDefinition<
   /** False for local-only collections: still validated and migrated, never pushed or pulled. */
   synced: boolean;
   merge: MergeMode;
+  ids: Ids;
   schema: Schema;
   /** Schema keys declared with a text helper such as `yText()`. */
   textFields: readonly string[];
@@ -72,14 +81,17 @@ export type CollectionConfig<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
   IdPrefix extends string = string,
+  Ids extends IdKind = IdKind,
 > = {
   name: Name;
   /** Defaults to `name`; see `CollectionDefinition.key`. 1–256 characters. */
   key?: string;
   /** Must be unique across the domain and must not contain `-`. */
   idPrefix: IdPrefix;
-  /** Length of the random part of generated ids; defaults to 10. */
+  /** Length of the random part of generated ids; defaults to 10. Only for `ids: 'random'`. */
   idLength?: number;
+  /** Defaults to `random`; see `IdKind`. Cannot be changed once data exists. */
+  ids?: Ids;
   /** Defaults to true. */
   synced?: boolean;
   /** Cannot be changed once data exists. */
@@ -100,7 +112,8 @@ export type CollectionBuilder<
   Name extends string,
   Schema extends z.ZodType,
   IdPrefix extends string,
-> = CollectionDefinition<Name, Schema, IdPrefix, Record<string, never>> & {
+  Ids extends IdKind,
+> = CollectionDefinition<Name, Schema, IdPrefix, Record<string, never>, Ids> & {
   /**
    * Each extractor maps a document to the key or keys it is found under via
    * `listByIndex(indexName, key)`; equality lookups only. Indexes are rebuilt
@@ -109,7 +122,7 @@ export type CollectionBuilder<
    */
   withIndexes<Idx extends IndexMap<z.output<Schema> & BaseDocument>>(
     indexes: Idx
-  ): CollectionDefinition<Name, Schema, IdPrefix, Idx>;
+  ): CollectionDefinition<Name, Schema, IdPrefix, Idx, Ids>;
 };
 
 export function assertKeyLength(what: string, value: string): void {
@@ -143,16 +156,23 @@ export function defineCollection<
   Name extends string,
   Schema extends z.ZodType<Storable>,
   IdPrefix extends string,
->(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionBuilder<Name, Schema, IdPrefix> {
+  Ids extends IdKind = 'random',
+>(
+  def: CollectionConfig<Name, Schema, IdPrefix, Ids>
+): CollectionBuilder<Name, Schema, IdPrefix, Ids> {
   const {
     name,
     key = name,
     idPrefix,
     idLength = DEFAULT_ID_LENGTH,
+    ids = 'random' as Ids,
     synced = true,
     merge,
     migrations,
   } = def;
+  if (ids === 'slug' && def.idLength !== undefined) {
+    throw new Error(`Collection "${name}" uses slug ids and cannot set idLength`);
+  }
   if (key.startsWith('_')) {
     throw new Error(`Collection key "${key}" is reserved (the _* namespace is internal)`);
   }
@@ -171,6 +191,7 @@ export function defineCollection<
     idPrefix,
     synced,
     merge,
+    ids,
     migrations,
     schema,
     textFields: text.fields,
@@ -183,7 +204,7 @@ export function defineCollection<
     withIndexes(indexes) {
       return { ...base, indexes };
     },
-  } as CollectionBuilder<Name, Schema, IdPrefix>;
+  } as CollectionBuilder<Name, Schema, IdPrefix, Ids>;
 }
 
 export type CollectionName<Defs extends readonly CollectionDefinition[]> = Defs[number]['name'];
@@ -206,6 +227,11 @@ export type CollectionIndexNames<
   Defs extends readonly CollectionDefinition[],
   Name extends CollectionName<Defs>,
 > = keyof Extract<Defs[number], { name: Name }>['indexes'] & string;
+
+export type CollectionIdKind<
+  Defs extends readonly CollectionDefinition[],
+  Name extends CollectionName<Defs>,
+> = Extract<Defs[number], { name: Name }>['ids'];
 
 export type CollectionTextFields<
   Defs extends readonly CollectionDefinition[],

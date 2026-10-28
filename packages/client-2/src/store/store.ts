@@ -13,6 +13,7 @@ import {
   type CollectionDefinition,
   type CollectionIndexNames,
   type CollectionName,
+  type CollectionIdKind,
   type CollectionTextFields,
   type DocumentInputOf,
   type DocumentOf,
@@ -527,11 +528,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }).catch(() => {});
   }
 
+  private idFor(def: CollectionDefinition, id: string | undefined): string {
+    if (id !== undefined) return id;
+    if (def.ids === 'slug') {
+      throw new Error(`Collection "${def.name}" uses slug ids: pass an id to create`);
+    }
+    return def.generateId();
+  }
+
   private async create(
     def: CollectionDefinition,
     input: Record<string, unknown>
   ): Promise<AnyDocument> {
-    const { id = def.generateId(), ...rest } = input as { id?: string };
+    const { id: given, ...rest } = input as { id?: string };
+    const id = this.idFor(def, given);
     return this.serialise(def.name, id, async () => {
       if (await this.adapter.get(def.key, id)) {
         throw new Error(`Document already exists: ${def.name}/${id}`);
@@ -572,6 +582,21 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     });
   }
 
+  private async getOrCreate(
+    def: CollectionDefinition,
+    input: Record<string, unknown>
+  ): Promise<AnyDocument> {
+    const { id, ...rest } = input as { id: string };
+    return this.serialise(def.name, id, async () => {
+      const existing = await this.loadRecord(def, id);
+      const live = existing && !existing.fields.deletedAt ? this.readDoc(def, id, existing) : null;
+      if (live) return live;
+      const doc = await this.insert(def, id, rest, existing);
+      this.emit(def.name);
+      return doc;
+    });
+  }
+
   private async delete(def: CollectionDefinition, id: string): Promise<void> {
     await this.serialise(def.name, id, async () => {
       const existing = await this.loadRecord(def, id);
@@ -587,7 +612,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<AnyDocument[]> {
     const docs: AnyDocument[] = [];
     for (const item of items) {
-      const { id = def.generateId(), ...rest } = item as { id?: string };
+      const { id: given, ...rest } = item as { id?: string };
+      const id = this.idFor(def, given);
       docs.push(
         await this.serialise(def.name, id, async () => {
           if (await this.adapter.get(def.key, id)) {
@@ -990,7 +1016,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     DocumentOf<Defs, Name>,
     CollectionIndexNames<Defs, Name>,
     CollectionTextFields<Defs, Name>,
-    DocumentInputOf<Defs, Name>
+    DocumentInputOf<Defs, Name>,
+    CollectionIdKind<Defs, Name>
   >;
   collection<T extends BaseDocument>(name: string): Collection<T>;
   collection<T extends BaseDocument>(name: string): Collection<T> {
@@ -1007,6 +1034,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       updateMany: (updates) =>
         this.updateMany(def, updates as Array<{ id: string } & Input>) as Promise<T[]>,
       upsert: (input) => this.upsert(def, input as Input) as Promise<T>,
+      getOrCreate: (input) => this.getOrCreate(def, input as Input) as Promise<T>,
       delete: (id) => this.delete(def, id),
       deleteMany: (ids) => this.deleteMany(def, ids),
       text: (id, field) => this.text(def, id, field),

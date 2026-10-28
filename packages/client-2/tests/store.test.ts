@@ -36,9 +36,17 @@ const settings = defineCollection({
   schema: (base) => base.extend({ theme: z.string(), size: z.number() }),
 });
 
+const tags = defineCollection({
+  name: 'tags',
+  idPrefix: 'tg',
+  ids: 'slug',
+  merge: 'field',
+  schema: (base) => base.extend({ label: z.string(), uses: z.number().default(0) }),
+});
+
 async function setup() {
   const adapter = new InMemoryAdapter();
-  const store = await Store.create({ adapter, collections: [widgets, notes, settings] });
+  const store = await Store.create({ adapter, collections: [widgets, notes, settings, tags] });
   return { adapter, store };
 }
 
@@ -136,6 +144,42 @@ describe('Store CRUD', () => {
     // The dropped field keeps a clock so the drop wins against older values elsewhere.
     expect(record.clocks!.note).toBeDefined();
     expect('note' in record.fields).toBe(false);
+  });
+
+  it('slug-id collections require an id on create', async () => {
+    const { adapter, store } = await setup();
+    const col = store.collection('tags');
+    // @ts-expect-error id is required for slug ids
+    await expect(col.create({ label: 'Urgent' })).rejects.toThrow(/uses slug ids/);
+    await expect(
+      // @ts-expect-error id is required for slug ids
+      col.createMany([{ id: 'tg-a', label: 'a' }, { label: 'b' }])
+    ).rejects.toThrow(/uses slug ids/);
+    expect(await adapter.getAll('tags')).toHaveLength(1);
+    const created = await col.create({ id: 'tg-urgent', label: 'Urgent' });
+    expect(created.id).toBe('tg-urgent');
+  });
+
+  it('getOrCreate returns a live doc untouched, creates when absent and revives a tombstone', async () => {
+    const { adapter, store } = await setup();
+    const col = store.collection('tags');
+    const seen: string[] = [];
+    store.on('change', (c) => c === 'tags' && seen.push(c));
+    const first = await col.getOrCreate({ id: 'tg-urgent', label: 'Urgent' });
+    await col.update('tg-urgent', { uses: 3 });
+    const before = await stored(adapter, 'tags', 'tg-urgent');
+    const again = await col.getOrCreate({ id: 'tg-urgent', label: 'Changed' });
+    expect(again).toMatchObject({ id: first.id, label: 'Urgent', uses: 3 });
+    expect(await stored(adapter, 'tags', 'tg-urgent')).toEqual(before);
+    expect(seen).toEqual(['tags', 'tags']);
+    await col.delete('tg-urgent');
+    const revived = await col.getOrCreate({ id: 'tg-urgent', label: 'Back' });
+    expect(revived).toMatchObject({
+      label: 'Back',
+      uses: 0,
+      deletedAt: null,
+      createdAt: first.createdAt,
+    });
   });
 
   it('emits change per collection and once per batch', async () => {
