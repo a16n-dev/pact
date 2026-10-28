@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { app } from '../src/app';
 import { api, ORIGIN, seedApp } from './helpers';
+import { setAiProxy } from '../src/db/apps';
 
 const GATEWAY_ENV = {
   ...env,
@@ -128,6 +129,19 @@ describe('AI Gateway proxy', () => {
     expect(await res.json()).toEqual({
       error: 'This server has no AI Gateway configured',
       code: 'ai_not_configured',
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('is 403 for an app with the AI proxy turned off', async () => {
+    const a = await seedApp('app-a');
+    await setAiProxy(env.DB, 'app-a', false);
+    const calls = stubUpstream(() => new Response());
+    const res = await proxy(a.token, '/ai/openai/v1/models');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: 'AI is turned off for this app',
+      code: 'ai_disabled',
     });
     expect(calls).toHaveLength(0);
   });

@@ -3,6 +3,7 @@ import type { StatusCode } from 'hono/utils/http-status';
 import { type AuthedEnv, requireAuth } from '../auth/bearer';
 import type { Env } from '../lib/env';
 import { ApiError } from '../lib/errors';
+import { getApp } from '../db/apps';
 
 export const aiRoutes = new Hono<AuthedEnv>();
 
@@ -38,6 +39,11 @@ function gatewayConfig(env: Env): { account: string; gateway: string; token: str
 
 aiRoutes.all('/*', async (c) => {
   const { account, gateway, token } = gatewayConfig(c.env);
+  const pactToken = c.get('token');
+  const app = await getApp(c.env.DB, pactToken.app_id);
+  if (app?.ai_proxy !== 1) {
+    throw new ApiError(403, 'ai_disabled', 'AI is turned off for this app');
+  }
   const url = new URL(c.req.url);
   const upstreamPath = url.pathname.slice(MOUNT_PATH.length);
   const upstreamUrl = `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}${upstreamPath}${url.search}`;
@@ -47,7 +53,6 @@ aiRoutes.all('/*', async (c) => {
     if (isForwardedRequestHeader(name)) headers.set(name, value);
   }
   headers.set('cf-aig-authorization', `Bearer ${token}`);
-  const pactToken = c.get('token');
   headers.set('cf-aig-metadata', JSON.stringify({ app: pactToken.app_id, token: pactToken.id }));
 
   let upstream: Response;
