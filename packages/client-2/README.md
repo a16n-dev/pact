@@ -47,7 +47,7 @@ const todos = defineCollection({
 
 The schema extends a base of `id`, `createdAt`, `updatedAt` and `deletedAt`. Every id carries the collection's prefix (`td-Ab3xY9kQz2`), enforced at runtime and in the type system. See `CollectionConfig` for `key`, `synced`, `merge` and `migrations`.
 
-Ids are random by default. A collection keyed by its content, such as ingredients deduplicated by name, sets `ids: 'slug'` instead: `create` then requires an `id` (`in-garlic`), so every device that adds "garlic" writes the same document. How the slug is built is up to the app. Pact only checks the id's shape and length.
+Ids are random by default. A collection keyed by its content, such as ingredients deduplicated by name, sets `ids: 'slug'` instead: `create` then requires an `id` (`in-garlic`), so every device that adds "garlic" writes the same document. Build the id with `slugId('in', 'Garlic')`, which gives `in-garlic`; the schema rejects a slug id whose part after the prefix isn't lowercase letters and digits joined by single hyphens.
 
 ### Reading and writing
 

@@ -158,6 +158,9 @@ describe('Store CRUD', () => {
     expect(await adapter.getAll('tags')).toHaveLength(1);
     const created = await col.create({ id: 'tg-urgent', label: 'Urgent' });
     expect(created.id).toBe('tg-urgent');
+    await expect(col.create({ id: 'tg-Not Urgent', label: 'Not urgent' })).rejects.toThrow(
+      /slug id/
+    );
   });
 
   it('getOrCreate returns a live doc untouched, creates when absent and revives a tombstone', async () => {

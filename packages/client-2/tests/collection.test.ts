@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineCollection } from '../src/collection';
+import { defineCollection, slugId, slugify } from '../src/collection';
 import { yText } from '../src/yjs';
 
 describe('defineCollection', () => {
@@ -29,6 +29,29 @@ describe('defineCollection', () => {
         schema: (b) => b,
       })
     ).toThrow(/cannot set idLength/);
+  });
+
+  it('slug ids must be lowercase words joined by single hyphens', () => {
+    const def = defineCollection({
+      name: 'n',
+      idPrefix: 'in',
+      ids: 'slug',
+      merge: 'field',
+      schema: (b) => b,
+    });
+    const id = def.schema.shape.id;
+    expect(id.safeParse('in-brown-onion').success).toBe(true);
+    expect(id.safeParse('in-Brown Onion').success).toBe(false);
+    expect(id.safeParse('in-brown--onion').success).toBe(false);
+    expect(id.safeParse('in-').success).toBe(false);
+  });
+
+  it('slugify drops accents and punctuation, and slugId is null when nothing is left', () => {
+    expect(slugify(' Onion or  Shallot ')).toBe('onion-or-shallot');
+    expect(slugify('Crème fraîche!')).toBe('creme-fraiche');
+    expect(slugify('salt & pepper')).toBe('salt-pepper');
+    expect(slugId('in', 'Brown Onion')).toBe('in-brown-onion');
+    expect(slugId('in', ' - ')).toBeNull();
   });
 
   it('finds text fields declared with yText()', () => {
