@@ -32,13 +32,16 @@ export type CollectionBaseSchema<Prefix extends string = string> = ReturnType<
 /**
  * `field`: one clock per field, fields merge independently. `document`: one
  * clock per record, the record with the greater clock wins wholesale.
+ * `immutable`: records are created and deleted but never updated; the first
+ * write's fields stand and a delete from any device sticks.
  */
-export type MergeMode = 'field' | 'document';
+export type MergeMode = 'field' | 'document' | 'immutable';
 
 export type CollectionDefinition<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
   IdPrefix extends string = string,
+  Mode extends MergeMode = MergeMode,
   // Bounded by `IndexMap<never>`, not `IndexMap<BaseDocument>`: extractors are
   // contravariant in the document type, so only the `never` bound accepts an
   // index map written for a specific document shape.
@@ -54,7 +57,7 @@ export type CollectionDefinition<
   idPrefix: IdPrefix;
   /** False for local-only collections: still validated and migrated, never pushed or pulled. */
   synced: boolean;
-  merge: MergeMode;
+  merge: Mode;
   schema: Schema;
   /** Schema keys declared with a text helper such as `yText()`. */
   textFields: readonly string[];
@@ -72,6 +75,7 @@ export type CollectionConfig<
   Name extends string = string,
   Schema extends z.ZodType = z.ZodType,
   IdPrefix extends string = string,
+  Mode extends MergeMode = MergeMode,
 > = {
   name: Name;
   /** Defaults to `name`; see `CollectionDefinition.key`. 1–256 characters. */
@@ -83,7 +87,7 @@ export type CollectionConfig<
   /** Defaults to true. */
   synced?: boolean;
   /** Defaults to `field`. Cannot be changed once data exists. */
-  merge?: MergeMode;
+  merge?: Mode;
   migrations?: CollectionMigrations;
   /**
    * Receives a base that already carries the base fields and the
@@ -100,7 +104,8 @@ export type CollectionBuilder<
   Name extends string,
   Schema extends z.ZodType,
   IdPrefix extends string,
-> = CollectionDefinition<Name, Schema, IdPrefix, Record<string, never>> & {
+  Mode extends MergeMode,
+> = CollectionDefinition<Name, Schema, IdPrefix, Mode, Record<string, never>> & {
   /**
    * Each extractor maps a document to the key or keys it is found under via
    * `listByIndex(indexName, key)`; equality lookups only. Indexes are rebuilt
@@ -109,7 +114,7 @@ export type CollectionBuilder<
    */
   withIndexes<Idx extends IndexMap<z.output<Schema> & BaseDocument>>(
     indexes: Idx
-  ): CollectionDefinition<Name, Schema, IdPrefix, Idx>;
+  ): CollectionDefinition<Name, Schema, IdPrefix, Mode, Idx>;
 };
 
 export function assertKeyLength(what: string, value: string): void {
@@ -143,14 +148,17 @@ export function defineCollection<
   Name extends string,
   Schema extends z.ZodType<Storable>,
   IdPrefix extends string,
->(def: CollectionConfig<Name, Schema, IdPrefix>): CollectionBuilder<Name, Schema, IdPrefix> {
+  Mode extends MergeMode = 'field',
+>(
+  def: CollectionConfig<Name, Schema, IdPrefix, Mode>
+): CollectionBuilder<Name, Schema, IdPrefix, Mode> {
   const {
     name,
     key = name,
     idPrefix,
     idLength = DEFAULT_ID_LENGTH,
     synced = true,
-    merge = 'field',
+    merge = 'field' as Mode,
     migrations,
   } = def;
   if (key.startsWith('_')) {
@@ -162,8 +170,8 @@ export function defineCollection<
   }
   const schema = def.schema(baseSchemaFor(idPrefix));
   const text = findTextFields(schema);
-  if (merge === 'document' && text.fields.length > 0) {
-    throw new Error(`Collection "${name}" merges by document and cannot declare text fields`);
+  if (merge !== 'field' && text.fields.length > 0) {
+    throw new Error(`Collection "${name}" merges by ${merge} and cannot declare text fields`);
   }
   const base = {
     name,
@@ -183,7 +191,7 @@ export function defineCollection<
     withIndexes(indexes) {
       return { ...base, indexes };
     },
-  } as CollectionBuilder<Name, Schema, IdPrefix>;
+  } as CollectionBuilder<Name, Schema, IdPrefix, Mode>;
 }
 
 export type CollectionName<Defs extends readonly CollectionDefinition[]> = Defs[number]['name'];
@@ -206,6 +214,11 @@ export type CollectionIndexNames<
   Defs extends readonly CollectionDefinition[],
   Name extends CollectionName<Defs>,
 > = keyof Extract<Defs[number], { name: Name }>['indexes'] & string;
+
+export type CollectionMergeMode<
+  Defs extends readonly CollectionDefinition[],
+  Name extends CollectionName<Defs>,
+> = Extract<Defs[number], { name: Name }>['merge'];
 
 export type CollectionTextFields<
   Defs extends readonly CollectionDefinition[],

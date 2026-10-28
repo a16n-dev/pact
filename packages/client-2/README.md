@@ -142,7 +142,11 @@ Documents upgrade lazily as they are read. A field that survives a migration kee
 
 ### Merge modes
 
-`merge: 'document'` on a collection gives the whole record one clock, so the latest write wins wholesale. Use it for records that only make sense as a unit. Document-level collections cannot have text fields.
+`merge: 'document'` on a collection gives the whole record one clock, so the latest write wins wholesale. Use it for records that only make sense as a unit.
+
+`merge: 'immutable'` is for records that are written once: events, receipts, log entries. The handle `store.collection(name)` returns has no `update`, `updateMany` or `upsert`, and merging never compares clocks. The first write's fields stand, and a delete from any device sticks; a deleted id cannot be created again.
+
+Neither mode can have text fields, and a collection's mode cannot change once it holds data.
 
 ### Blobs
 

@@ -88,6 +88,46 @@ describe('mergeRecords by field', () => {
   });
 });
 
+describe('mergeRecords immutable', () => {
+  const doc = (fields: Record<string, unknown>, clock: string): StoredRecord => ({
+    schemaVersion: 1,
+    fields: { id: 'e-1', createdAt: '2026-01-01T00:00:00.000Z', deletedAt: null, ...fields },
+    clock,
+  });
+
+  it('keeps the first write and the greatest clock', () => {
+    const local = doc({ x: 1 }, at(5));
+    const incoming = doc({ x: 2 }, at(6));
+    expect(mergeRecords(local, incoming, 'immutable').record).toEqual({
+      ...local,
+      clock: at(6),
+    });
+    expect(mergeRecords(incoming, local, 'immutable').record).toEqual({
+      ...local,
+      clock: at(6),
+    });
+  });
+
+  it('lets a delete stick regardless of clock order', () => {
+    const live = doc({ x: 1 }, at(9));
+    const deleted = doc({ x: 1, deletedAt: '2026-01-02T00:00:00.000Z' }, at(5));
+    const { record, changed } = mergeRecords(live, deleted, 'immutable');
+    expect(changed).toBe(true);
+    expect(record.fields.deletedAt).toBe('2026-01-02T00:00:00.000Z');
+    expect(mergeRecords(deleted, live, 'immutable').record.fields.deletedAt).toBe(
+      '2026-01-02T00:00:00.000Z'
+    );
+  });
+
+  it('keeps the earliest of two deletions', () => {
+    const a = doc({ deletedAt: '2026-01-03T00:00:00.000Z' }, at(5));
+    const b = doc({ deletedAt: '2026-01-02T00:00:00.000Z' }, at(6));
+    expect(mergeRecords(a, b, 'immutable').record.fields.deletedAt).toBe(
+      '2026-01-02T00:00:00.000Z'
+    );
+  });
+});
+
 describe('mergeRecords by document', () => {
   const doc = (fields: Record<string, unknown>, clock: string): StoredRecord => ({
     schemaVersion: 1,

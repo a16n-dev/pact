@@ -1,4 +1,5 @@
 import type { Text as YText } from 'yjs';
+import type { MergeMode } from '../collection';
 import type { BaseDocument } from '../types';
 import type { IndexKeyInput } from './indexes';
 
@@ -9,14 +10,12 @@ import type { IndexKeyInput } from './indexes';
 export type DocumentInput<T extends BaseDocument> = Omit<T, keyof BaseDocument>;
 
 /**
- * Obtained via `store.collection(name)`. The document type, `IndexNames`,
- * `TextFields` and `Input` are inferred from that collection's definition;
- * the names are `string` when the collection is not statically known.
+ * What `store.collection(name)` returns for an `immutable` collection: reads,
+ * creates and deletes, with no way to change a document once written.
  */
-export type Collection<
+export type ImmutableCollection<
   T extends BaseDocument,
   IndexNames extends string = string,
-  TextFields extends string = string,
   Input extends object = DocumentInput<T>,
 > = {
   /**
@@ -38,14 +37,27 @@ export type Collection<
   /** The id is generated (prefix + random) unless supplied. */
   create(input: Input & { id?: T['id'] }): Promise<T>;
   createMany(items: Array<Input & { id?: T['id'] }>): Promise<T[]>;
+  /** Soft-delete; the tombstone remains and syncs so other devices converge. */
+  delete(id: string): Promise<void>;
+  deleteMany(ids: readonly string[]): Promise<void>;
+};
+
+/**
+ * Obtained via `store.collection(name)`. The document type, `IndexNames`,
+ * `TextFields` and `Input` are inferred from that collection's definition;
+ * the names are `string` when the collection is not statically known.
+ */
+export type Collection<
+  T extends BaseDocument,
+  IndexNames extends string = string,
+  TextFields extends string = string,
+  Input extends object = DocumentInput<T>,
+> = ImmutableCollection<T, IndexNames, Input> & {
   /** A partial merge: fields you omit keep their value and clock. Throws when the doc does not exist. */
   update(id: string, input: Partial<Input>): Promise<T>;
   updateMany(updates: Array<{ id: string } & Partial<Input>>): Promise<T[]>;
   /** A soft-deleted doc counts as absent: upserting its id revives it as a fresh doc. */
   upsert(input: Input & { id: T['id'] }): Promise<T>;
-  /** Soft-delete; the tombstone remains and syncs so other devices converge. */
-  delete(id: string): Promise<void>;
-  deleteMany(ids: readonly string[]): Promise<void>;
   /**
    * The live Yjs text for a text field, owned by the store: the same instance
    * comes back while the document is loaded, every transaction on it is
@@ -54,3 +66,17 @@ export type Collection<
    */
   text(id: string, field: TextFields): Promise<YText>;
 };
+
+// A mode that is not statically known (`any` or the full union) gets the full
+// handle; the tuple wrapping keeps the second check from distributing.
+export type CollectionFor<
+  Mode extends MergeMode,
+  T extends BaseDocument,
+  IndexNames extends string,
+  TextFields extends string,
+  Input extends object,
+> = MergeMode extends Mode
+  ? Collection<T, IndexNames, TextFields, Input>
+  : [Mode] extends ['immutable']
+    ? ImmutableCollection<T, IndexNames, Input>
+    : Collection<T, IndexNames, TextFields, Input>;

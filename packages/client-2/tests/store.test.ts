@@ -34,9 +34,16 @@ const settings = defineCollection({
   schema: (base) => base.extend({ theme: z.string(), size: z.number() }),
 });
 
+const events = defineCollection({
+  name: 'events',
+  idPrefix: 'ev',
+  merge: 'immutable',
+  schema: (base) => base.extend({ kind: z.string() }),
+});
+
 async function setup() {
   const adapter = new InMemoryAdapter();
-  const store = await Store.create({ adapter, collections: [widgets, notes, settings] });
+  const store = await Store.create({ adapter, collections: [widgets, notes, settings, events] });
   return { adapter, store };
 }
 
@@ -175,6 +182,21 @@ describe('Store CRUD', () => {
     expect(after.clock! > record.clock!).toBe(true);
     expect(decodeHlc(after.clock!).node).toBe(decodeHlc(record.clock!).node);
     expect(doc.updatedAt).toBe(new Date(decodeHlc(record.clock!).wallMs).toISOString());
+  });
+
+  it('creates and deletes in immutable collections but never updates', async () => {
+    const { adapter, store } = await setup();
+    const col = store.collection('events');
+    await col.create({ id: 'ev-1', kind: 'signup' });
+    expect((await stored(adapter, 'events', 'ev-1')).clock).toBeDefined();
+    // @ts-expect-error immutable collections expose no update
+    await expect(col.update('ev-1', { kind: 'x' })).rejects.toThrow(/is immutable/);
+    // @ts-expect-error immutable collections expose no upsert
+    await expect(col.upsert({ id: 'ev-1', kind: 'x' })).rejects.toThrow(/is immutable/);
+    expect((await col.get('ev-1'))?.kind).toBe('signup');
+    await col.delete('ev-1');
+    expect(await col.get('ev-1')).toBeNull();
+    await expect(col.create({ id: 'ev-1', kind: 'again' })).rejects.toThrow(/already exists/);
   });
 
   it('persists the HLC node across restarts', async () => {

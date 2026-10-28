@@ -1,5 +1,5 @@
 export { Store } from './store';
-export type { Collection, DocumentInput } from './collectionRef';
+export type { Collection, ImmutableCollection, DocumentInput } from './collectionRef';
 export type { StoreOptions, ChangeHandler } from './options';
 export type {
   StoreSync,

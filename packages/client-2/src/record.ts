@@ -78,7 +78,11 @@ export function mergeRecords(
   mergeText?: TextMerge
 ): MergeResult {
   const merged =
-    mode === 'document' ? mergeByDocument(local, incoming) : mergeByField(local, incoming);
+    mode === 'field'
+      ? mergeByField(local, incoming)
+      : mode === 'document'
+        ? mergeByDocument(local, incoming)
+        : mergeImmutable(local, incoming);
   if (local.text !== undefined || incoming.text !== undefined) {
     if (!mergeText) throw new Error('Merging records with text fields needs a text merge');
     merged.text = mergeText(local.text, incoming.text);
@@ -88,12 +92,33 @@ export function mergeRecords(
   return { record: merged, changed: !deepEqual(merged, local) };
 }
 
-function mergeByDocument(local: StoredRecord, incoming: StoredRecord): StoredRecord {
+function recordClocks(local: StoredRecord, incoming: StoredRecord): [string, string] {
   if (local.clock === undefined || incoming.clock === undefined) {
     throw new Error('Document-level merge needs a clock on both records');
   }
-  const winner = compareClocks(incoming.clock, local.clock) > 0 ? incoming : local;
+  return [local.clock, incoming.clock];
+}
+
+function mergeByDocument(local: StoredRecord, incoming: StoredRecord): StoredRecord {
+  const [mine, theirs] = recordClocks(local, incoming);
+  const winner = compareClocks(theirs, mine) > 0 ? incoming : local;
   return { schemaVersion: winner.schemaVersion, fields: { ...winner.fields }, clock: winner.clock };
+}
+
+// First write wins and a tombstone from either side sticks, so no clock
+// comparison can resurrect or overwrite a document.
+function mergeImmutable(local: StoredRecord, incoming: StoredRecord): StoredRecord {
+  const [mine, theirs] = recordClocks(local, incoming);
+  const first = compareClocks(theirs, mine) < 0 ? incoming : local;
+  const deletions = [local.fields.deletedAt, incoming.fields.deletedAt].filter(
+    (at): at is string => typeof at === 'string'
+  );
+  const deletedAt = deletions.length > 0 ? deletions.sort()[0] : null;
+  return {
+    schemaVersion: first.schemaVersion,
+    fields: { ...first.fields, deletedAt },
+    clock: maxClock(mine, theirs),
+  };
 }
 
 function mergeByField(local: StoredRecord, incoming: StoredRecord): StoredRecord {

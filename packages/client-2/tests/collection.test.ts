@@ -21,15 +21,17 @@ describe('defineCollection', () => {
     expect(def.textEngine).not.toBeNull();
   });
 
-  it('rejects text fields in document-level collections', () => {
-    expect(() =>
-      defineCollection({
-        name: 'notes',
-        idPrefix: 'n',
-        merge: 'document',
-        schema: (base) => base.extend({ body: yText() }),
-      })
-    ).toThrow(/cannot declare text fields/);
+  it('rejects text fields in document-level and immutable collections', () => {
+    for (const merge of ['document', 'immutable'] as const) {
+      expect(() =>
+        defineCollection({
+          name: 'notes',
+          idPrefix: 'n',
+          merge,
+          schema: (base) => base.extend({ body: yText() }),
+        })
+      ).toThrow(/cannot declare text fields/);
+    }
   });
 
   it('rejects reserved and oversized keys and dashed prefixes', () => {

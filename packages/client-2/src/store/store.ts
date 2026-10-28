@@ -12,6 +12,7 @@ import {
   assertKeyLength,
   type CollectionDefinition,
   type CollectionIndexNames,
+  type CollectionMergeMode,
   type CollectionName,
   type CollectionTextFields,
   type DocumentInputOf,
@@ -33,7 +34,7 @@ import {
   type BackupBlob,
   type BackupEntry,
 } from '../backup/archive';
-import type { Collection } from './collectionRef';
+import type { Collection, CollectionFor } from './collectionRef';
 import type { ChangeHandler, StoreOptions } from './options';
 import type {
   RestoreMode,
@@ -384,7 +385,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     fields: Iterable<string>,
     clock: string
   ): void {
-    if (def.merge === 'document') {
+    if (def.merge !== 'field') {
       record.clock = clock;
       delete record.clocks;
       return;
@@ -547,6 +548,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     id: string,
     input: Record<string, unknown>
   ): Promise<AnyDocument> {
+    this.assertMutable(def);
     return this.serialise(def.name, id, async () => {
       const existing = await this.loadRecord(def, id);
       if (!existing) throw new Error(`Document not found: ${def.name}/${id}`);
@@ -561,6 +563,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     input: Record<string, unknown>
   ): Promise<AnyDocument> {
     const { id, ...rest } = input as { id: string };
+    this.assertMutable(def);
     return this.serialise(def.name, id, async () => {
       const existing = await this.loadRecord(def, id);
       const doc =
@@ -605,6 +608,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     def: CollectionDefinition,
     updates: Array<{ id: string } & Record<string, unknown>>
   ): Promise<AnyDocument[]> {
+    this.assertMutable(def);
     const docs: AnyDocument[] = [];
     for (const { id, ...input } of updates) {
       docs.push(
@@ -628,6 +632,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       });
     }
     if (ids.length > 0) this.emit(def.name);
+  }
+
+  private assertMutable(def: CollectionDefinition): void {
+    if (def.merge === 'immutable') {
+      throw new Error(`Collection "${def.name}" is immutable; create a new document instead`);
+    }
   }
 
   private async text(def: CollectionDefinition, id: string, field: string): Promise<YText> {
@@ -986,7 +996,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    */
   collection<Name extends CollectionName<Defs>>(
     name: Name
-  ): Collection<
+  ): CollectionFor<
+    CollectionMergeMode<Defs, Name>,
     DocumentOf<Defs, Name>,
     CollectionIndexNames<Defs, Name>,
     CollectionTextFields<Defs, Name>,
