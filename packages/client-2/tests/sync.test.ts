@@ -14,18 +14,21 @@ const notes = defineCollection({
   name: 'notes',
   key: 'n',
   idPrefix: 'nt',
+  merge: 'field',
   schema: (base) => base.extend({ title: z.string(), tags: z.array(z.string()).default([]) }),
 });
 
 const docs = defineCollection({
   name: 'docs',
   idPrefix: 'd',
+  merge: 'field',
   schema: (base) => base.extend({ body: yText() }),
 });
 
 const local = defineCollection({
   name: 'prefs',
   idPrefix: 'p',
+  merge: 'field',
   synced: false,
   schema: (base) => base.extend({ theme: z.string() }),
 });

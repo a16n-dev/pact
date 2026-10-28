@@ -82,8 +82,8 @@ export type CollectionConfig<
   idLength?: number;
   /** Defaults to true. */
   synced?: boolean;
-  /** Defaults to `field`. Cannot be changed once data exists. */
-  merge?: MergeMode;
+  /** Cannot be changed once data exists. */
+  merge: MergeMode;
   migrations?: CollectionMigrations;
   /**
    * Receives a base that already carries the base fields and the
@@ -150,7 +150,7 @@ export function defineCollection<
     idPrefix,
     idLength = DEFAULT_ID_LENGTH,
     synced = true,
-    merge = 'field',
+    merge,
     migrations,
   } = def;
   if (key.startsWith('_')) {

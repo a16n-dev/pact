@@ -128,7 +128,7 @@ interface StoreDomain {
 }
 ```
 
-Each entry comes from `defineCollection({ name, idPrefix, schema, migrations?, synced? })`. The Store derives write validation, the migrator, id parsing, and the sync enumeration from this list, and rejects reads and writes against any collection not in it.
+Each entry comes from `defineCollection({ name, idPrefix, merge, schema, migrations?, synced? })`. The Store derives write validation, the migrator, id parsing, and the sync enumeration from this list, and rejects reads and writes against any collection not in it.
 
 ### Collection handle
 
