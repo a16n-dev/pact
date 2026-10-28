@@ -67,6 +67,60 @@ describe('AI completions', () => {
     expect(await failing.json()).toEqual({ error: 'gateway down', code: 'ai_upstream_error' });
   });
 
+  it('runs any model by path with the body passed through', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const ai = withAi(async (...args) => {
+      calls.push(args);
+      return new Response(JSON.stringify({ result: { answers: {} } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const body = {
+      state: { items: ['udon'] },
+      questions: { q: { type: 'noul', instructions: 'Is it noodles?' } },
+    };
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request(`${ORIGIN}/ai/run/typesafe/jev`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      ai,
+      ctx
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ result: { answers: {} } });
+    expect(calls).toEqual([
+      [
+        'typesafe/jev',
+        body,
+        {
+          gateway: { id: 'default', metadata: { app: 'app-a', token: a.tokenId } },
+          returnRawResponse: true,
+        },
+      ],
+    ]);
+  });
+
+  it('rejects a non-object body', async () => {
+    const a = await seedApp('app-a');
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request(`${ORIGIN}/ai/run/typesafe/jev`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' },
+        body: '[1]',
+      }),
+      withAi(async () => new Response()),
+      ctx
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(400);
+  });
+
   it('echoes requested headers for /ai preflights', async () => {
     const res = await api('/ai/chat/completions', null, {
       method: 'OPTIONS',

@@ -194,6 +194,12 @@ The request and response are in the OpenAI chat-completions shape, so an AI SDK 
 
 A missing `model` is `400 bad_request`. An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is.
 
+## AI models
+
+`POST /ai/run/:provider/:model`. Requires auth; any token works, including API tokens.
+
+For models that aren't chat completions, such as TypeSafe's Jev (`/ai/run/typesafe/jev`). The JSON body is passed to the model as-is, in whatever shape that model takes, and the response comes back unchanged with its `Content-Type`. A body that isn't a JSON object is `400 bad_request`; errors are as for completions.
+
 ## Errors
 
 JSON endpoints return `{ "error": "<human-readable message>", "code": "<code>" }`.
