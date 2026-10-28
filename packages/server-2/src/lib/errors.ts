@@ -11,7 +11,8 @@ type ErrorCode =
   | 'document_too_large'
   | 'blob_too_large'
   | 'ai_upstream_error'
-  | 'ai_not_configured';
+  | 'ai_not_configured'
+  | 'ai_disabled';
 
 export class ApiError extends Error {
   constructor(

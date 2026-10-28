@@ -190,7 +190,7 @@ Preflights succeed for any origin. On `/oauth/token`, `/auth/*` and `/sync/*` th
 
 ## AI
 
-`/ai/*`. Requires auth; any token works, including API tokens.
+`/ai/*`. Requires auth; any token works, including API tokens. An admin can turn the AI proxy off for an app in its settings, after which every request here is `403 ai_disabled`.
 
 Everything under `/ai` is forwarded to the server's [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/), so `<origin>/ai/<provider>` is a drop-in base URL for that provider's own SDK with the Pact token as the API key. The gateway supplies the provider credentials, so send none of your own. The method, path, query string, body and response all pass through unchanged, streaming included. Some examples:
 
@@ -222,6 +222,7 @@ JSON endpoints return `{ "error": "<human-readable message>", "code": "<code>" }
 | 426    | `bad_request`        | `/realtime` called without a WebSocket upgrade          |
 | 500    | `internal_error`     | unexpected server failure                               |
 | 502    | `ai_upstream_error`  | AI Gateway returned an error or failed                  |
+| 403    | `ai_disabled`        | the admin turned the AI proxy off for the app           |
 | 503    | `ai_not_configured`  | the server has no AI Gateway configured                 |
 
 A 401 means the token is gone for good: clear it and send the user through sign-in again.

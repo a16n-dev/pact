@@ -125,6 +125,31 @@ export function SettingsPage({ app, redirectUris, origins, counts, dialog }: Set
         </ul>
       </section>
 
+      <section class='card' aria-labelledby='h-ai'>
+        <div class='card-head'>
+          <h2 id='h-ai'>AI</h2>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='title'>AI proxy</div>
+            <div class='muted small'>
+              Lets this app call AI providers through the server's AI Gateway at <code>/ai</code>.
+            </div>
+          </div>
+          <form method='post' action={`${base}/ai-proxy`} data-autosubmit>
+            <label class='switch'>
+              <input
+                type='checkbox'
+                name='enabled'
+                checked={app.ai_proxy === 1}
+                aria-label='AI proxy'
+              />
+              <span class='switch-track' aria-hidden='true' />
+            </label>
+          </form>
+        </div>
+      </section>
+
       <section class='card' aria-labelledby='h-danger'>
         <div class='card-head'>
           <h2 id='h-danger'>Danger zone</h2>
