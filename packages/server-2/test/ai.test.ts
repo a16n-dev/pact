@@ -166,3 +166,93 @@ describe('AI Gateway proxy', () => {
     );
   });
 });
+
+describe('AI model runs', () => {
+  function withAi(run: (...args: unknown[]) => Promise<Response>) {
+    return { ...GATEWAY_ENV, AI: { run } as unknown as Ai };
+  }
+
+  it('runs the model through the gateway and passes the response through', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const bindings = withAi(async (...args) => {
+      calls.push(args);
+      return new Response('{"result":{"image":"abc"}}', {
+        headers: { 'content-type': 'application/json', 'set-cookie': 'x=1' },
+      });
+    });
+    const body = { prompt: 'an onion', size: '1024x1024' };
+    const res = await proxy(
+      a.token,
+      '/ai/run/openai/gpt-image-1',
+      { method: 'POST', body: JSON.stringify(body) },
+      bindings
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('{"result":{"image":"abc"}}');
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(calls).toEqual([
+      [
+        'openai/gpt-image-1',
+        body,
+        {
+          gateway: { id: 'pact-gw', metadata: { app: 'app-a', token: a.tokenId } },
+          returnRawResponse: true,
+        },
+      ],
+    ]);
+  });
+
+  it('is 400 when the body is not a JSON object', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(async () => new Response());
+    const res = await proxy(
+      a.token,
+      '/ai/run/typesafe/jev',
+      { method: 'POST', body: '[]' },
+      bindings
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('reports upstream failures as 502', async () => {
+    const a = await seedApp('app-a');
+    const failing = await proxy(
+      a.token,
+      '/ai/run/typesafe/jev',
+      { method: 'POST', body: '{}' },
+      withAi(async () => new Response('oops', { status: 500 }))
+    );
+    expect(failing.status).toBe(502);
+
+    const down = await proxy(
+      a.token,
+      '/ai/run/typesafe/jev',
+      { method: 'POST', body: '{}' },
+      withAi(async () => {
+        throw new Error('model down');
+      })
+    );
+    expect(down.status).toBe(502);
+    expect(await down.json()).toEqual({ error: 'model down', code: 'ai_upstream_error' });
+  });
+
+  it('is 403 for an app with the AI proxy turned off', async () => {
+    const a = await seedApp('app-a');
+    await setAiProxy(env.DB, 'app-a', false);
+    const calls: unknown[][] = [];
+    const bindings = withAi(async (...args) => {
+      calls.push(args);
+      return new Response();
+    });
+    const res = await proxy(
+      a.token,
+      '/ai/run/typesafe/jev',
+      { method: 'POST', body: '{}' },
+      bindings
+    );
+    expect(res.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+});

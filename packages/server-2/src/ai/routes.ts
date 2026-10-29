@@ -2,12 +2,20 @@ import { Hono } from 'hono';
 import type { StatusCode } from 'hono/utils/http-status';
 import { type AuthedEnv, requireAuth } from '../auth/bearer';
 import type { Env } from '../lib/env';
-import { ApiError } from '../lib/errors';
+import { ApiError, badRequest } from '../lib/errors';
 import { getApp } from '../db/apps';
 
 export const aiRoutes = new Hono<AuthedEnv>();
 
 aiRoutes.use('*', requireAuth);
+
+aiRoutes.use('*', async (c, next) => {
+  const app = await getApp(c.env.DB, c.get('token').app_id);
+  if (app?.ai_proxy !== 1) {
+    throw new ApiError(403, 'ai_disabled', 'AI is turned off for this app');
+  }
+  await next();
+});
 
 const MOUNT_PATH = '/ai';
 
@@ -37,13 +45,41 @@ function gatewayConfig(env: Env): { account: string; gateway: string; token: str
   return { account, gateway, token };
 }
 
+aiRoutes.post('/run/:provider/:model', async (c) => {
+  const { gateway } = gatewayConfig(c.env);
+  const { provider, model } = c.req.param();
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw badRequest('body must be a JSON object');
+  }
+  const pactToken = c.get('token');
+  let upstream: Response;
+  try {
+    // The binding's types only know Workers AI's own model names, and don't model returnRawResponse.
+    upstream = (await c.env.AI.run(`${provider}/${model}` as never, body, {
+      gateway: { id: gateway, metadata: { app: pactToken.app_id, token: pactToken.id } },
+      returnRawResponse: true,
+    })) as unknown as Response;
+  } catch (error) {
+    throw new ApiError(
+      502,
+      'ai_upstream_error',
+      error instanceof Error ? error.message : 'AI request failed'
+    );
+  }
+  if (upstream.status >= 500) {
+    throw new ApiError(502, 'ai_upstream_error', `AI Gateway returned ${upstream.status}`);
+  }
+  const responseHeaders: Record<string, string> = {};
+  for (const [name, value] of upstream.headers) {
+    if (isForwardedResponseHeader(name)) responseHeaders[name] = value;
+  }
+  return c.newResponse(upstream.body, upstream.status as StatusCode, responseHeaders);
+});
+
 aiRoutes.all('/*', async (c) => {
   const { account, gateway, token } = gatewayConfig(c.env);
   const pactToken = c.get('token');
-  const app = await getApp(c.env.DB, pactToken.app_id);
-  if (app?.ai_proxy !== 1) {
-    throw new ApiError(403, 'ai_disabled', 'AI is turned off for this app');
-  }
   const url = new URL(c.req.url);
   const upstreamPath = url.pathname.slice(MOUNT_PATH.length);
   const upstreamUrl = `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}${upstreamPath}${url.search}`;
