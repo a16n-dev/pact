@@ -192,7 +192,7 @@ Preflights succeed for any origin. On `/oauth/token`, `/auth/*` and `/sync/*` th
 
 `/ai/*`. Requires auth; any token works, including API tokens. An admin can turn the AI proxy off for an app in its settings, after which every request here is `403 ai_disabled`.
 
-Everything under `/ai` is forwarded to the server's [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/), so `<origin>/ai/<provider>` is a drop-in base URL for that provider's own SDK with the Pact token as the API key. The gateway supplies the provider credentials, so send none of your own. The method, path, query string, body and response all pass through unchanged, streaming included. Some examples:
+Everything else under `/ai` is forwarded to the server's [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/), so `<origin>/ai/<provider>` is a drop-in base URL for that provider's own SDK with the Pact token as the API key. The gateway supplies the provider credentials, so send none of your own. The method, path, query string, body and response all pass through unchanged, streaming included. Some examples:
 
 | Provider SDK                    | Base URL                                              |
 | ------------------------------- | ----------------------------------------------------- |
@@ -202,6 +202,8 @@ Everything under `/ai` is forwarded to the server's [Cloudflare AI Gateway](http
 | OpenAI-compatible, any provider | `<origin>/ai/compat` with `model` as `provider/model` |
 
 The server strips `Authorization`, `x-api-key` and any `cf-*` header before forwarding, so a request can't bring its own provider key or change gateway settings. Which gateway is used is fixed by the server's configuration, and every request is logged there with the app and token that made it.
+
+`POST /ai/run/:provider/:model` runs a Workers AI model, through the same gateway, for models the gateway can't reach by path, such as TypeSafe's Jev (`/ai/run/typesafe/jev`) or an image model (`/ai/run/openai/gpt-image-1`). The JSON body is the model's input, in whatever shape that model takes, and the response comes back unchanged with its `Content-Type`. A body that isn't a JSON object is `400 bad_request`.
 
 An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is. A server with no gateway configured answers `503 ai_not_configured`.
 

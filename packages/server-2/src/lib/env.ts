@@ -5,6 +5,7 @@ export type Env = {
   BLOBS: R2Bucket;
   REALTIME: DurableObjectNamespace<RealtimeDO>;
   LOGIN_LIMITER: RateLimit;
+  AI: Ai;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET?: string;
   ACCESS_TEAM_DOMAIN: string;
