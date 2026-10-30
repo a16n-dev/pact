@@ -8,6 +8,7 @@ export type {
   StoreEncryption,
   StoreAi,
   ImageRequest,
+  ImageOutput,
   GeneratedImage,
   DecisionRequest,
   RestoreMode,

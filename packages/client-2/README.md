@@ -186,6 +186,7 @@ const image = await store.ai.image({
   model: 'openai/gpt-image-1',
   prompt: 'A single brown onion on a transparent background',
   background: 'transparent',
+  output: { width: 256, height: 256, format: 'webp' },
 });
 const hash = await store.blobs.write(image.bytes, image.mimeType);
 

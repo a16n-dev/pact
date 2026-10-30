@@ -52,25 +52,27 @@ aiRoutes.post('/images', async (c) => {
   const model = requiredString(body, 'model');
   const prompt = requiredString(body, 'prompt');
   const input: Record<string, unknown> = { prompt };
-  for (const [field, inputField] of [
-    ['size', 'size'],
-    ['quality', 'quality'],
-    ['background', 'background'],
-    ['format', 'output_format'],
-  ] as const) {
-    if (body[field] === undefined) continue;
-    input[inputField] = requiredString(body, field);
+  for (const field of ['size', 'quality', 'background'] as const) {
+    if (body[field] !== undefined) input[field] = requiredString(body, field);
   }
+  const output = body.output === undefined ? null : outputOptions(body.output);
 
   const upstream = await runModel(c.env, c.get('token'), model, input);
   if (!upstream.ok) return passThrough(c, upstream);
+  let bytes: Uint8Array<ArrayBuffer>;
   if (upstream.headers.get('content-type')?.startsWith('image/')) {
-    return imageResponse(new Uint8Array(await upstream.arrayBuffer()));
+    bytes = new Uint8Array(await upstream.arrayBuffer());
+  } else {
+    const result = unwrapResult(await upstream.json().catch(() => null));
+    const image = isObject(result) && typeof result.image === 'string' ? result.image : null;
+    if (!image) throw new ApiError(502, 'ai_upstream_error', 'The model returned no image');
+    bytes = await imageBytes(image);
   }
-  const output = unwrapResult(await upstream.json().catch(() => null));
-  const image = isObject(output) && typeof output.image === 'string' ? output.image : null;
-  if (!image) throw new ApiError(502, 'ai_upstream_error', 'The model returned no image');
-  return imageResponse(await imageBytes(image));
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new ApiError(502, 'ai_upstream_error', 'The model returned an image over 20 MB');
+  }
+  if (!output) return new Response(bytes, { headers: { 'content-type': imageType(bytes) } });
+  return convertImage(c.env, bytes, output);
 });
 
 aiRoutes.post('/decide', async (c) => {
@@ -151,11 +153,72 @@ async function imageBytes(image: string): Promise<Uint8Array<ArrayBuffer>> {
   }
 }
 
-function imageResponse(bytes: Uint8Array<ArrayBuffer>): Response {
-  if (bytes.byteLength > MAX_IMAGE_BYTES) {
-    throw new ApiError(502, 'ai_upstream_error', 'The model returned an image over 20 MB');
+const OUTPUT_FORMATS = ['png', 'webp', 'jpeg', 'avif'] as const;
+const OUTPUT_FITS = ['contain', 'cover', 'scale-down'] as const;
+const MIN_OUTPUT_PX = 16;
+const MAX_OUTPUT_PX = 2048;
+
+type OutputOptions = {
+  width?: number;
+  height?: number;
+  fit: (typeof OUTPUT_FITS)[number];
+  format: (typeof OUTPUT_FORMATS)[number];
+  quality?: number;
+};
+
+function outputOptions(value: unknown): OutputOptions {
+  if (!isObject(value)) throw badRequest('output must be a JSON object');
+  const format = oneOf(value.format, OUTPUT_FORMATS, 'output.format');
+  const fit = value.fit === undefined ? 'contain' : oneOf(value.fit, OUTPUT_FITS, 'output.fit');
+  const width = optionalInteger(value.width, 'output.width', MIN_OUTPUT_PX, MAX_OUTPUT_PX);
+  const height = optionalInteger(value.height, 'output.height', MIN_OUTPUT_PX, MAX_OUTPUT_PX);
+  const quality = optionalInteger(value.quality, 'output.quality', 1, 100);
+  return { width, height, fit, format, quality };
+}
+
+async function convertImage(
+  env: Env,
+  bytes: Uint8Array<ArrayBuffer>,
+  { width, height, fit, format, quality }: OutputOptions
+): Promise<Response> {
+  try {
+    const result = await env.IMAGES.input(new Blob([bytes]).stream())
+      .transform({ width, height, fit })
+      .output({ format: `image/${format}`, quality });
+    return new Response(result.image(), { headers: { 'content-type': result.contentType() } });
+  } catch (error) {
+    throw new ApiError(
+      502,
+      'ai_upstream_error',
+      error instanceof Error
+        ? `Converting the image failed: ${error.message}`
+        : 'Converting the image failed'
+    );
   }
-  return new Response(bytes, { headers: { 'content-type': imageType(bytes) } });
+}
+
+function oneOf<const T extends readonly string[]>(
+  value: unknown,
+  options: T,
+  field: string
+): T[number] {
+  if (typeof value !== 'string' || !options.includes(value)) {
+    throw badRequest(`${field} must be one of ${options.join(', ')}`);
+  }
+  return value;
+}
+
+function optionalInteger(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw badRequest(`${field} must be a whole number from ${min} to ${max}`);
+  }
+  return value;
 }
 
 function imageType(bytes: Uint8Array): string {

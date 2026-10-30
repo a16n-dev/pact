@@ -208,7 +208,6 @@ describe('AI images', () => {
         prompt: 'an onion',
         size: '1024x1024',
         background: 'transparent',
-        format: 'png',
       }),
       bindings
     );
@@ -216,7 +215,7 @@ describe('AI images', () => {
     expect(calls).toEqual([
       [
         'openai/gpt-image-1',
-        { prompt: 'an onion', size: '1024x1024', background: 'transparent', output_format: 'png' },
+        { prompt: 'an onion', size: '1024x1024', background: 'transparent' },
         {
           gateway: { id: 'pact-gw', metadata: { app: 'app-a', token: a.tokenId } },
           returnRawResponse: true,
@@ -254,6 +253,101 @@ describe('AI images', () => {
     const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('converts the image when the request asks for an output', async () => {
+    const a = await seedApp('app-a');
+    const transforms: unknown[] = [];
+    const outputs: unknown[] = [];
+    const inputs: Uint8Array[] = [];
+    const images = {
+      input(stream: ReadableStream<Uint8Array>) {
+        const read = new Response(stream).arrayBuffer().then((buffer) => {
+          inputs.push(new Uint8Array(buffer));
+        });
+        const transformer = {
+          transform(options: unknown) {
+            transforms.push(options);
+            return transformer;
+          },
+          async output(options: unknown) {
+            await read;
+            outputs.push(options);
+            return {
+              image: () => new Response('webp-bytes').body!,
+              contentType: () => 'image/webp',
+            };
+          },
+        };
+        return transformer;
+      },
+    };
+    const bindings = {
+      ...withAi(async () => json({ image: base64(PNG) })),
+      IMAGES: images as unknown as ImagesBinding,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', {
+        model: 'm/x',
+        prompt: 'p',
+        output: { width: 256, height: 256, format: 'webp', quality: 85 },
+      }),
+      bindings
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/webp');
+    expect(await res.text()).toBe('webp-bytes');
+    expect(inputs).toEqual([PNG]);
+    expect(transforms).toEqual([{ width: 256, height: 256, fit: 'contain' }]);
+    expect(outputs).toEqual([{ format: 'image/webp', quality: 85 }]);
+  });
+
+  it('is 400 for an output it cannot produce, before running the model', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const bindings = withAi(async (...args) => {
+      calls.push(args);
+      return new Response();
+    });
+    for (const output of [
+      { format: 'bmp' },
+      { format: 'webp', width: 4096 },
+      { format: 'webp', width: 25.5 },
+      { format: 'webp', fit: 'stretch' },
+      { format: 'webp', quality: 0 },
+    ]) {
+      const res = await call(
+        a.token,
+        post('/ai/images', { model: 'm/x', prompt: 'p', output }),
+        bindings
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reports a failed conversion as 502', async () => {
+    const a = await seedApp('app-a');
+    const images = {
+      input() {
+        throw new Error('bad image');
+      },
+    };
+    const bindings = {
+      ...withAi(async () => json({ image: base64(PNG) })),
+      IMAGES: images as unknown as ImagesBinding,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p', output: { format: 'webp' } }),
+      bindings
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: 'Converting the image failed: bad image',
+      code: 'ai_upstream_error',
+    });
   });
 
   it('is 400 without a model or prompt', async () => {

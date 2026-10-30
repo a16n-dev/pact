@@ -59,6 +59,7 @@
   ],
 
   "ai": { "binding": "AI" },
+  "images": { "binding": "IMAGES" },
 
   // Stylesheets and the favicon are imported as strings and served from the Worker.
   "rules": [{ "type": "Text", "globs": ["**/*.css", "**/*.svg"], "fallthrough": true }],

@@ -205,7 +205,9 @@ The server strips `Authorization`, `x-api-key` and any `cf-*` header before forw
 
 Two routes give a fixed shape to kinds of model the gateway can't reach by path. Both run Workers AI models through the same gateway; `model` is the model's Workers AI name.
 
-**`POST /ai/images`** with `{ model, prompt, size?, quality?, background?, format? }`, where `format` is the output format (`png`, `webp` or `jpeg`). The other options go to the model as they are, so their accepted values are the model's. Returns the image's bytes with its `Content-Type`, whether the model gave them as base64, a data URI or a link to the gateway's output bucket, which browsers can't read. Images over 20 MB are `502 ai_upstream_error`.
+**`POST /ai/images`** with `{ model, prompt, size?, quality?, background?, output? }`. `size`, `quality` and `background` go to the model as they are, so their accepted values are the model's. Returns the image's bytes with its `Content-Type`, whether the model gave them as base64, a data URI or a link to the gateway's output bucket, which browsers can't read. Images over 20 MB are `502 ai_upstream_error`.
+
+`output` is `{ width?, height?, fit?, format, quality? }`, and has the server resize and convert the image with [Cloudflare Images](https://developers.cloudflare.com/images/transform-images/bindings/) before returning it. `format` is `png`, `webp`, `jpeg` or `avif`. `width` and `height` are whole pixels from 16 to 2048. `fit` is `contain` (the default: within the box, keeping the aspect ratio), `cover` (fills the box, cropping the overflow) or `scale-down` (like `contain`, but never enlarges). `quality` is 1 to 100 for the lossy formats. An `output` the server can't produce is `400 bad_request` before the model runs; a conversion that fails is `502 ai_upstream_error`.
 
 **`POST /ai/decide`** with `{ model, state?, questions }`, for decision models such as TypeSafe's Jev (`typesafe/jev`). `questions` is an object in the shape the model takes, keyed by name. Returns `{ "answers": { ... } }`, keyed the same way.
 

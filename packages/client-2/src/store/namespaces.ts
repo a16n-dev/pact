@@ -104,7 +104,20 @@ export type ImageRequest = {
   size?: string;
   quality?: string;
   background?: 'transparent' | 'opaque' | 'auto';
-  format?: 'png' | 'webp' | 'jpeg';
+  /** Resized and converted on the server. Without it the model's image comes back as it is. */
+  output?: ImageOutput;
+};
+
+export type ImageOutput = {
+  /** 16–2048 px. */
+  width?: number;
+  /** 16–2048 px. */
+  height?: number;
+  /** `contain` (the default) fits within the box, `cover` fills it and crops, `scale-down` never enlarges. */
+  fit?: 'contain' | 'cover' | 'scale-down';
+  format: 'png' | 'webp' | 'jpeg' | 'avif';
+  /** 1–100, for the lossy formats. */
+  quality?: number;
 };
 
 export type GeneratedImage = { bytes: Uint8Array; mimeType: string };
