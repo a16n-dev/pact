@@ -3,6 +3,7 @@ export const LIMITS = {
   blobBytes: 50 * 1024 * 1024,
   pullPageSize: 500,
   blobPageSize: 100,
+  documentPageSize: 100,
   authCodeTtlMs: 60_000,
   loginSessionTtlMs: 30 * 24 * 60 * 60_000,
   lastSeenWriteIntervalMs: 5 * 60_000,
