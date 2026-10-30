@@ -160,3 +160,71 @@ export async function documentStats(db: D1Database, appId: string): Promise<Docu
     collections: collections.results,
   };
 }
+
+export type DocumentSummary = {
+  id: string;
+  version_count: number;
+  hlc: string;
+  data_bytes: number;
+};
+
+export async function collectionStats(
+  db: D1Database,
+  appId: string,
+  collection: string
+): Promise<{ document_count: number; data_bytes: number }> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT id) AS document_count,
+         COALESCE(SUM(LENGTH(CAST(data AS BLOB))), 0) AS data_bytes
+       FROM documents WHERE app_id = ?1 AND collection = ?2`
+    )
+    .bind(appId, collection)
+    .first<{ document_count: number; data_bytes: number }>();
+  return row ?? { document_count: 0, data_bytes: 0 };
+}
+
+export async function listDocumentPage(
+  db: D1Database,
+  appId: string,
+  collection: string,
+  after: string
+): Promise<{ documents: DocumentSummary[]; hasMore: boolean }> {
+  const limit = LIMITS.documentPageSize;
+  const { results } = await db
+    .prepare(
+      `SELECT id, COUNT(*) AS version_count, MAX(hlc) AS hlc,
+         SUM(LENGTH(CAST(data AS BLOB))) AS data_bytes
+       FROM documents WHERE app_id = ?1 AND collection = ?2 AND id > ?3
+       GROUP BY id ORDER BY id LIMIT ?4`
+    )
+    .bind(appId, collection, after, limit + 1)
+    .all<DocumentSummary>();
+  const hasMore = results.length > limit;
+  return { documents: hasMore ? results.slice(0, limit) : results, hasMore };
+}
+
+// A version with its writer's token label and username; both are NULL once the token is revoked.
+export type LabelledVersionRow = DocumentVersionRow & {
+  label: string | null;
+  username: string | null;
+};
+
+export async function listLabelledVersions(
+  db: D1Database,
+  appId: string,
+  collection: string,
+  id: string
+): Promise<LabelledVersionRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT d.collection, d.id, d.writer_id, d.hlc, d.seq, d.data, t.label, u.username
+       FROM documents d
+       LEFT JOIN tokens t ON t.id = d.writer_id
+       LEFT JOIN users u ON u.id = t.user_id
+       WHERE d.app_id = ?1 AND d.collection = ?2 AND d.id = ?3 ORDER BY d.hlc DESC`
+    )
+    .bind(appId, collection, id)
+    .all<LabelledVersionRow>();
+  return results;
+}

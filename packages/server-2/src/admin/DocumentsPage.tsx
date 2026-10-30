@@ -47,7 +47,13 @@ export function DocumentsPage({ app, stats }: DocumentsPageProps) {
               ) : null}
               {stats.collections.map((row) => (
                 <tr>
-                  <td class='mono strong'>{row.collection}</td>
+                  <td class='mono strong'>
+                    <a
+                      href={`/admin/apps/${app.id}/documents/${encodeURIComponent(row.collection)}`}
+                    >
+                      {row.collection}
+                    </a>
+                  </td>
                   <td class='right'>{formatCount(row.document_count)}</td>
                   <td class='right'>{formatCount(row.version_count)}</td>
                   <td class='right'>{formatBytes(row.data_bytes)}</td>

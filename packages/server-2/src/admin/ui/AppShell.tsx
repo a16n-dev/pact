@@ -1,5 +1,5 @@
 import type { Child, PropsWithChildren } from 'hono/jsx';
-import { AdminShell } from './AdminShell';
+import { AdminShell, type Crumb } from './AdminShell';
 import type { AppRow } from '../../db/apps';
 
 export type AppTab = 'documents' | 'blobs' | 'access' | 'settings';
@@ -9,6 +9,7 @@ type AppShellProps = PropsWithChildren<{
   tab: AppTab;
   actions?: Child;
   narrow?: boolean;
+  trail?: Crumb[];
 }>;
 
 const TABS: { id: AppTab; label: string }[] = [
@@ -18,13 +19,17 @@ const TABS: { id: AppTab; label: string }[] = [
   { id: 'settings', label: 'Settings' },
 ];
 
-export function AppShell({ app, tab, actions, narrow, children }: AppShellProps) {
+export function AppShell({ app, tab, actions, narrow, trail = [], children }: AppShellProps) {
   const current = TABS.find((entry) => entry.id === tab)!;
   return (
     <AdminShell
-      title={`${current.label} · ${app.name}`}
+      title={`${trail.at(-1)?.label ?? current.label} · ${app.name}`}
       section='apps'
-      crumbs={[{ label: 'Apps', href: '/admin/apps' }, { label: app.name }]}
+      crumbs={[
+        { label: 'Apps', href: '/admin/apps' },
+        { label: app.name, href: trail.length > 0 ? `/admin/apps/${app.id}/${tab}` : undefined },
+        ...trail,
+      ]}
       narrow={narrow}
     >
       <div class='toolbar'>
