@@ -85,6 +85,38 @@ export type StoreBlobs = {
   notifyChanged(): void;
 };
 
+/**
+ * Runs models through the Pact server's AI routes, signed in as this store.
+ * Throws `SyncError` when signed out or when the server refuses, and
+ * `UnauthorizedError` (signing the store out) when the token is gone.
+ */
+export type StoreAi = {
+  /** Generates one image and returns its bytes, whatever form the model gave them in. */
+  image(request: ImageRequest): Promise<GeneratedImage>;
+  /** Asks a decision model the questions about the state. Returns the answers by question key. */
+  decide(request: DecisionRequest): Promise<Record<string, unknown>>;
+};
+
+export type ImageRequest = {
+  /** A Workers AI model, e.g. `openai/gpt-image-1`. */
+  model: string;
+  prompt: string;
+  size?: string;
+  quality?: string;
+  background?: 'transparent' | 'opaque' | 'auto';
+  format?: 'png' | 'webp' | 'jpeg';
+};
+
+export type GeneratedImage = { bytes: Uint8Array; mimeType: string };
+
+export type DecisionRequest = {
+  /** A Workers AI decision model, e.g. `typesafe/jev`. */
+  model: string;
+  state?: unknown;
+  /** In the shape the model takes, keyed by the names the answers come back under. */
+  questions: Record<string, unknown>;
+};
+
 export type StoreEncryption = {
   /**
    * Verifies, or writes on first encrypted use, the sealed sentinel in

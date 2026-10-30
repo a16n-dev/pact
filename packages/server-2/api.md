@@ -203,7 +203,13 @@ Everything else under `/ai` is forwarded to the server's [Cloudflare AI Gateway]
 
 The server strips `Authorization`, `x-api-key` and any `cf-*` header before forwarding, so a request can't bring its own provider key or change gateway settings. Which gateway is used is fixed by the server's configuration, and every request is logged there with the app and token that made it.
 
-`POST /ai/run/:provider/:model` runs a Workers AI model, through the same gateway, for models the gateway can't reach by path, such as TypeSafe's Jev (`/ai/run/typesafe/jev`) or an image model (`/ai/run/openai/gpt-image-1`). The JSON body is the model's input, in whatever shape that model takes, and the response comes back unchanged with its `Content-Type`. A body that isn't a JSON object is `400 bad_request`.
+Two routes give a fixed shape to kinds of model the gateway can't reach by path. Both run Workers AI models through the same gateway; `model` is the model's Workers AI name.
+
+**`POST /ai/images`** with `{ model, prompt, size?, quality?, background?, format? }`, where `format` is the output format (`png`, `webp` or `jpeg`). The other options go to the model as they are, so their accepted values are the model's. Returns the image's bytes with its `Content-Type`, whether the model gave them as base64, a data URI or a link to the gateway's output bucket, which browsers can't read. Images over 20 MB are `502 ai_upstream_error`.
+
+**`POST /ai/decide`** with `{ model, state?, questions }`, for decision models such as TypeSafe's Jev (`typesafe/jev`). `questions` is an object in the shape the model takes, keyed by name. Returns `{ "answers": { ... } }`, keyed the same way.
+
+A missing or empty `model` or `prompt`, or `questions` that isn't an object, is `400 bad_request`. A model response with no image or no answers is `502 ai_upstream_error`.
 
 An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is. A server with no gateway configured answers `503 ai_not_configured`.
 

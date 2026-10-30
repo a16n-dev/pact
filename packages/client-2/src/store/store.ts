@@ -41,6 +41,7 @@ import type {
   RestoreResult,
   StoreBackup,
   StoreBlobs,
+  StoreAi,
   StoreEncryption,
   StoreSync,
 } from './namespaces';
@@ -65,6 +66,7 @@ import {
   validateProjection,
 } from './records';
 import { TextCache } from './textCache';
+import { createAi } from '../ai/ai';
 import type { TextDocument } from '../text/engine';
 
 // Any constant works: a wrong key fails to open the sealed check regardless of content.
@@ -97,6 +99,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   readonly backup: StoreBackup;
   readonly blobs: StoreBlobs;
   readonly encryption: StoreEncryption;
+  readonly ai: StoreAi;
 
   private constructor(options: StoreOptions<Defs>, node: string) {
     this.adapter = options.adapter;
@@ -192,6 +195,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       verifyKey: () => this.verifyEncryptionKey(),
       encryptLocal: () => this.encryptLocalData(),
     };
+    this.ai = createAi({
+      credentials: () => this.syncEngine.credentials(),
+      onUnauthorized: () => void this.syncEngine.handleSignedOut(),
+    });
   }
 
   static async create<Defs extends readonly CollectionDefinition[]>(
