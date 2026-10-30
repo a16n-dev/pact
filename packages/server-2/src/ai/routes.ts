@@ -77,11 +77,12 @@ aiRoutes.post('/images', async (c) => {
     image = await resolveImage(value);
   }
   if (!output || !images) {
-    return new Response(image.bytes, {
-      headers: { 'content-type': image.mimeType ?? sniffImageType(image.bytes) },
+    return c.body(image.bytes, 200, {
+      'content-type': image.mimeType ?? sniffImageType(image.bytes),
     });
   }
-  return convertImage(images, image.bytes, output);
+  const converted = await convertImage(images, image.bytes, output);
+  return c.body(converted.body, 200, { 'content-type': converted.contentType });
 });
 
 aiRoutes.post('/decide', async (c) => {
@@ -226,13 +227,13 @@ async function convertImage(
   images: ImagesBinding,
   bytes: Uint8Array<ArrayBuffer>,
   { width, height, fit, format, quality }: OutputOptions
-): Promise<Response> {
+): Promise<{ body: ReadableStream<Uint8Array>; contentType: string }> {
   try {
     const result = await images
       .input(new Blob([bytes]).stream())
       .transform({ width, height, fit })
       .output({ format: `image/${format}`, quality });
-    return new Response(result.image(), { headers: { 'content-type': result.contentType() } });
+    return { body: result.image(), contentType: result.contentType() };
   } catch (error) {
     throw new ApiError(
       502,

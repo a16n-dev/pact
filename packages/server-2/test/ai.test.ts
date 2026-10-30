@@ -417,6 +417,38 @@ describe('AI images', () => {
     });
   });
 
+  it('allows the calling origin on the image, converted or not', async () => {
+    const a = await seedApp('app-a');
+    const images = {
+      input() {
+        const transformer = {
+          transform: () => transformer,
+          output: async () => ({
+            image: () => new Response('webp-bytes').body!,
+            contentType: () => 'image/webp',
+          }),
+        };
+        return transformer;
+      },
+    };
+    const bindings = {
+      ...withAi(async () => json({ image: base64(PNG) })),
+      IMAGES: images as unknown as ImagesBinding,
+    };
+    for (const body of [
+      { model: 'm/x', prompt: 'p' },
+      { model: 'm/x', prompt: 'p', output: { format: 'webp' } },
+    ]) {
+      const res = await call(
+        a.token,
+        { ...post('/ai/images', body), headers: { origin: 'http://localhost:5173' } },
+        bindings
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    }
+  });
+
   it('is 400 without a model or prompt', async () => {
     const a = await seedApp('app-a');
     const bindings = withAi(async () => new Response());
