@@ -6,7 +6,7 @@ export type Env = {
   REALTIME: DurableObjectNamespace<RealtimeDO>;
   LOGIN_LIMITER: RateLimit;
   AI: Ai;
-  IMAGES: ImagesBinding;
+  IMAGES?: ImagesBinding;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET?: string;
   ACCESS_TEAM_DOMAIN: string;

@@ -56,23 +56,32 @@ aiRoutes.post('/images', async (c) => {
     if (body[field] !== undefined) input[field] = requiredString(body, field);
   }
   const output = body.output === undefined ? null : outputOptions(body.output);
+  const images = c.env.IMAGES;
+  if (output && !images) {
+    throw new ApiError(
+      503,
+      'ai_not_configured',
+      'This server has no Images binding to convert with'
+    );
+  }
 
   const upstream = await runModel(c.env, c.get('token'), model, input);
   if (!upstream.ok) return passThrough(c, upstream);
-  let bytes: Uint8Array<ArrayBuffer>;
-  if (upstream.headers.get('content-type')?.startsWith('image/')) {
-    bytes = new Uint8Array(await upstream.arrayBuffer());
+  let image: Image;
+  if (isImageType(upstream.headers.get('content-type'))) {
+    image = await readImage(upstream);
   } else {
     const result = unwrapResult(await upstream.json().catch(() => null));
-    const image = isObject(result) && typeof result.image === 'string' ? result.image : null;
-    if (!image) throw new ApiError(502, 'ai_upstream_error', 'The model returned no image');
-    bytes = await imageBytes(image);
+    const value = isObject(result) && typeof result.image === 'string' ? result.image : null;
+    if (!value) throw new ApiError(502, 'ai_upstream_error', 'The model returned no image');
+    image = await resolveImage(value);
   }
-  if (bytes.byteLength > MAX_IMAGE_BYTES) {
-    throw new ApiError(502, 'ai_upstream_error', 'The model returned an image over 20 MB');
+  if (!output || !images) {
+    return new Response(image.bytes, {
+      headers: { 'content-type': image.mimeType ?? sniffImageType(image.bytes) },
+    });
   }
-  if (!output) return new Response(bytes, { headers: { 'content-type': imageType(bytes) } });
-  return convertImage(c.env, bytes, output);
+  return convertImage(images, image.bytes, output);
 });
 
 aiRoutes.post('/decide', async (c) => {
@@ -126,13 +135,23 @@ function passThrough(c: Context<AuthedEnv>, upstream: Response): Response {
   return c.newResponse(upstream.body, upstream.status as StatusCode, responseHeaders);
 }
 
+type Image = { bytes: Uint8Array<ArrayBuffer>; mimeType: string | null };
+
+function imageTooLarge(): ApiError {
+  return new ApiError(502, 'ai_upstream_error', 'The model returned an image over 20 MB');
+}
+
+function isImageType(contentType: string | null | undefined): contentType is string {
+  return contentType?.startsWith('image/') ?? false;
+}
+
 // Models differ in what they return: a link to the gateway's output bucket, a data URI or bare
 // base64. The link isn't readable from a browser, so the server fetches it.
-async function imageBytes(image: string): Promise<Uint8Array<ArrayBuffer>> {
-  if (image.startsWith('https://')) {
+async function resolveImage(value: string): Promise<Image> {
+  if (value.startsWith('https://')) {
     let res: Response;
     try {
-      res = await fetch(image);
+      res = await fetch(value);
     } catch (error) {
       throw new ApiError(
         502,
@@ -143,14 +162,41 @@ async function imageBytes(image: string): Promise<Uint8Array<ArrayBuffer>> {
     if (!res.ok) {
       throw new ApiError(502, 'ai_upstream_error', `Fetching the image returned ${res.status}`);
     }
-    return new Uint8Array(await res.arrayBuffer());
+    return readImage(res);
   }
-  const base64 = image.replace(/^data:[^,]*;base64,/, '');
+  const dataUri = /^data:([^;,]*)[^,]*;base64,/.exec(value);
+  const base64 = dataUri ? value.slice(dataUri[0].length) : value;
+  if (base64.length * 0.75 > MAX_IMAGE_BYTES) throw imageTooLarge();
   try {
-    return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    return {
+      bytes: Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)),
+      mimeType: isImageType(dataUri?.[1]) ? dataUri[1] : null,
+    };
   } catch {
     throw new ApiError(502, 'ai_upstream_error', 'The model returned an unreadable image');
   }
+}
+
+// Reads the body in chunks so an oversized image is refused before it fills the Worker's memory.
+async function readImage(res: Response): Promise<Image> {
+  const contentType = res.headers.get('content-type');
+  const mimeType = isImageType(contentType) ? contentType : null;
+  if (Number(res.headers.get('content-length')) > MAX_IMAGE_BYTES) throw imageTooLarge();
+  if (!res.body) return { bytes: new Uint8Array(), mimeType };
+  const chunks: Uint8Array[] = [];
+  let sizeBytes = 0;
+  for await (const chunk of res.body) {
+    sizeBytes += chunk.byteLength;
+    if (sizeBytes > MAX_IMAGE_BYTES) throw imageTooLarge();
+    chunks.push(chunk);
+  }
+  const bytes = new Uint8Array(sizeBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, mimeType };
 }
 
 const OUTPUT_FORMATS = ['png', 'webp', 'jpeg', 'avif'] as const;
@@ -177,12 +223,13 @@ function outputOptions(value: unknown): OutputOptions {
 }
 
 async function convertImage(
-  env: Env,
+  images: ImagesBinding,
   bytes: Uint8Array<ArrayBuffer>,
   { width, height, fit, format, quality }: OutputOptions
 ): Promise<Response> {
   try {
-    const result = await env.IMAGES.input(new Blob([bytes]).stream())
+    const result = await images
+      .input(new Blob([bytes]).stream())
       .transform({ width, height, fit })
       .output({ format: `image/${format}`, quality });
     return new Response(result.image(), { headers: { 'content-type': result.contentType() } });
@@ -221,7 +268,7 @@ function optionalInteger(
   return value;
 }
 
-function imageType(bytes: Uint8Array): string {
+function sniffImageType(bytes: Uint8Array): string {
   const ascii = (start: number, end: number) => String.fromCharCode(...bytes.subarray(start, end));
   if (bytes[0] === 0x89 && ascii(1, 4) === 'PNG') return 'image/png';
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';

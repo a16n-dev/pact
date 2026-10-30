@@ -255,6 +255,73 @@ describe('AI images', () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
   });
 
+  it('keeps the content type the model gave over sniffing the bytes', async () => {
+    const a = await seedApp('app-a');
+    const raw = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(async () => new Response(PNG, { headers: { 'content-type': 'image/avif' } }))
+    );
+    expect(raw.headers.get('content-type')).toBe('image/avif');
+
+    const dataUri = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(async () => json({ image: `data:image/gif;base64,${base64(PNG)}` }))
+    );
+    expect(dataUri.headers.get('content-type')).toBe('image/gif');
+  });
+
+  it('refuses images over 20 MB', async () => {
+    const a = await seedApp('app-a');
+    const declared = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(
+        async () =>
+          new Response(PNG, {
+            headers: { 'content-type': 'image/png', 'content-length': String(21 * 1024 * 1024) },
+          })
+      )
+    );
+    expect(declared.status).toBe(502);
+
+    const streamed = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(
+        async () =>
+          new Response(new Uint8Array(21 * 1024 * 1024), {
+            headers: { 'content-type': 'image/png' },
+          })
+      )
+    );
+    expect(streamed.status).toBe(502);
+    expect(await streamed.json()).toEqual({
+      error: 'The model returned an image over 20 MB',
+      code: 'ai_upstream_error',
+    });
+  });
+
+  it('is 503 for an output on a server without the Images binding, before running the model', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const bindings = {
+      ...withAi(async (...args) => {
+        calls.push(args);
+        return json({ image: base64(PNG) });
+      }),
+      IMAGES: undefined,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p', output: { format: 'webp' } }),
+      bindings
+    );
+    expect(res.status).toBe(503);
+    expect(calls).toHaveLength(0);
+  });
+
   it('converts the image when the request asks for an output', async () => {
     const a = await seedApp('app-a');
     const transforms: unknown[] = [];

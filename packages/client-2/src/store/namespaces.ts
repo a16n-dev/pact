@@ -94,7 +94,9 @@ export type StoreAi = {
   /** Generates one image and returns its bytes, whatever form the model gave them in. */
   image(request: ImageRequest): Promise<GeneratedImage>;
   /** Asks a decision model the questions about the state. Returns the answers by question key. */
-  decide(request: DecisionRequest): Promise<Record<string, unknown>>;
+  decide<Q extends Record<string, unknown>>(
+    request: DecisionRequest<Q>
+  ): Promise<Record<keyof Q, unknown>>;
 };
 
 export type ImageRequest = {
@@ -122,12 +124,12 @@ export type ImageOutput = {
 
 export type GeneratedImage = { bytes: Uint8Array; mimeType: string };
 
-export type DecisionRequest = {
+export type DecisionRequest<Q extends Record<string, unknown> = Record<string, unknown>> = {
   /** A Workers AI decision model, e.g. `typesafe/jev`. */
   model: string;
   state?: unknown;
   /** In the shape the model takes, keyed by the names the answers come back under. */
-  questions: Record<string, unknown>;
+  questions: Q;
 };
 
 export type StoreEncryption = {

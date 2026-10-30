@@ -36,9 +36,11 @@ export function createAi(deps: AiDeps): StoreAi {
       };
     },
 
-    async decide(request: DecisionRequest): Promise<Record<string, unknown>> {
+    async decide<Q extends Record<string, unknown>>(
+      request: DecisionRequest<Q>
+    ): Promise<Record<keyof Q, unknown>> {
       const res = await post('/ai/decide', request);
-      const body = (await res.json()) as { answers: Record<string, unknown> };
+      const body = (await res.json()) as { answers: Record<keyof Q, unknown> };
       return body.answers;
     },
   };
