@@ -167,35 +167,55 @@ describe('AI Gateway proxy', () => {
   });
 });
 
-describe('AI model runs', () => {
-  function withAi(run: (...args: unknown[]) => Promise<Response>) {
-    return { ...GATEWAY_ENV, AI: { run } as unknown as Ai };
-  }
+function withAi(run: (...args: unknown[]) => Promise<Response>) {
+  return { ...GATEWAY_ENV, AI: { run } as unknown as Ai };
+}
 
-  it('runs the model through the gateway and passes the response through', async () => {
+function post(path: string, body: unknown): RequestInit & { path: string } {
+  return { path, method: 'POST', body: JSON.stringify(body) };
+}
+
+async function call(token: string, request: RequestInit & { path: string }, bindings: typeof env) {
+  const { path, ...init } = request;
+  return proxy(token, path, init, bindings);
+}
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+function base64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function json(body: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(body), {
+    ...init,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('AI images', () => {
+  it('runs the model through the gateway with the mapped options', async () => {
     const a = await seedApp('app-a');
     const calls: unknown[][] = [];
     const bindings = withAi(async (...args) => {
       calls.push(args);
-      return new Response('{"result":{"image":"abc"}}', {
-        headers: { 'content-type': 'application/json', 'set-cookie': 'x=1' },
-      });
+      return json({ result: { image: base64(PNG) } });
     });
-    const body = { prompt: 'an onion', size: '1024x1024' };
-    const res = await proxy(
+    const res = await call(
       a.token,
-      '/ai/run/openai/gpt-image-1',
-      { method: 'POST', body: JSON.stringify(body) },
+      post('/ai/images', {
+        model: 'openai/gpt-image-1',
+        prompt: 'an onion',
+        size: '1024x1024',
+        background: 'transparent',
+      }),
       bindings
     );
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe('{"result":{"image":"abc"}}');
-    expect(res.headers.get('content-type')).toBe('application/json');
-    expect(res.headers.get('set-cookie')).toBeNull();
     expect(calls).toEqual([
       [
         'openai/gpt-image-1',
-        body,
+        { prompt: 'an onion', size: '1024x1024', background: 'transparent' },
         {
           gateway: { id: 'pact-gw', metadata: { app: 'app-a', token: a.tokenId } },
           returnRawResponse: true,
@@ -204,38 +224,234 @@ describe('AI model runs', () => {
     ]);
   });
 
-  it('is 400 when the body is not a JSON object', async () => {
+  it('returns the bytes when the model answers with base64', async () => {
     const a = await seedApp('app-a');
-    const bindings = withAi(async () => new Response());
-    const res = await proxy(
+    const bindings = withAi(async () => json({ image: `data:image/png;base64,${base64(PNG)}` }));
+    const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('fetches the image when the model answers with a link', async () => {
+    const a = await seedApp('app-a');
+    const calls = stubUpstream(() => new Response(PNG));
+    const bindings = withAi(async () =>
+      json({ result: { image: 'https://ai-gateway-outputs.example/out/1' } })
+    );
+    const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
+    expect(calls.map((req) => req.url)).toEqual(['https://ai-gateway-outputs.example/out/1']);
+  });
+
+  it('passes raw image responses through', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(
+      async () => new Response(PNG, { headers: { 'content-type': 'image/png' } })
+    );
+    const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('keeps the content type the model gave over sniffing the bytes', async () => {
+    const a = await seedApp('app-a');
+    const raw = await call(
       a.token,
-      '/ai/run/typesafe/jev',
-      { method: 'POST', body: '[]' },
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(async () => new Response(PNG, { headers: { 'content-type': 'image/avif' } }))
+    );
+    expect(raw.headers.get('content-type')).toBe('image/avif');
+
+    const dataUri = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(async () => json({ image: `data:image/gif;base64,${base64(PNG)}` }))
+    );
+    expect(dataUri.headers.get('content-type')).toBe('image/gif');
+  });
+
+  it('refuses images over 20 MB', async () => {
+    const a = await seedApp('app-a');
+    const declared = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(
+        async () =>
+          new Response(PNG, {
+            headers: { 'content-type': 'image/png', 'content-length': String(21 * 1024 * 1024) },
+          })
+      )
+    );
+    expect(declared.status).toBe(502);
+
+    const streamed = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(
+        async () =>
+          new Response(new Uint8Array(21 * 1024 * 1024), {
+            headers: { 'content-type': 'image/png' },
+          })
+      )
+    );
+    expect(streamed.status).toBe(502);
+    expect(await streamed.json()).toEqual({
+      error: 'The model returned an image over 20 MB',
+      code: 'ai_upstream_error',
+    });
+  });
+
+  it('is 503 for an output on a server without the Images binding, before running the model', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const bindings = {
+      ...withAi(async (...args) => {
+        calls.push(args);
+        return json({ image: base64(PNG) });
+      }),
+      IMAGES: undefined,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p', output: { format: 'webp' } }),
       bindings
     );
+    expect(res.status).toBe(503);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('converts the image when the request asks for an output', async () => {
+    const a = await seedApp('app-a');
+    const transforms: unknown[] = [];
+    const outputs: unknown[] = [];
+    const inputs: Uint8Array[] = [];
+    const images = {
+      input(stream: ReadableStream<Uint8Array>) {
+        const read = new Response(stream).arrayBuffer().then((buffer) => {
+          inputs.push(new Uint8Array(buffer));
+        });
+        const transformer = {
+          transform(options: unknown) {
+            transforms.push(options);
+            return transformer;
+          },
+          async output(options: unknown) {
+            await read;
+            outputs.push(options);
+            return {
+              image: () => new Response('webp-bytes').body!,
+              contentType: () => 'image/webp',
+            };
+          },
+        };
+        return transformer;
+      },
+    };
+    const bindings = {
+      ...withAi(async () => json({ image: base64(PNG) })),
+      IMAGES: images as unknown as ImagesBinding,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', {
+        model: 'm/x',
+        prompt: 'p',
+        output: { width: 256, height: 256, format: 'webp', quality: 85 },
+      }),
+      bindings
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/webp');
+    expect(await res.text()).toBe('webp-bytes');
+    expect(inputs).toEqual([PNG]);
+    expect(transforms).toEqual([{ width: 256, height: 256, fit: 'contain' }]);
+    expect(outputs).toEqual([{ format: 'image/webp', quality: 85 }]);
+  });
+
+  it('is 400 for an output it cannot produce, before running the model', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const bindings = withAi(async (...args) => {
+      calls.push(args);
+      return new Response();
+    });
+    for (const output of [
+      { format: 'bmp' },
+      { format: 'webp', width: 4096 },
+      { format: 'webp', width: 25.5 },
+      { format: 'webp', fit: 'stretch' },
+      { format: 'webp', quality: 0 },
+    ]) {
+      const res = await call(
+        a.token,
+        post('/ai/images', { model: 'm/x', prompt: 'p', output }),
+        bindings
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reports a failed conversion as 502', async () => {
+    const a = await seedApp('app-a');
+    const images = {
+      input() {
+        throw new Error('bad image');
+      },
+    };
+    const bindings = {
+      ...withAi(async () => json({ image: base64(PNG) })),
+      IMAGES: images as unknown as ImagesBinding,
+    };
+    const res = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p', output: { format: 'webp' } }),
+      bindings
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: 'Converting the image failed: bad image',
+      code: 'ai_upstream_error',
+    });
+  });
+
+  it('is 400 without a model or prompt', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(async () => new Response());
+    const noPrompt = await call(a.token, post('/ai/images', { model: 'm/x' }), bindings);
+    expect(noPrompt.status).toBe(400);
+    const noModel = await call(a.token, post('/ai/images', { prompt: 'p' }), bindings);
+    expect(noModel.status).toBe(400);
+  });
+
+  it('passes upstream 4xx responses through', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(async () => json({ error: 'bad size' }, { status: 400 }));
+    const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'bad size' });
   });
 
   it('reports upstream failures as 502', async () => {
     const a = await seedApp('app-a');
-    const failing = await proxy(
+    const down = await call(
       a.token,
-      '/ai/run/typesafe/jev',
-      { method: 'POST', body: '{}' },
-      withAi(async () => new Response('oops', { status: 500 }))
-    );
-    expect(failing.status).toBe(502);
-
-    const down = await proxy(
-      a.token,
-      '/ai/run/typesafe/jev',
-      { method: 'POST', body: '{}' },
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
       withAi(async () => {
         throw new Error('model down');
       })
     );
     expect(down.status).toBe(502);
     expect(await down.json()).toEqual({ error: 'model down', code: 'ai_upstream_error' });
+
+    const empty = await call(
+      a.token,
+      post('/ai/images', { model: 'm/x', prompt: 'p' }),
+      withAi(async () => json({ result: {} }))
+    );
+    expect(empty.status).toBe(502);
   });
 
   it('is 403 for an app with the AI proxy turned off', async () => {
@@ -246,13 +462,50 @@ describe('AI model runs', () => {
       calls.push(args);
       return new Response();
     });
-    const res = await proxy(
-      a.token,
-      '/ai/run/typesafe/jev',
-      { method: 'POST', body: '{}' },
-      bindings
-    );
+    const res = await call(a.token, post('/ai/images', { model: 'm/x', prompt: 'p' }), bindings);
     expect(res.status).toBe(403);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('AI decisions', () => {
+  it('runs the model with the state and questions and returns its answers', async () => {
+    const a = await seedApp('app-a');
+    const calls: unknown[][] = [];
+    const answers = { ripe: { type: 'noul', noul: 0.8 } };
+    const bindings = withAi(async (...args) => {
+      calls.push(args);
+      return json({ result: { answers } });
+    });
+    const questions = { ripe: { type: 'noul', instructions: 'Is it ripe?' } };
+    const res = await call(
+      a.token,
+      post('/ai/decide', { model: 'typesafe/jev', state: { fruit: 'banana' }, questions }),
+      bindings
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ answers });
+    expect(calls[0]?.slice(0, 2)).toEqual([
+      'typesafe/jev',
+      { state: { fruit: 'banana' }, questions },
+    ]);
+  });
+
+  it('is 400 without questions', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(async () => new Response());
+    const res = await call(a.token, post('/ai/decide', { model: 'typesafe/jev' }), bindings);
+    expect(res.status).toBe(400);
+  });
+
+  it('reports a response without answers as 502', async () => {
+    const a = await seedApp('app-a');
+    const bindings = withAi(async () => json({ result: { nope: true } }));
+    const res = await call(
+      a.token,
+      post('/ai/decide', { model: 'typesafe/jev', questions: {} }),
+      bindings
+    );
+    expect(res.status).toBe(502);
   });
 });

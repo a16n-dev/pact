@@ -85,6 +85,53 @@ export type StoreBlobs = {
   notifyChanged(): void;
 };
 
+/**
+ * Runs models through the Pact server's AI routes, signed in as this store.
+ * Throws `SyncError` when signed out or when the server refuses, and
+ * `UnauthorizedError` (signing the store out) when the token is gone.
+ */
+export type StoreAi = {
+  /** Generates one image and returns its bytes, whatever form the model gave them in. */
+  image(request: ImageRequest): Promise<GeneratedImage>;
+  /** Asks a decision model the questions about the state. Returns the answers by question key. */
+  decide<Q extends Record<string, unknown>>(
+    request: DecisionRequest<Q>
+  ): Promise<Record<keyof Q, unknown>>;
+};
+
+export type ImageRequest = {
+  /** A Workers AI model, e.g. `openai/gpt-image-1`. */
+  model: string;
+  prompt: string;
+  size?: string;
+  quality?: string;
+  background?: 'transparent' | 'opaque' | 'auto';
+  /** Resized and converted on the server. Without it the model's image comes back as it is. */
+  output?: ImageOutput;
+};
+
+export type ImageOutput = {
+  /** 16–2048 px. */
+  width?: number;
+  /** 16–2048 px. */
+  height?: number;
+  /** `contain` (the default) fits within the box, `cover` fills it and crops, `scale-down` never enlarges. */
+  fit?: 'contain' | 'cover' | 'scale-down';
+  format: 'png' | 'webp' | 'jpeg' | 'avif';
+  /** 1–100, for the lossy formats. */
+  quality?: number;
+};
+
+export type GeneratedImage = { bytes: Uint8Array; mimeType: string };
+
+export type DecisionRequest<Q extends Record<string, unknown> = Record<string, unknown>> = {
+  /** A Workers AI decision model, e.g. `typesafe/jev`. */
+  model: string;
+  state?: unknown;
+  /** In the shape the model takes, keyed by the names the answers come back under. */
+  questions: Q;
+};
+
 export type StoreEncryption = {
   /**
    * Verifies, or writes on first encrypted use, the sealed sentinel in

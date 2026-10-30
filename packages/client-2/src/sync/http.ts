@@ -32,7 +32,7 @@ export async function fetchWithTimeout(input: string, init: RequestInit = {}): P
   }
 }
 
-async function failed(res: Response): Promise<never> {
+export async function failed(res: Response): Promise<never> {
   if (res.status === 401) throw new UnauthorizedError();
   const body = (await res.json().catch(() => null)) as { error?: unknown; code?: unknown } | null;
   const code = typeof body?.code === 'string' ? body.code : null;

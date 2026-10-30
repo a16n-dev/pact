@@ -177,6 +177,30 @@ await store.blobs.prune(); // delete local blobs nothing references
 
 Blobs are content-addressed and capped at 50 MB. They are shared by everyone in the app and never encrypted.
 
+### AI
+
+A signed-in store can run models through the server's AI routes:
+
+```ts
+const image = await store.ai.image({
+  model: 'openai/gpt-image-1',
+  prompt: 'A single brown onion on a transparent background',
+  background: 'transparent',
+  output: { width: 256, height: 256, format: 'webp' },
+});
+const hash = await store.blobs.write(image.bytes, image.mimeType);
+
+const answers = await store.ai.decide({
+  model: 'typesafe/jev',
+  state: { item: 'brown onion', ingredient: 'onion' },
+  questions: {
+    matches: { type: 'noul', instructions: 'Can the item stand in for the ingredient?' },
+  },
+});
+```
+
+For chat, point any OpenAI-compatible SDK at `<server>/ai/compat` with the token from `store.sync.credentials()` as its API key. Signed out, these throw `SyncError` with the code `signed_out`.
+
 ### Backups
 
 ```ts
