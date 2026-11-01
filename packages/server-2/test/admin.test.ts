@@ -3,7 +3,7 @@ import { env, fetchMock, SELF } from 'cloudflare:test';
 import { api, doc, ORIGIN, push, seedApp, seedUser } from './helpers';
 import { base64url, sha256Hex } from '../src/lib/crypto';
 import { getApp } from '../src/db/apps';
-import { issueDeviceToken } from '../src/db/tokens';
+import { issueDeviceToken, mintApiToken } from '../src/db/tokens';
 
 const TEAM = 'test.cloudflareaccess.com';
 const AUD = 'aud-123';
@@ -347,6 +347,41 @@ describe('inside an app', () => {
     expect(html).toContain('notes');
     expect(html).toContain('recipes');
     expect(html).toMatch(/Documents<\/div>\s*<div class="stat-value">3</);
+  });
+
+  it("browses a collection and decodes a document's versions", async () => {
+    const record = (title: string, clock: string) =>
+      JSON.stringify({
+        schemaVersion: 2,
+        fields: { id: 'n1', createdAt: '2026-01-01T00:00:00.000Z', title },
+        clocks: { title: clock },
+      });
+    const older = '1767225600000-0000-devA';
+    const newer = '1767225660000-0000-devB';
+    await push(a.token, [doc('n1', record('Rice <3', newer), 'notes', newer), doc('n2', 'x')]);
+    const other = await mintApiToken(env.DB, 'app-a', 'importer');
+    await push(other.token, [doc('n1', record('Old title', older), 'notes', older)]);
+    await push(other.token, [doc('n3', 'pactenc$abc', 'notes', older)]);
+
+    const list = await (await admin('/apps/app-a/documents/notes')).text();
+    expect(list).toContain('href="/admin/apps/app-a/documents/notes/n1"');
+    expect(list).toContain('n2');
+    expect(list).toContain('3 documents');
+
+    const page = await (await admin('/apps/app-a/documents/notes/n1')).text();
+    expect(page).toContain('Current value');
+    expect(page).toContain('&quot;Rice &lt;3&quot;');
+    expect(page).toContain('&quot;Old title&quot;');
+    expect(page).toContain('test script');
+    expect(page).toContain('importer');
+    expect(page).toContain('1 Jan 2026');
+    expect(page).toContain('devB');
+
+    const sealed = await (await admin('/apps/app-a/documents/notes/n3')).text();
+    expect(sealed).toContain('Encrypted on the device');
+
+    expect((await admin('/apps/app-a/documents/notes/missing')).status).toBe(404);
+    expect((await admin('/apps/app-a/documents/missing')).status).toBe(404);
   });
 
   it('lists and downloads blobs', async () => {

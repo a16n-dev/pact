@@ -21,7 +21,13 @@ import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
 import { addAppUser, listAppUsers, removeAppUser, setRestricted } from '../db/appUsers';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
-import { documentStats, wipeDocumentsStatement } from '../db/documents';
+import {
+  collectionStats,
+  documentStats,
+  listDocumentPage,
+  listLabelledVersions,
+  wipeDocumentsStatement,
+} from '../db/documents';
 import { isAllowedRedirectUriForm, isLoopbackUri, parseHttpsOrigin } from '../auth/redirectUris';
 import { isValidAppId, isValidLabel, isValidPassword, isValidUsername } from '../lib/validation';
 import { notifyRealtime } from '../realtime/durableObject';
@@ -29,6 +35,8 @@ import { AppsPage } from './AppsPage';
 import { UsersPage } from './UsersPage';
 import { BlobsPage } from './BlobsPage';
 import { DocumentsPage } from './DocumentsPage';
+import { CollectionPage } from './CollectionPage';
+import { DocumentPage } from './DocumentPage';
 import { AccessPage } from './AccessPage';
 import { SettingsPage, type SettingsDialogId } from './SettingsPage';
 
@@ -132,6 +140,34 @@ adminRoutes.get('/apps/:id', (c) => c.redirect(`/admin/apps/${c.req.param('id')}
 adminRoutes.get('/apps/:id/documents', async (c) => {
   const app = c.get('app');
   return c.html(<DocumentsPage app={app} stats={await documentStats(c.env.DB, app.id)} />);
+});
+
+adminRoutes.get('/apps/:id/documents/:collection', async (c) => {
+  const app = c.get('app');
+  const collection = c.req.param('collection');
+  const [{ documents, hasMore }, stats] = await Promise.all([
+    listDocumentPage(c.env.DB, app.id, collection, c.req.query('after') ?? ''),
+    collectionStats(c.env.DB, app.id, collection),
+  ]);
+  if (stats.document_count === 0) return c.text('No collection with that name.', 404);
+  return c.html(
+    <CollectionPage
+      app={app}
+      collection={collection}
+      stats={stats}
+      documents={documents}
+      nextCursor={hasMore ? documents.at(-1)?.id : undefined}
+    />
+  );
+});
+
+adminRoutes.get('/apps/:id/documents/:collection/:docId', async (c) => {
+  const app = c.get('app');
+  const collection = c.req.param('collection');
+  const id = c.req.param('docId');
+  const versions = await listLabelledVersions(c.env.DB, app.id, collection, id);
+  if (versions.length === 0) return c.text('No document with that ID.', 404);
+  return c.html(<DocumentPage app={app} collection={collection} id={id} versions={versions} />);
 });
 
 adminRoutes.get('/apps/:id/blobs', async (c) => {

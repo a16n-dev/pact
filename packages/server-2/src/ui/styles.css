@@ -625,6 +625,39 @@ tr.empty td {
   color: var(--hz-muted);
   white-space: normal;
 }
+td.value {
+  height: auto;
+  min-width: 240px;
+  padding: 14px 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.card-note {
+  padding: 14px 24px;
+  border-top: var(--border);
+  font-size: 13px;
+  color: var(--hz-muted);
+}
+details.raw {
+  border-top: var(--border);
+}
+details.raw summary {
+  padding: 12px 24px;
+  font-size: 13px;
+  color: var(--hz-muted);
+  cursor: pointer;
+}
+details.raw pre {
+  margin: 0;
+  padding: 0 24px 16px;
+  max-height: 480px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-variant-ligatures: none;
+}
 .load-more {
   display: flex;
   justify-content: center;

@@ -1,8 +1,30 @@
+import { parseClock } from './decode';
+
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric',
   month: 'short',
   year: 'numeric',
 });
+
+const dateTimeFormat = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  timeZone: 'UTC',
+  timeZoneName: 'short',
+});
+
+function formatDateTime(ms: number): string {
+  return dateTimeFormat.format(new Date(ms));
+}
+
+export function formatClock(raw: string): string {
+  const clock = parseClock(raw);
+  return clock ? formatDateTime(clock.wallMs) : raw;
+}
 
 export function formatDate(ms: number): string {
   return dateFormat.format(new Date(ms));
