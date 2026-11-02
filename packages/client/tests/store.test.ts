@@ -463,6 +463,18 @@ describe('key lenses', () => {
     expect(await store.collection('widgets').list()).toEqual([]);
   });
 
+  it('runs overlapping moves to the same key once', async () => {
+    const { store } = await setup();
+    await store.collection('widgets').create({ id: 'w-1', name: 'a' });
+    const [first, second] = await Promise.all([
+      store.encryption.moveToKey(await cipherFor('pw')),
+      store.encryption.moveToKey(await cipherFor('pw')),
+    ]);
+    expect(first).toEqual({ moved: 1, skipped: 0 });
+    expect(second).toEqual({ moved: 0, skipped: 0 });
+    expect((await store.collection('widgets').get('w-1'))?.name).toBe('a');
+  });
+
   it('rejects collection keys that could collide with a lens', () => {
     expect(() =>
       defineCollection({

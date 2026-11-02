@@ -71,6 +71,17 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
   return { store, adapter };
 }
 
+// Holds every request until released, so a test can overlap work with a switch.
+function heldNetwork() {
+  let release!: () => void;
+  const open = new Promise<void>((resolve) => (release = resolve));
+  vi.stubGlobal('fetch', async (...args: Parameters<typeof fetch>) => {
+    await open;
+    return server.fetch(...args);
+  });
+  return { release };
+}
+
 async function settled(store: Store<any>) {
   await store.sync.drain();
   await store.sync.pull();
@@ -488,6 +499,72 @@ describe('key lenses on the wire', () => {
     const plain = await signedInStore('C');
     await plain.store.sync.pull();
     expect(await plain.store.collection('notes').get('nt-1')).toBeNull();
+  });
+
+  it('switches into a lens that holds versions for a newer build', async () => {
+    const { store } = await signedInStore('A');
+    const ok = encodeHlc({ wallMs: Date.now() - 1_000, counter: 0, node: 'other' });
+    server.seed(server.apiToken('app'), [
+      {
+        collection: 'n',
+        id: 'nt-held',
+        hlc: ok,
+        data: JSON.stringify({
+          ...record({ id: 'nt-held', title: 'x' }, { title: ok }),
+          schemaVersion: 9,
+        }),
+      },
+    ]);
+    expect((await store.sync.pull()).held).toBe(1);
+    await store.encryption.setKey(await cipherFor('one'));
+    await store.encryption.setKey(null);
+    await store.collection('notes').create({ id: 'nt-1', title: 'after' });
+    expect((await store.collection('notes').get('nt-1'))?.title).toBe('after');
+  });
+
+  it('lets pulls in flight land in the lens they started in', async () => {
+    const { store } = await signedInStore('A');
+    const ok = encodeHlc({ wallMs: Date.now() - 1_000, counter: 0, node: 'other' });
+    server.seed(
+      server.apiToken('app'),
+      ['nt-1', 'nt-2', 'nt-3'].map((id) => ({
+        collection: 'n',
+        id,
+        hlc: ok,
+        data: JSON.stringify(record({ id, title: id }, { title: ok })),
+      }))
+    );
+    const cipher = await cipherFor('one');
+    const network = heldNetwork();
+    const pulled = store.sync.pull();
+    const fetched = store.sync.pullDocument('notes', 'nt-1');
+    const switched = store.encryption.setKey(cipher);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    network.release();
+    await Promise.all([pulled, fetched, switched]);
+    expect(await store.collection('notes').list()).toEqual([]);
+    await store.encryption.setKey(null);
+    expect((await store.collection('notes').list()).map((d) => d.id).sort()).toEqual([
+      'nt-1',
+      'nt-2',
+      'nt-3',
+    ]);
+  });
+
+  it('lands a fetched document in the lens it was requested from', async () => {
+    const a = await signedInStore('A', { cipher: await cipherFor('one') });
+    const b = await signedInStore('B', { cipher: await cipherFor('one') });
+    b.store.dispose();
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'sealed' });
+    await a.store.sync.drain();
+    const network = heldNetwork();
+    const fetched = b.store.sync.pullDocument('notes', 'nt-1');
+    const switched = b.store.encryption.setKey(null);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    network.release();
+    await Promise.all([fetched, switched]);
+    await b.store.encryption.setKey(await cipherFor('one'));
+    expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('sealed');
   });
 
   it('pushes writes queued in a lens after switching away from it', async () => {

@@ -23,6 +23,7 @@ import {
   isSealedRecord,
   mergeRecords,
   type AdapterRecord,
+  type TextMerge,
   type StoredEntry,
   type StoredRecord,
 } from '../record';
@@ -87,8 +88,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   // Writes and merges to one document run one at a time, in arrival order.
   private readonly locks = new Map<string, Promise<unknown>>();
   // Set while the lens changes: new document work waits, and the switch waits
-  // for the work already queued.
+  // for the work already queued. Switches themselves run one at a time.
   private gate: Promise<void> | null = null;
+  private switches: Promise<unknown> = Promise.resolve();
+  private disposed = false;
   private readonly changeHandlers = new Set<ChangeHandler>();
   private readonly signedOutHandlers = new Set<() => void>();
   private readonly syncEngine: SyncEngine;
@@ -224,8 +227,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       mutate: (key, decide) => this.mutateTask(key, decide),
       newRev: () => this.clock.now(),
       signedIn: async () => (await this.syncEngine.credentials()) !== null,
-      claim: (key, rev) => this.syncEngine.claimTask(lensKey(key, this.lens.keyId), rev),
-      release: (key, rev) => this.syncEngine.releaseTask(lensKey(key, this.lens.keyId), rev),
+      claimId: (key) => lensKey(key, this.lens.keyId),
+      claim: (claimId, rev) => this.syncEngine.claimTask(claimId, rev),
+      release: (claimId, rev) => this.syncEngine.releaseTask(claimId, rev),
       onTasksChanged: (listener) =>
         this.on('change', (collection) => {
           if (collection === TASKS.name) listener();
@@ -273,8 +277,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * Document reads, writes and explicit sync calls keep working afterwards.
    */
   dispose(): void {
+    this.disposed = true;
     this.syncEngine.stop();
-    this.taskRunner.stop();
+    void this.taskRunner.stop();
     this.textCache.clear();
   }
 
@@ -333,9 +338,16 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return def;
   }
 
-  private serialise<T>(collection: string, id: string, task: () => Promise<T>): Promise<T> {
+  // `gated` is false only for work the lens switch does itself, which would
+  // otherwise wait on its own gate.
+  private serialise<T>(
+    collection: string,
+    id: string,
+    task: () => Promise<T>,
+    gated = true
+  ): Promise<T> {
     const key = `${collection}/${id}`;
-    const previous = Promise.all([this.locks.get(key), this.gate]);
+    const previous = Promise.all([this.locks.get(key), gated ? this.gate : null]);
     const run = previous.then(task, task);
     const settled = run.then(
       () => undefined,
@@ -834,34 +846,36 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private applyIncoming(
     def: CollectionDefinition,
     id: string,
-    incoming: StoredRecord
+    incoming: StoredRecord,
+    gated = true
   ): Promise<ApplyResult> {
-    return this.serialise(def.name, id, async () => {
-      const current = this.migrator.currentVersion(def.name);
-      if (incoming.schemaVersion > current) return this.hold(def, id, incoming);
-      const migrated =
-        incoming.schemaVersion < current
-          ? migrateRecord(this.migrator, def, incoming)
-          : { ...incoming };
-      if (!this.validateIncoming(def, migrated)) return this.hold(def, id, incoming);
-      const local = await this.loadRecord(def, id);
-      if (!local) {
-        if (def.textEngine) migrated.text = this.openText(def, id, migrated.text).encode();
-        await this.putRecord(def, id, migrated);
+    return this.serialise(
+      def.name,
+      id,
+      async () => {
+        const current = this.migrator.currentVersion(def.name);
+        if (incoming.schemaVersion > current) return this.hold(def, id, incoming);
+        const migrated =
+          incoming.schemaVersion < current
+            ? migrateRecord(this.migrator, def, incoming)
+            : { ...incoming };
+        if (!this.validateIncoming(def, migrated)) return this.hold(def, id, incoming);
+        const local = await this.loadRecord(def, id);
+        if (!local) {
+          if (def.textEngine) migrated.text = this.openText(def, id, migrated.text).encode();
+          await this.putRecord(def, id, migrated);
+          return 'applied';
+        }
+        const mergeText = def.textEngine
+          ? textMerge((state) => this.openText(def, id, state))
+          : undefined;
+        const { record, changed } = mergeRecords(local, migrated, def.merge, mergeText);
+        if (!changed) return 'unchanged';
+        await this.putRecord(def, id, record);
         return 'applied';
-      }
-      const mergeText = def.textEngine
-        ? (mine: string | undefined, theirs: string | undefined) => {
-            const doc = this.openText(def, id, mine);
-            if (theirs !== undefined) doc.merge(theirs);
-            return doc.encode();
-          }
-        : undefined;
-      const { record, changed } = mergeRecords(local, migrated, def.merge, mergeText);
-      if (!changed) return 'unchanged';
-      await this.putRecord(def, id, record);
-      return 'applied';
-    });
+      },
+      gated
+    );
   }
 
   private validateIncoming(def: CollectionDefinition, record: StoredRecord): boolean {
@@ -926,7 +940,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const name of this.definitions.keys()) this.emit(name);
   }
 
-  private async retryHeld(): Promise<void> {
+  private async retryHeld(gated = true): Promise<void> {
     const touched = new Set<string>();
     for (const { id: key, record } of await this.adapter.getAll(HELD)) {
       if (isSealedRecord(record)) continue;
@@ -935,7 +949,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       if (!found || found.def === TASKS || found.keyId !== this.lens.keyId) continue;
       const def = found.def;
       const incoming = await this.codec.decode(entry.collection, entry.docId, entry.data);
-      if ((await this.applyIncoming(def, entry.docId, incoming)) === 'held') continue;
+      if ((await this.applyIncoming(def, entry.docId, incoming, gated)) === 'held') continue;
       await this.adapter.delete(HELD, key);
       touched.add(def.name);
     }
@@ -944,60 +958,84 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
   private async setKey(cipher: DocCipher | null): Promise<void> {
     const lens = await lensFor(cipher);
-    if (lens.keyId === this.lens.keyId) return;
-    await this.exclusively(() => this.switchLens(lens));
-    this.syncEngine.requestPull();
-  }
-
-  private async exclusively<T>(task: () => Promise<T>): Promise<T> {
-    const previous = this.gate;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    this.gate = Promise.all([previous, gate]).then(() => undefined);
-    const current = this.gate;
-    // Snapshot before awaiting: work queued from here on waits for the gate.
-    const queued = Array.from(this.locks.values());
-    await previous;
-    const resumePulls = await this.syncEngine.pausePulls();
-    try {
-      await Promise.all(queued);
-      return await task();
-    } finally {
-      resumePulls();
-      release();
-      if (this.gate === current) this.gate = null;
-    }
-  }
-
-  private async moveToKey(cipher: DocCipher | null): Promise<void> {
-    const target = await lensFor(cipher);
-    if (target.keyId === this.lens.keyId) return;
     await this.exclusively(async () => {
-      this.taskRunner.stop();
-      for (const def of [...this.definitions.values(), TASKS]) await this.moveAll(def, target);
-      await this.switchLens(target);
+      if (lens.keyId !== this.lens.keyId) await this.switchLens(lens);
     });
     this.syncEngine.requestPull();
+  }
+
+  // Pulls and task runs finish before the gate goes up, since both write
+  // through the document locks the gate holds back.
+  private exclusively<T>(task: () => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const resumePulls = await this.syncEngine.pausePulls();
+      await this.taskRunner.stop();
+      let release!: () => void;
+      this.gate = new Promise<void>((resolve) => (release = resolve));
+      try {
+        await Promise.all(this.locks.values());
+        return await task();
+      } finally {
+        this.gate = null;
+        release();
+        resumePulls();
+        if (!this.disposed) this.taskRunner.resume();
+      }
+    };
+    const result = this.switches.then(run, run);
+    this.switches = result.catch(() => {});
+    return result;
+  }
+
+  private async moveToKey(cipher: DocCipher | null): Promise<{ moved: number; skipped: number }> {
+    const target = await lensFor(cipher);
+    const result = await this.exclusively(async () => {
+      const total = { moved: 0, skipped: 0 };
+      if (target.keyId === this.lens.keyId) return total;
+      for (const def of [...this.definitions.values(), TASKS]) {
+        const { moved, skipped } = await this.moveAll(def, target);
+        total.moved += moved;
+        total.skipped += skipped;
+      }
+      await this.switchLens(target);
+      return total;
+    });
+    this.syncEngine.requestPull();
+    return result;
   }
 
   // Each document is written to the target before it is tombstoned here, so
   // an interrupted move leaves the rest live in this lens for a rerun. A
   // document already in the target merges by the usual rules.
-  private async moveAll(def: CollectionDefinition, target: Lens): Promise<void> {
+  private async moveAll(
+    def: CollectionDefinition,
+    target: Lens
+  ): Promise<{ moved: number; skipped: number }> {
     const targetKey = lensKey(def.key, target.keyId);
     const current = this.migrator.currentVersion(def.name);
+    const total = { moved: 0, skipped: 0 };
     for (const { id, raw } of await this.allRecords(def)) {
       const record = await this.materialise(def, id, raw);
-      if (!record || record.fields.deletedAt || !this.readDoc(def, id, record)) continue;
+      if (record?.fields.deletedAt) continue;
+      if (!record || !this.readDoc(def, id, record)) {
+        total.skipped += 1;
+        continue;
+      }
       let moved = record;
       const stored = await this.adapter.get(targetKey, id);
       if (stored) {
         const theirs = await target.codec.decode(targetKey, id, stored);
-        if (theirs.schemaVersion > current) continue;
+        if (theirs.schemaVersion > current) {
+          total.skipped += 1;
+          continue;
+        }
         const migrated = needsMigration(this.migrator, def, theirs)
           ? migrateRecord(this.migrator, def, theirs)
           : theirs;
-        moved = mergeRecords(migrated, record, def.merge, mergeDetachedText(def)).record;
+        const mergeText = def.textEngine
+          ? textMerge((state) => def.textEngine!.open(def.textFields, state), { detached: true })
+          : undefined;
+        moved = mergeRecords(migrated, record, def.merge, mergeText).record;
         if (moved.fields.deletedAt)
           moved = this.revive(def, def.merge === 'document' ? record : moved);
       }
@@ -1009,7 +1047,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const clock = greatestClock(moved);
       if (clock !== undefined) await this.queueOutbox(def, id, clock, undefined, targetKey);
       await this.modify(def, id, record, {}, true);
+      total.moved += 1;
     }
+    return total;
   }
 
   // A tombstone in the target, such as one left by an earlier move away,
@@ -1021,15 +1061,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   private async switchLens(lens: Lens): Promise<void> {
-    this.taskRunner.stop();
     await this.rememberBlobHashes();
     await this.syncEngine.leaveLens(this.syncedDefinitions().map((def) => this.keyOf(def)));
     this.lens = lens;
     this.textCache.clear();
-    await this.retryHeld();
+    await this.retryHeld(false);
     await this.buildIndexes();
     for (const name of [...this.definitions.keys(), TASKS.name]) this.emit(name);
-    this.taskRunner.resume();
   }
 
   // Blobs live outside lenses, so pruning must keep what the other lenses
@@ -1223,18 +1261,19 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 }
 
-function mergeDetachedText(
-  def: CollectionDefinition
-): ((mine: string | undefined, theirs: string | undefined) => string | undefined) | undefined {
-  const engine = def.textEngine;
-  if (!engine) return undefined;
+// Detached documents are opened for one merge and destroyed; cached ones stay
+// live in the text cache.
+function textMerge(
+  open: (state: string | undefined) => TextDocument,
+  opts: { detached?: boolean } = {}
+): TextMerge {
   return (mine, theirs) => {
-    const doc = engine.open(def.textFields, mine);
+    const doc = open(mine);
     try {
       if (theirs !== undefined) doc.merge(theirs);
       return doc.encode();
     } finally {
-      doc.destroy();
+      if (opts.detached) doc.destroy();
     }
   };
 }

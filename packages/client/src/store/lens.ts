@@ -3,10 +3,10 @@ import type { DocCipher } from '../crypto/types';
 
 const KEY_ID_PATTERN = /^[0-9a-f]{16}$/;
 
-/** `@` plus a key id, appended to a collection key or task key inside a lens. */
+// `@` plus a key id, appended to a collection key or task key inside a lens.
 export const LENS_SUFFIX_LENGTH = 17;
 
-/** The documents a store shows: those sealed under one key, or the plain ones when `keyId` is null. */
+// The documents a store shows: those sealed under one key, or the plain ones when `keyId` is null.
 export type Lens = { keyId: string | null; codec: RecordCodec };
 
 export async function lensFor(cipher: DocCipher | null): Promise<Lens> {

@@ -154,9 +154,11 @@ export type StoreEncryption = {
    * there under the same id merges by the usual rules and is revived if it
    * was deleted. Each move tombstones
    * the old copy, so a device that edits it offline under the old key edits
-   * a deleted document. Safe to rerun after an interruption.
+   * a deleted document. A document that cannot move, because it fails its
+   * schema or the target holds it at a newer schema version, stays in the
+   * old lens and counts as skipped. Safe to rerun after an interruption.
    */
-  moveToKey(cipher: DocCipher | null): Promise<void>;
+  moveToKey(cipher: DocCipher | null): Promise<{ moved: number; skipped: number }>;
 };
 
 export type SignInStart = {
@@ -243,7 +245,7 @@ export type StoreTasks = {
    */
   register(...tasks: TaskDefinition<any, any>[]): void;
   /**
-   * Queues the task under `key` (1–239 chars, e.g. `parse:sl-123`). Enqueuing
+   * Queues the task under `key` (1–239 chars without `@`, e.g. `parse:sl-123`). Enqueuing
    * under a key that already has a task replaces it: its input, attempts
    * and failure are reset, and a run of the old input never applies.
    */

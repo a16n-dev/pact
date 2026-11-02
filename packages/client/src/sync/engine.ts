@@ -51,25 +51,23 @@ export type HeldEntry = { collection: string; docId: string; data: AdapterRecord
 
 export type ApplyResult = 'applied' | 'unchanged' | 'held';
 
-/**
- * What the engine needs from the store; the store owns records and the
- * active lens, the engine owns the session and cursor. Keys here are storage
- * keys, which carry the lens (`notes@<keyId>`).
- */
+// What the engine needs from the store; the store owns records and the
+// active lens, the engine owns the session and cursor. Keys here are storage
+// keys, which carry the lens (`notes@<keyId>`).
 export type SyncStoreAccess = {
   adapter: DatabaseAdapter;
   codec(): RecordCodec;
   clock: HybridClock;
   node: string;
-  /** The synced storage keys of the active lens. */
+  // The synced storage keys of the active lens.
   activeKeys(): string[];
-  /** The definition behind a synced key of the active lens. */
+  // The definition behind a synced key of the active lens.
   activeDefinition(key: string): CollectionDefinition | undefined;
   activeKeyOf(name: string): string | undefined;
-  /** The collection's key outside any lens, for entries queued before lenses. */
+  // The collection's key outside any lens, for entries queued before lenses.
   plainKeyOf(name: string): string | undefined;
   isSyncedKey(key: string): boolean;
-  /** Every stored synced key, in any lens. */
+  // Every stored synced key, in any lens.
   storedSyncedKeys(): Promise<string[]>;
   applyIncoming(def: CollectionDefinition, id: string, record: StoredRecord): Promise<ApplyResult>;
   heldEntries(): Promise<HeldEntry[]>;
@@ -91,7 +89,7 @@ export class SyncEngine {
   private pullPending = false;
   // Set while the store switches lens; a pull pass never straddles a switch.
   private pullGate: Promise<void> | null = null;
-  private currentPass: Promise<void> = Promise.resolve();
+  private readonly passes = new Set<Promise<void>>();
   private drainTask: Promise<void> | null = null;
   private drainPending = false;
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -283,18 +281,14 @@ export class SyncEngine {
     const total: PullResult = { applied: 0, skipped: { drift: 0, sealed: 0 }, held: 0 };
     try {
       for (;;) {
-        while (this.pullGate) await this.pullGate;
         this.pullPending = false;
-        const pass = this.guarded(async (http) => {
-          await this.backfill(http, total);
-          await this.pullAll(http, total);
-        });
-        this.currentPass = pass.then(
-          () => undefined,
-          () => undefined
-        );
         try {
-          await pass;
+          await this.pass(() =>
+            this.guarded(async (http) => {
+              await this.backfill(http, total);
+              await this.pullAll(http, total);
+            })
+          );
         } catch (err) {
           if (!this.pullPending) throw err;
           continue;
@@ -306,22 +300,34 @@ export class SyncEngine {
     }
   }
 
-  /** Waits out the pull pass in flight and holds back new ones until the returned release runs. */
+  // Anything that applies pulled versions runs as a pass, so it resolves the
+  // lens and writes into it without a switch in between.
+  private async pass<T>(work: () => Promise<T>): Promise<T> {
+    while (this.pullGate) await this.pullGate;
+    const running = work();
+    const settled = running.then(
+      () => undefined,
+      () => undefined
+    );
+    this.passes.add(settled);
+    void settled.then(() => this.passes.delete(settled));
+    return running;
+  }
+
+  // Waits out the passes in flight and holds back new ones until the returned release runs.
   async pausePulls(): Promise<() => void> {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     this.pullGate = gate;
-    await this.currentPass;
+    await Promise.all(this.passes);
     return () => {
       if (this.pullGate === gate) this.pullGate = null;
       release();
     };
   }
 
-  /**
-   * Marks a lens's keys as needing a catch-up from the current cursor, since
-   * the store-wide pull skips versions outside the active lens.
-   */
+  // The store-wide pull skips versions outside the active lens, so a lens
+  // being left is caught up from the current cursor when it is next active.
   async leaveLens(keys: readonly string[]): Promise<void> {
     const pulled = new Set(
       (await this.getConfig<{ keys: string[] }>('pulledCollections'))?.keys ?? []
@@ -440,11 +446,17 @@ export class SyncEngine {
   }
 
   async pullDocument(collection: string, id: string): Promise<void> {
-    const key = this.store.activeKeyOf(collection);
-    if (!key) throw new Error(`Unknown collection "${collection}"`);
-    await this.guarded(async (http) => {
-      const versions = await http.pullDocument(key, id);
-      await this.applyVersions(versions, { applied: 0, skipped: { drift: 0, sealed: 0 }, held: 0 });
+    await this.pass(async () => {
+      const key = this.store.activeKeyOf(collection);
+      if (!key) throw new Error(`Unknown collection "${collection}"`);
+      await this.guarded(async (http) => {
+        const versions = await http.pullDocument(key, id);
+        await this.applyVersions(versions, {
+          applied: 0,
+          skipped: { drift: 0, sealed: 0 },
+          held: 0,
+        });
+      });
     });
   }
 
