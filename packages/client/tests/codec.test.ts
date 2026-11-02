@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encryptedCodec, plainCodec } from '../src/crypto/codec';
+import { encryptedCodec, plainCodec, toWire } from '../src/crypto/codec';
 import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
 import { isSealedRecord, type StoredRecord } from '../src/record';
 
@@ -15,7 +15,7 @@ describe('plainCodec', () => {
   it('stores and ships the record as JSON', async () => {
     const stored = await codec.encode('notes', 'n-1', record);
     expect(stored).toBe(record);
-    expect(JSON.parse(codec.toWire(stored))).toEqual(record);
+    expect(JSON.parse(toWire(stored))).toEqual(record);
     expect(await codec.fromWire('notes', 'n-1', JSON.stringify(record))).toEqual(record);
   });
 
@@ -36,7 +36,7 @@ describe('encryptedCodec', () => {
     const stored = await codec.encode('notes', 'n-1', record);
     if (!isSealedRecord(stored)) throw new Error('expected a sealed record');
     expect(stored.hlc).toBe('0000000001000-0000-node');
-    expect(codec.toWire(stored)).toBe(stored.enc);
+    expect(toWire(stored)).toBe(stored.enc);
     expect(await codec.decode('notes', 'n-1', stored)).toEqual(record);
     expect(await codec.fromWire('notes', 'n-1', stored.enc)).toEqual(record);
     expect(await codec.fromWire('notes', 'n-2', stored.enc)).toBeNull();
@@ -48,10 +48,21 @@ describe('encryptedCodec', () => {
     await expect(other.decode('notes', 'n-1', stored)).rejects.toThrow(/Cannot decrypt/);
   });
 
-  it('passes plaintext through on both paths', async () => {
+  it('refuses plaintext on both paths', async () => {
     const key = await deriveEncryptionKey('pw', 'salt', 1_000);
     const codec = encryptedCodec(createWebCryptoCipher(key));
-    expect(await codec.decode('notes', 'n-1', record)).toBe(record);
-    expect(await codec.fromWire('notes', 'n-1', JSON.stringify(record))).toEqual(record);
+    await expect(codec.decode('notes', 'n-1', record)).rejects.toThrow(/not encrypted/);
+    expect(await codec.fromWire('notes', 'n-1', JSON.stringify(record))).toBeNull();
+  });
+});
+
+describe('createWebCryptoCipher', () => {
+  it('names a key by a stable fingerprint', async () => {
+    const one = await deriveEncryptionKey('pw', 'salt', 1_000);
+    const two = await deriveEncryptionKey('other', 'salt', 1_000);
+    const id = await createWebCryptoCipher(one).keyId();
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(await createWebCryptoCipher(one).keyId()).toBe(id);
+    expect(await createWebCryptoCipher(two).keyId()).not.toBe(id);
   });
 });

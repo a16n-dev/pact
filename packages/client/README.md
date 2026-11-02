@@ -245,7 +245,14 @@ const store = await Store.create({
 });
 ```
 
-Records are sealed at rest and on the wire; the server sees only `collection`, `id` and the clock. A wrong key fails at startup on any install that already holds data. Every client of the app must hold the same key: a version sealed under another key is skipped on pull, so clients with different keys never see each other's documents. To turn encryption on for existing data, call `store.encryption.encryptLocal()` and then `store.sync.push()`.
+Records are sealed at rest and on the wire; the server sees only `collection`, `id` and the clock. Each key is a lens: the store shows only the documents sealed under the active key, or the plain documents when no key is set. Documents in different lenses never interact, so the same id can hold a different document in each. A key the store has not seen before opens an empty lens.
+
+```ts
+await store.encryption.setKey(createWebCryptoCipher(otherKey)); // switch lens
+await store.encryption.setKey(null); // back to the plain documents
+```
+
+Other lenses keep syncing while one is active, and a lens catches up on what it missed when it becomes active again. A custom `DocCipher` must implement `keyId()`, which names the lens on every device holding the key.
 
 ### Indexes
 

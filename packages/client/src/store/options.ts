@@ -27,13 +27,12 @@ export type StoreOptions<
    */
   blobHashes?: (collection: string, doc: BaseDocument) => Iterable<string>;
   /**
-   * Seals every stored record at rest and on the sync wire; the adapter and
-   * server see only `hlc`, `collection`, `id` and the envelope. Blob bytes
-   * and the internal `_*` collections other than `_tasks` are not
-   * encrypted. Every client of the
-   * app must hold the same key: a pulled version sealed under another key
-   * is skipped, so clients with different keys never see each other's
-   * documents.
+   * The key the store opens with; `encryption.setKey` changes it later. Each
+   * key is a lens: the store shows only the documents sealed under it, at
+   * rest and on the sync wire, and the adapter and server see only `hlc`,
+   * `collection`, `id` and the envelope. Without a key the store shows the
+   * plain documents. Blob bytes and the internal `_*` collections other than
+   * `_tasks` are not encrypted.
    */
   encryption?: { cipher: DocCipher };
 };

@@ -11,13 +11,11 @@ export function configRecord(id: string, value: Record<string, unknown>): Stored
 
 export type NodeConfig = { node: string };
 
-// Sealed sentinel written on first encrypted use and verified on every open,
-// so a wrong key fails at startup instead of as scattered decrypt errors.
-export type EncryptionConfig = { check: string };
-
 // Entries hold a reference only; the drain reads the record's current state
-// at push time. `order` is the clock of the write that queued it.
-export type OutboxEntry = { collection: string; docId: string; order: string };
+// at push time, from whichever lens queued it. `order` is the clock of the
+// write that queued it. `key` is the storage key, absent on entries queued
+// before lenses existed, which are all plain.
+export type OutboxEntry = { collection: string; key?: string; docId: string; order: string };
 
 export function outboxKey(collectionKey: string, docId: string): string {
   return `${collectionKey}/${docId}`;

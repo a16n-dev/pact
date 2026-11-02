@@ -273,7 +273,7 @@ describe('tasks', () => {
     const { task } = controlledParse(store);
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'secret eggs' });
     await store.sync.drain();
-    const [version] = server.versionsOf('app', '_tasks', 'parse:sl-1');
+    const [version] = server.versionsOf('app', `_tasks@${await cipher.keyId()}`, 'parse:sl-1');
     expect(version).toBeDefined();
     expect(version!.data).not.toContain('secret eggs');
   });

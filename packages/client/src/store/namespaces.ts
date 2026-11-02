@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { BlobAdapter } from '../blobs/blobAdapter';
+import type { DocCipher } from '../crypto/types';
 import type { TaskDefinition } from '../tasks/task';
 import type { Storable } from '../types';
 
@@ -139,17 +140,23 @@ export type DecisionRequest<Q extends Record<string, unknown> = Record<string, u
 
 export type StoreEncryption = {
   /**
-   * Verifies, or writes on first encrypted use, the sealed sentinel in
-   * `_config/encryption` so a wrong key fails fast. `Store.create` calls this
-   * automatically; no-op without encryption. A fresh install opens with any key.
+   * Switches the lens: the store shows the documents sealed under `cipher`,
+   * or the plain ones when null. Documents in other lenses stay stored and
+   * keep syncing but never interact with this one, so the same id can hold
+   * a different document in each. Every collection emits a change, running
+   * tasks stop, and tasks in the new lens start. A key never used before
+   * opens an empty lens.
    */
-  verifyKey(): Promise<void>;
+  setKey(cipher: DocCipher | null): Promise<void>;
   /**
-   * One-time sweep to enable encryption on an existing install: rewrites
-   * every record through the cipher. Idempotent. Follow with `sync.push()`
-   * to convert the server's copies.
+   * Moves every live document in the current lens to `cipher`'s lens, or to
+   * the plain documents when null, then switches to it. A document already
+   * there under the same id merges by the usual rules and is revived if it
+   * was deleted. Each move tombstones
+   * the old copy, so a device that edits it offline under the old key edits
+   * a deleted document. Safe to rerun after an interruption.
    */
-  encryptLocal(): Promise<{ rewritten: number }>;
+  moveToKey(cipher: DocCipher | null): Promise<void>;
 };
 
 export type SignInStart = {
@@ -236,7 +243,7 @@ export type StoreTasks = {
    */
   register(...tasks: TaskDefinition<any, any>[]): void;
   /**
-   * Queues the task under `key` (1–256 chars, e.g. `parse:sl-123`). Enqueuing
+   * Queues the task under `key` (1–239 chars, e.g. `parse:sl-123`). Enqueuing
    * under a key that already has a task replaces it: its input, attempts
    * and failure are reset, and a run of the old input never applies.
    */

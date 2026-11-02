@@ -349,43 +349,130 @@ describe('indexes', () => {
   });
 });
 
-describe('encryption', () => {
-  const key = () => deriveEncryptionKey('pw', 'salt', 1_000);
+describe('key lenses', () => {
+  const cipherFor = async (phrase: string) =>
+    createWebCryptoCipher(await deriveEncryptionKey(phrase, 'salt', 1_000));
 
-  it('seals records at rest and refuses a wrong key on an install with data', async () => {
+  it('seals records under the key and stores them in its lens', async () => {
     const adapter = new InMemoryAdapter();
-    const cipher = createWebCryptoCipher(await key());
+    const cipher = await cipherFor('pw');
+    const keyId = await cipher.keyId();
     const store = await Store.create({ adapter, collections: [widgets], encryption: { cipher } });
     await store.collection('widgets').create({ id: 'w-1', name: 'secret' });
-    const raw = await adapter.get('widgets', 'w-1');
+    expect(await adapter.get('widgets', 'w-1')).toBeNull();
+    const raw = await adapter.get(`widgets@${keyId}`, 'w-1');
     expect(raw && isSealedRecord(raw)).toBe(true);
     expect(JSON.stringify(raw)).not.toContain('secret');
 
     const reopened = await Store.create({
       adapter,
       collections: [widgets],
-      encryption: { cipher },
+      encryption: { cipher: await cipherFor('pw') },
     });
     expect((await reopened.collection('widgets').get('w-1'))?.name).toBe('secret');
-
-    const wrong = createWebCryptoCipher(await deriveEncryptionKey('other', 'salt', 1_000));
-    await expect(
-      Store.create({ adapter, collections: [widgets], encryption: { cipher: wrong } })
-    ).rejects.toThrow(/does not match/);
   });
 
-  it('encryptLocal seals existing plaintext rows once', async () => {
+  it('opens an empty lens for a key it has not seen', async () => {
     const adapter = new InMemoryAdapter();
+    const store = await Store.create({
+      adapter,
+      collections: [widgets],
+      encryption: { cipher: await cipherFor('pw') },
+    });
+    await store.collection('widgets').create({ id: 'w-1', name: 'secret' });
+    const other = await Store.create({
+      adapter,
+      collections: [widgets],
+      encryption: { cipher: await cipherFor('other') },
+    });
+    expect(await other.collection('widgets').list()).toEqual([]);
     const plain = await Store.create({ adapter, collections: [widgets] });
-    await plain.collection('widgets').create({ id: 'w-1', name: 'a' });
-    const cipher = createWebCryptoCipher(await key());
-    const store = await Store.create({ adapter, collections: [widgets], encryption: { cipher } });
-    expect((await store.collection('widgets').get('w-1'))?.name).toBe('a');
-    expect(await store.encryption.encryptLocal()).toEqual({ rewritten: 1 });
-    expect(await store.encryption.encryptLocal()).toEqual({ rewritten: 0 });
-    const raw = await adapter.get('widgets', 'w-1');
-    expect(raw && isSealedRecord(raw)).toBe(true);
-    expect((await store.collection('widgets').get('w-1'))?.name).toBe('a');
+    expect(await plain.collection('widgets').list()).toEqual([]);
+  });
+
+  it('switches lens at runtime and keeps the same id apart in each', async () => {
+    const { store } = await setup();
+    const changed: string[] = [];
+    store.on('change', (collection) => changed.push(collection));
+    await store.collection('widgets').create({ id: 'w-1', name: 'plain' });
+    await store.encryption.setKey(await cipherFor('pw'));
+    expect(changed).toContain('widgets');
+    expect(await store.collection('widgets').get('w-1')).toBeNull();
+    await store.collection('widgets').create({ id: 'w-1', name: 'sealed' });
+    await store.encryption.setKey(null);
+    expect((await store.collection('widgets').get('w-1'))?.name).toBe('plain');
+    await store.encryption.setKey(await cipherFor('pw'));
+    expect((await store.collection('widgets').get('w-1'))?.name).toBe('sealed');
+  });
+
+  it('rebuilds indexes for the new lens', async () => {
+    const indexed = defineCollection({
+      name: 'widgets',
+      idPrefix: 'w',
+      merge: 'field',
+      schema: (base) => base.extend({ name: z.string() }),
+    }).withIndexes({ name: (doc) => doc.name });
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [indexed] });
+    await store.collection('widgets').create({ id: 'w-1', name: 'a' });
+    await store.encryption.setKey(await cipherFor('pw'));
+    expect(await store.collection('widgets').listByIndex('name', 'a')).toEqual([]);
+    await store.collection('widgets').create({ id: 'w-2', name: 'a' });
+    await store.encryption.setKey(null);
+    expect((await store.collection('widgets').listByIndex('name', 'a')).map((d) => d.id)).toEqual([
+      'w-1',
+    ]);
+  });
+
+  it('finishes writes queued before a switch in the lens they started in', async () => {
+    const { store } = await setup();
+    const write = store.collection('widgets').create({ id: 'w-1', name: 'plain' });
+    const switched = store.encryption.setKey(await cipherFor('pw'));
+    await Promise.all([write, switched]);
+    expect(await store.collection('widgets').get('w-1')).toBeNull();
+    await store.encryption.setKey(null);
+    expect((await store.collection('widgets').get('w-1'))?.name).toBe('plain');
+  });
+
+  it('moves the whole lens to a key and switches to it', async () => {
+    const { store } = await setup();
+    await store.collection('widgets').create({ id: 'w-1', name: 'a' });
+    await store.collection('widgets').create({ id: 'w-2', name: 'gone' });
+    await store.collection('widgets').delete('w-2');
+    await store.collection('notes').create({ id: 'nt-1', title: 't', body: 'hello' });
+    await store.encryption.moveToKey(await cipherFor('pw'));
+    expect((await store.collection('widgets').list()).map((d) => d.id)).toEqual(['w-1']);
+    expect((await store.collection('notes').get('nt-1'))?.body).toBe('hello');
+    await store.encryption.setKey(null);
+    expect(await store.collection('widgets').list()).toEqual([]);
+    expect(await store.collection('notes').list()).toEqual([]);
+  });
+
+  it('merges into documents already in the target lens', async () => {
+    const { store } = await setup();
+    await store.encryption.setKey(await cipherFor('pw'));
+    await store.collection('widgets').create({ id: 'w-1', name: 'sealed', count: 5 });
+    await store.encryption.setKey(null);
+    await store.collection('widgets').create({ id: 'w-1', name: 'plain' });
+    await store.encryption.moveToKey(await cipherFor('pw'));
+    const doc = await store.collection('widgets').get('w-1');
+    expect(doc?.name).toBe('plain');
+
+    await store.encryption.moveToKey(null);
+    expect((await store.collection('widgets').get('w-1'))?.name).toBe('plain');
+    await store.encryption.setKey(await cipherFor('pw'));
+    expect(await store.collection('widgets').list()).toEqual([]);
+  });
+
+  it('rejects collection keys that could collide with a lens', () => {
+    expect(() =>
+      defineCollection({
+        name: 'bad',
+        key: 'a@b',
+        idPrefix: 'b',
+        merge: 'field',
+        schema: (base) => base,
+      })
+    ).toThrow(/must not contain "@"/);
   });
 });
 

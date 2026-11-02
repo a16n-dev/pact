@@ -430,25 +430,77 @@ describe('push and pull', () => {
   });
 });
 
-describe('encryption on the wire', () => {
-  it('ships envelopes and partitions clients by key', async () => {
-    const key1 = createWebCryptoCipher(await deriveEncryptionKey('one', 'app', 1_000));
-    const key2 = createWebCryptoCipher(await deriveEncryptionKey('two', 'app', 1_000));
+describe('key lenses on the wire', () => {
+  const cipherFor = async (phrase: string) =>
+    createWebCryptoCipher(await deriveEncryptionKey(phrase, 'app', 1_000));
+
+  it('ships envelopes under the lens key and partitions clients by key', async () => {
+    const key1 = await cipherFor('one');
+    const keyId = await key1.keyId();
     const a = await signedInStore('A', { cipher: key1 });
-    const b = await signedInStore('B', { cipher: key1 });
-    const c = await signedInStore('C', { cipher: key2 });
+    const b = await signedInStore('B', { cipher: await cipherFor('one') });
+    const c = await signedInStore('C', { cipher: await cipherFor('two') });
     c.store.dispose();
     await a.store.collection('notes').create({ id: 'nt-1', title: 'secret' });
     await a.store.sync.drain();
-    const version = server.versionsOf('app', 'n', 'nt-1')[0]!;
+    expect(server.versionsOf('app', 'n', 'nt-1')).toEqual([]);
+    const version = server.versionsOf('app', `n@${keyId}`, 'nt-1')[0]!;
     expect(version.data.startsWith('pactenc$')).toBe(true);
     expect(version.data).not.toContain('secret');
     await vi.waitFor(async () => {
       expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('secret');
     });
-    const result = await c.store.sync.pull();
-    expect(result.skipped.sealed).toBeGreaterThanOrEqual(1);
+    await c.store.sync.pull();
     expect(await c.store.collection('notes').get('nt-1')).toBeNull();
+  });
+
+  it('catches a lens up on what it missed while another was active', async () => {
+    const a = await signedInStore('A', { cipher: await cipherFor('one') });
+    const b = await signedInStore('B');
+    b.store.dispose();
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'first' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    expect(await b.store.collection('notes').get('nt-1')).toBeNull();
+
+    await b.store.encryption.setKey(await cipherFor('one'));
+    await b.store.sync.pull();
+    expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('first');
+
+    await b.store.encryption.setKey(null);
+    await a.store.collection('notes').update('nt-1', { title: 'second' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await b.store.encryption.setKey(await cipherFor('one'));
+    await b.store.sync.pull();
+    expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('second');
+  });
+
+  it('moves a lens for every device holding the key', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B', { cipher: await cipherFor('one') });
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'plain' });
+    await a.store.encryption.moveToKey(await cipherFor('one'));
+    await a.store.sync.drain();
+    await vi.waitFor(async () => {
+      expect((await b.store.collection('notes').get('nt-1'))?.title).toBe('plain');
+    });
+    const plain = await signedInStore('C');
+    await plain.store.sync.pull();
+    expect(await plain.store.collection('notes').get('nt-1')).toBeNull();
+  });
+
+  it('pushes writes queued in a lens after switching away from it', async () => {
+    const a = await signedInStore('A', { cipher: await cipherFor('one') });
+    const keyId = await (await cipherFor('one')).keyId();
+    a.store.dispose();
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'queued' });
+    await a.store.encryption.setKey(null);
+    expect(await a.store.sync.pending()).toBe(1);
+    vi.stubGlobal('fetch', server.fetch);
+    await a.store.sync.drain();
+    expect(server.versionsOf('app', `n@${keyId}`, 'nt-1')).toHaveLength(1);
   });
 });
 

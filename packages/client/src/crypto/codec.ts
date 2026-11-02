@@ -15,8 +15,7 @@ import { ENVELOPE_PREFIX, type DocCipher } from './types';
 export type RecordCodec = {
   encode(collection: string, id: string, record: StoredRecord): Promise<AdapterRecord>;
   decode(collection: string, id: string, stored: AdapterRecord): Promise<StoredRecord>;
-  toWire(stored: AdapterRecord): string;
-  /** Null when the data is an envelope this store cannot open, or is not a record at all. */
+  /** Null when the data is not a record this lens can read. */
   fromWire(collection: string, id: string, data: string): Promise<StoredRecord | null>;
 };
 
@@ -38,6 +37,10 @@ function parseRecord(json: string): StoredRecord | null {
   return result.success ? (result.data as StoredRecord) : null;
 }
 
+export function toWire(stored: AdapterRecord): string {
+  return isSealedRecord(stored) ? stored.enc : JSON.stringify(stored);
+}
+
 export function plainCodec(): RecordCodec {
   return {
     async encode(_collection, _id, record) {
@@ -48,9 +51,6 @@ export function plainCodec(): RecordCodec {
         throw new Error(`${collection}/${id} is encrypted but the store has no cipher`);
       }
       return stored;
-    },
-    toWire(stored) {
-      return isSealedRecord(stored) ? stored.enc : JSON.stringify(stored);
     },
     async fromWire(_collection, _id, data) {
       return data.startsWith(ENVELOPE_PREFIX) ? null : parseRecord(data);
@@ -81,20 +81,14 @@ export function encryptedCodec(cipher: DocCipher): RecordCodec {
       const enc = await cipher.seal(encoder.encode(json), aadFor(collection, id));
       return { enc, hlc: greatestClock(record) ?? '' };
     },
-    // Plaintext rows from before encryption was enabled pass through until
-    // `encryptLocal()` rewrites them.
     async decode(collection, id, stored) {
-      if (!isSealedRecord(stored)) return stored;
+      if (!isSealedRecord(stored)) throw new Error(`${collection}/${id} is not encrypted`);
       const record = await open(collection, id, stored.enc);
       if (!record) throw new Error(`Cannot decrypt ${collection}/${id} with this key`);
       return record;
     },
-    toWire(stored) {
-      return isSealedRecord(stored) ? stored.enc : JSON.stringify(stored);
-    },
-    // Plaintext is accepted so a store can adopt encryption after data exists on the server.
     async fromWire(collection, id, data) {
-      return data.startsWith(ENVELOPE_PREFIX) ? open(collection, id, data) : parseRecord(data);
+      return data.startsWith(ENVELOPE_PREFIX) ? open(collection, id, data) : null;
     },
   };
 }

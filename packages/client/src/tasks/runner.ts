@@ -1,6 +1,7 @@
 import type { TaskClaim } from '../sync/http';
 import type { StoreTasks, TaskState } from '../store/namespaces';
-import { assertKeyLength } from '../collection';
+import { MAX_KEY_LENGTH, assertKeyLength } from '../collection';
+import { LENS_SUFFIX_LENGTH } from '../store/lens';
 import { currentProgress, type TaskDefinition, type TaskDocument, type TaskProgress } from './task';
 
 // Well inside the server's 90 s claim, so one slow or dropped renewal never
@@ -72,6 +73,11 @@ export class TaskRunner {
     for (const run of this.runs.values()) run.controller.abort();
   }
 
+  resume(): void {
+    this.stopped = false;
+    this.wake();
+  }
+
   /** Looks for claimable tasks soon; calls while a scan runs coalesce into one more. */
   wake(): void {
     if (this.stopped || this.handlers.size === 0) return;
@@ -90,7 +96,7 @@ export class TaskRunner {
   }
 
   private async enqueue(task: TaskDefinition, key: string, input: unknown): Promise<void> {
-    assertKeyLength('Task key', key);
+    assertKeyLength('Task key', key, MAX_KEY_LENGTH - LENS_SUFFIX_LENGTH);
     task.input.parse(input);
     // Stored as JSON, so a schema that outputs dates still re-parses on the running device.
     const stored = JSON.parse(JSON.stringify(input)) as TaskDocument['input'];

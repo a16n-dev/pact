@@ -3,7 +3,7 @@ import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BlobAdapter } from '../blobs/blobAdapter';
 import { BlobSync } from '../blobs/blobSync';
 import type { AnyDocument, BaseDocument } from '../types';
-import { encryptedCodec, plainCodec, type RecordCodec } from '../crypto/codec';
+import { toWire, type RecordCodec } from '../crypto/codec';
 import type { DocCipher } from '../crypto/types';
 import { Migrator } from '../migrator';
 import { randomId } from '../lib/ids';
@@ -22,6 +22,7 @@ import {
   greatestClock,
   isSealedRecord,
   mergeRecords,
+  type AdapterRecord,
   type StoredEntry,
   type StoredRecord,
 } from '../record';
@@ -55,10 +56,10 @@ import {
   TEXT_PUSH_DEBOUNCE_MS,
   configRecord,
   outboxKey,
-  type EncryptionConfig,
   type NodeConfig,
   type OutboxEntry,
 } from './internal';
+import { lensFor, lensKey, parseLensKey, type Lens } from './lens';
 import {
   migrateRecord,
   needsMigration,
@@ -72,16 +73,11 @@ import type { TextDocument } from '../text/engine';
 import { TASKS, type TaskDocument } from '../tasks/task';
 import { TaskRunner, type TaskWrite } from '../tasks/runner';
 
-// Any constant works: a wrong key fails to open the sealed check regardless of content.
-const KEYCHECK_SENTINEL = 'pact-keycheck';
-const KEYCHECK_AAD = '_config/encryption';
-
 const encoder = new TextEncoder();
 
 export class Store<Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[]> {
   private readonly adapter: DatabaseAdapter;
-  private readonly codec: RecordCodec;
-  private readonly cipher: DocCipher | null;
+  private lens: Lens;
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
   private readonly definitionsByKey: ReadonlyMap<string, CollectionDefinition>;
   private readonly migrator: Migrator;
@@ -90,6 +86,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private readonly clock: HybridClock;
   // Writes and merges to one document run one at a time, in arrival order.
   private readonly locks = new Map<string, Promise<unknown>>();
+  // Set while the lens changes: new document work waits, and the switch waits
+  // for the work already queued.
+  private gate: Promise<void> | null = null;
   private readonly changeHandlers = new Set<ChangeHandler>();
   private readonly signedOutHandlers = new Set<() => void>();
   private readonly syncEngine: SyncEngine;
@@ -106,10 +105,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   readonly ai: StoreAi;
   readonly tasks: StoreTasks;
 
-  private constructor(options: StoreOptions<Defs>, node: string) {
+  private constructor(options: StoreOptions<Defs>, node: string, lens: Lens) {
     this.adapter = options.adapter;
-    this.cipher = options.encryption?.cipher ?? null;
-    this.codec = this.cipher ? encryptedCodec(this.cipher) : plainCodec();
+    this.lens = lens;
     this.blobAdapter = options.blobs ?? null;
     const defs = options.collections;
     this.definitions = new Map(defs.map((d) => [d.name, d]));
@@ -135,12 +133,24 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.blobHashesOf = options.blobHashes ?? (() => []);
     this.syncEngine = new SyncEngine({
       adapter: this.adapter,
-      codec: this.codec,
+      codec: () => this.codec,
       clock: this.clock,
       node,
-      syncedDefinitions: [...defs.filter((d) => d.synced), TASKS],
-      definitionByKey: (key) => (key === TASKS.key ? TASKS : this.definitionsByKey.get(key)),
-      definitionByName: (name) => (name === TASKS.name ? TASKS : this.definitions.get(name)),
+      activeKeys: () => this.syncedDefinitions().map((def) => this.keyOf(def)),
+      activeDefinition: (key) => {
+        const found = this.definitionOfKey(key);
+        return found?.def.synced && found.keyId === this.lens.keyId ? found.def : undefined;
+      },
+      activeKeyOf: (name) => {
+        const def = this.definitionByName(name);
+        return def ? this.keyOf(def) : undefined;
+      },
+      plainKeyOf: (name) => this.definitionByName(name)?.key,
+      isSyncedKey: (key) => this.definitionOfKey(key)?.def.synced === true,
+      storedSyncedKeys: async () =>
+        (await this.adapter.listCollections()).filter(
+          (key) => this.definitionOfKey(key)?.def.synced
+        ),
       applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
@@ -201,8 +211,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       notifyChanged: () => this.notifyBlobsChanged(),
     };
     this.encryption = {
-      verifyKey: () => this.verifyEncryptionKey(),
-      encryptLocal: () => this.encryptLocalData(),
+      setKey: (cipher) => this.setKey(cipher),
+      moveToKey: (cipher) => this.moveToKey(cipher),
     };
     this.ai = createAi({
       credentials: () => this.syncEngine.credentials(),
@@ -214,8 +224,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       mutate: (key, decide) => this.mutateTask(key, decide),
       newRev: () => this.clock.now(),
       signedIn: async () => (await this.syncEngine.credentials()) !== null,
-      claim: (key, rev) => this.syncEngine.claimTask(key, rev),
-      release: (key, rev) => this.syncEngine.releaseTask(key, rev),
+      claim: (key, rev) => this.syncEngine.claimTask(lensKey(key, this.lens.keyId), rev),
+      release: (key, rev) => this.syncEngine.releaseTask(lensKey(key, this.lens.keyId), rev),
       onTasksChanged: (listener) =>
         this.on('change', (collection) => {
           if (collection === TASKS.name) listener();
@@ -227,8 +237,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   static async create<Defs extends readonly CollectionDefinition[]>(
     options: StoreOptions<Defs>
   ): Promise<Store<Defs>> {
-    const store = new Store(options, await Store.loadNode(options.adapter));
-    await store.verifyEncryptionKey();
+    const lens = await lensFor(options.encryption?.cipher ?? null);
+    const store = new Store(options, await Store.loadNode(options.adapter), lens);
     await store.retryHeld();
     await store.buildIndexes();
     await store.syncEngine.restore();
@@ -288,6 +298,30 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.adapter.put(CONFIG, id, configRecord(id, value));
   }
 
+  private get codec(): RecordCodec {
+    return this.lens.codec;
+  }
+
+  private keyOf(def: CollectionDefinition): string {
+    return lensKey(def.key, this.lens.keyId);
+  }
+
+  private definitionByName(name: string): CollectionDefinition | undefined {
+    return name === TASKS.name ? TASKS : this.definitions.get(name);
+  }
+
+  private definitionOfKey(
+    storageKey: string
+  ): { def: CollectionDefinition; keyId: string | null } | undefined {
+    const { key, keyId } = parseLensKey(storageKey);
+    const def = key === TASKS.key ? TASKS : this.definitionsByKey.get(key);
+    return def ? { def, keyId } : undefined;
+  }
+
+  private syncedDefinitions(): CollectionDefinition[] {
+    return [...[...this.definitions.values()].filter((def) => def.synced), TASKS];
+  }
+
   private def(name: string): CollectionDefinition {
     const def = this.definitions.get(name);
     if (!def) {
@@ -301,7 +335,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
   private serialise<T>(collection: string, id: string, task: () => Promise<T>): Promise<T> {
     const key = `${collection}/${id}`;
-    const previous = this.locks.get(key) ?? Promise.resolve();
+    const previous = Promise.all([this.locks.get(key), this.gate]);
     const run = previous.then(task, task);
     const settled = run.then(
       () => undefined,
@@ -315,8 +349,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   private async loadRaw(def: CollectionDefinition, id: string): Promise<StoredRecord | null> {
-    const stored = await this.adapter.get(def.key, id);
-    return stored ? this.codec.decode(def.key, id, stored) : null;
+    const key = this.keyOf(def);
+    const stored = await this.adapter.get(key, id);
+    return stored ? this.codec.decode(key, id, stored) : null;
   }
 
   /**
@@ -356,13 +391,24 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     id: string,
     record: StoredRecord
   ): Promise<void> {
-    const encoded = await this.codec.encode(def.key, id, record);
-    const bytes = encoder.encode(this.codec.toWire(encoded)).length;
+    const key = this.keyOf(def);
+    await this.adapter.put(key, id, await this.seal(this.codec, key, def, id, record));
+    this.indexWrite(def, id, record);
+  }
+
+  private async seal(
+    codec: RecordCodec,
+    key: string,
+    def: CollectionDefinition,
+    id: string,
+    record: StoredRecord
+  ): Promise<AdapterRecord> {
+    const encoded = await codec.encode(key, id, record);
+    const bytes = encoder.encode(toWire(encoded)).length;
     if (bytes > MAX_DOCUMENT_BYTES) {
       throw new Error(`Document ${def.name}/${id} is ${bytes} bytes; the limit is 1 MB`);
     }
-    await this.adapter.put(def.key, id, encoded);
-    this.indexWrite(def, id, record);
+    return encoded;
   }
 
   private openText(def: CollectionDefinition, id: string, state: string | undefined): TextDocument {
@@ -401,11 +447,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private async allRecords(
     def: CollectionDefinition
   ): Promise<Array<{ id: string; raw: StoredRecord }>> {
-    const entries = await this.adapter.getAll(def.key);
+    const key = this.keyOf(def);
+    const entries = await this.adapter.getAll(key);
     return Promise.all(
       entries.map(async ({ id, record }) => ({
         id,
-        raw: await this.codec.decode(def.key, id, record),
+        raw: await this.codec.decode(key, id, record),
       }))
     );
   }
@@ -455,11 +502,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     def: CollectionDefinition,
     id: string,
     clock: string,
-    debounceMs?: number
+    debounceMs?: number,
+    storageKey = this.keyOf(def)
   ): Promise<void> {
     if (!def.synced) return;
-    const key = outboxKey(def.key, id);
-    const entry: OutboxEntry = { collection: def.name, docId: id, order: clock };
+    const key = outboxKey(storageKey, id);
+    const entry: OutboxEntry = { collection: def.name, key: storageKey, docId: id, order: clock };
     await this.adapter.put(OUTBOX, key, configRecord(key, entry));
     this.emit(OUTBOX);
     this.syncEngine.requestDrain(
@@ -574,7 +622,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const { id: given, ...rest } = input as { id?: string };
     const id = this.idFor(def, given);
     return this.serialise(def.name, id, async () => {
-      if (await this.adapter.get(def.key, id)) {
+      if (await this.adapter.get(this.keyOf(def), id)) {
         throw new Error(`Document already exists: ${def.name}/${id}`);
       }
       const doc = await this.insert(def, id, rest, null);
@@ -671,7 +719,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const id = this.idFor(def, given);
       docs.push(
         await this.serialise(def.name, id, async () => {
-          if (await this.adapter.get(def.key, id)) {
+          if (await this.adapter.get(this.keyOf(def), id)) {
             throw new Error(`Document already exists: ${def.name}/${id}`);
           }
           return this.insert(def, id, rest, null);
@@ -734,7 +782,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
   private async getMany(def: CollectionDefinition, ids: readonly string[]): Promise<AnyDocument[]> {
     this.syncEngine.triggerReadPull();
-    const entries = await this.adapter.getMany(def.key, ids);
+    const entries = await this.adapter.getMany(this.keyOf(def), ids);
     const byId = new Map<string, AnyDocument>();
     for (const entry of entries) {
       const doc = await this.docFromEntry(def, entry);
@@ -749,7 +797,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<AnyDocument[]> {
     this.syncEngine.triggerReadPull();
     const docs: AnyDocument[] = [];
-    for (const entry of await this.adapter.getAll(def.key)) {
+    for (const entry of await this.adapter.getAll(this.keyOf(def))) {
       const doc = await this.docFromEntry(def, entry);
       if (doc && (opts?.includeDeleted || !doc.deletedAt)) docs.push(doc);
     }
@@ -760,7 +808,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     def: CollectionDefinition,
     entry: StoredEntry
   ): Promise<AnyDocument | null> {
-    const raw = await this.codec.decode(def.key, entry.id, entry.record);
+    const raw = await this.codec.decode(this.keyOf(def), entry.id, entry.record);
     const record = await this.materialise(def, entry.id, raw);
     return record ? this.readDoc(def, entry.id, record) : null;
   }
@@ -831,17 +879,18 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     id: string,
     incoming: StoredRecord
   ): Promise<ApplyResult> {
-    const key = outboxKey(def.key, id);
+    const storageKey = this.keyOf(def);
+    const key = outboxKey(storageKey, id);
     const existing = await this.getConfigFrom<HeldEntry>(HELD, key);
     if (existing) {
-      const held = await this.codec.decode(def.key, id, existing.data);
+      const held = await this.codec.decode(storageKey, id, existing.data);
       const mine = greatestClock(held);
       const theirs = greatestClock(incoming);
       if (mine !== undefined && theirs !== undefined && compareClocks(mine, theirs) >= 0)
         return 'held';
     }
-    const data = await this.codec.encode(def.key, id, incoming);
-    const entry: HeldEntry = { collection: def.key, docId: id, data };
+    const data = await this.codec.encode(storageKey, id, incoming);
+    const entry: HeldEntry = { collection: storageKey, docId: id, data };
     await this.adapter.put(HELD, key, configRecord(key, entry));
     return 'held';
   }
@@ -882,9 +931,10 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const { id: key, record } of await this.adapter.getAll(HELD)) {
       if (isSealedRecord(record)) continue;
       const entry = record.fields as unknown as HeldEntry;
-      const def = this.definitionsByKey.get(entry.collection);
-      if (!def) continue;
-      const incoming = await this.codec.decode(def.key, entry.docId, entry.data);
+      const found = this.definitionOfKey(entry.collection);
+      if (!found || found.def === TASKS || found.keyId !== this.lens.keyId) continue;
+      const def = found.def;
+      const incoming = await this.codec.decode(entry.collection, entry.docId, entry.data);
       if ((await this.applyIncoming(def, entry.docId, incoming)) === 'held') continue;
       await this.adapter.delete(HELD, key);
       touched.add(def.name);
@@ -892,52 +942,128 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     for (const name of touched) this.emit(name);
   }
 
-  private async verifyEncryptionKey(): Promise<void> {
-    if (!this.cipher) return;
-    const existing = await this.getConfig<EncryptionConfig>('encryption');
-    if (!existing) {
-      const check = await this.cipher.seal(encoder.encode(KEYCHECK_SENTINEL), KEYCHECK_AAD);
-      await this.setConfig('encryption', { check });
-      return;
-    }
+  private async setKey(cipher: DocCipher | null): Promise<void> {
+    const lens = await lensFor(cipher);
+    if (lens.keyId === this.lens.keyId) return;
+    await this.exclusively(() => this.switchLens(lens));
+    this.syncEngine.requestPull();
+  }
+
+  private async exclusively<T>(task: () => Promise<T>): Promise<T> {
+    const previous = this.gate;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    this.gate = Promise.all([previous, gate]).then(() => undefined);
+    const current = this.gate;
+    // Snapshot before awaiting: work queued from here on waits for the gate.
+    const queued = Array.from(this.locks.values());
+    await previous;
+    const resumePulls = await this.syncEngine.pausePulls();
     try {
-      await this.cipher.open(existing.check, KEYCHECK_AAD);
-    } catch {
-      throw new Error(
-        'Encryption key does not match the data in this store. ' +
-          'The store was previously encrypted with a different key.'
-      );
+      await Promise.all(queued);
+      return await task();
+    } finally {
+      resumePulls();
+      release();
+      if (this.gate === current) this.gate = null;
     }
   }
 
-  private async encryptLocalData(): Promise<{ rewritten: number }> {
-    if (!this.cipher) throw new Error('encryptLocal requires the encryption option');
-    let rewritten = 0;
-    for (const def of [...this.definitions.values(), TASKS]) {
-      for (const { id, record } of await this.adapter.getAll(def.key)) {
-        if (isSealedRecord(record)) continue;
-        await this.adapter.put(def.key, id, await this.codec.encode(def.key, id, record));
-        rewritten += 1;
+  private async moveToKey(cipher: DocCipher | null): Promise<void> {
+    const target = await lensFor(cipher);
+    if (target.keyId === this.lens.keyId) return;
+    await this.exclusively(async () => {
+      this.taskRunner.stop();
+      for (const def of [...this.definitions.values(), TASKS]) await this.moveAll(def, target);
+      await this.switchLens(target);
+    });
+    this.syncEngine.requestPull();
+  }
+
+  // Each document is written to the target before it is tombstoned here, so
+  // an interrupted move leaves the rest live in this lens for a rerun. A
+  // document already in the target merges by the usual rules.
+  private async moveAll(def: CollectionDefinition, target: Lens): Promise<void> {
+    const targetKey = lensKey(def.key, target.keyId);
+    const current = this.migrator.currentVersion(def.name);
+    for (const { id, raw } of await this.allRecords(def)) {
+      const record = await this.materialise(def, id, raw);
+      if (!record || record.fields.deletedAt || !this.readDoc(def, id, record)) continue;
+      let moved = record;
+      const stored = await this.adapter.get(targetKey, id);
+      if (stored) {
+        const theirs = await target.codec.decode(targetKey, id, stored);
+        if (theirs.schemaVersion > current) continue;
+        const migrated = needsMigration(this.migrator, def, theirs)
+          ? migrateRecord(this.migrator, def, theirs)
+          : theirs;
+        moved = mergeRecords(migrated, record, def.merge, mergeDetachedText(def)).record;
+        if (moved.fields.deletedAt)
+          moved = this.revive(def, def.merge === 'document' ? record : moved);
       }
+      await this.adapter.put(
+        targetKey,
+        id,
+        await this.seal(target.codec, targetKey, def, id, moved)
+      );
+      const clock = greatestClock(moved);
+      if (clock !== undefined) await this.queueOutbox(def, id, clock, undefined, targetKey);
+      await this.modify(def, id, record, {}, true);
     }
-    for (const { id: key, record } of await this.adapter.getAll(HELD)) {
-      if (isSealedRecord(record)) continue;
-      const entry = record.fields as unknown as HeldEntry;
-      if (isSealedRecord(entry.data)) continue;
-      const data = await this.codec.encode(entry.collection, entry.docId, entry.data);
-      await this.adapter.put(HELD, key, configRecord(key, { ...entry, data }));
-      rewritten += 1;
-    }
-    return { rewritten };
   }
 
-  private async referencedBlobHashes(): Promise<Set<string>> {
+  // A tombstone in the target, such as one left by an earlier move away,
+  // must not swallow a document moved there on purpose.
+  private revive(def: CollectionDefinition, record: StoredRecord): StoredRecord {
+    const revived: StoredRecord = { ...record, fields: { ...record.fields, deletedAt: null } };
+    this.stamp(def, revived, ['deletedAt'], this.clock.now());
+    return revived;
+  }
+
+  private async switchLens(lens: Lens): Promise<void> {
+    this.taskRunner.stop();
+    await this.rememberBlobHashes();
+    await this.syncEngine.leaveLens(this.syncedDefinitions().map((def) => this.keyOf(def)));
+    this.lens = lens;
+    this.textCache.clear();
+    await this.retryHeld();
+    await this.buildIndexes();
+    for (const name of [...this.definitions.keys(), TASKS.name]) this.emit(name);
+    this.taskRunner.resume();
+  }
+
+  // Blobs live outside lenses, so pruning must keep what the other lenses
+  // reference. Their documents cannot be read from here, so each lens leaves
+  // behind the hashes it referenced when it was last active.
+  private async rememberBlobHashes(): Promise<void> {
+    if (!this.hasBlobRefs) return;
+    const lenses = await this.lensBlobHashes();
+    lenses[this.lens.keyId ?? ''] = Array.from(await this.activeBlobHashes());
+    await this.setConfig('lensBlobHashes', { lenses });
+  }
+
+  private async lensBlobHashes(): Promise<Record<string, string[]>> {
+    return (
+      (await this.getConfig<{ lenses: Record<string, string[]> }>('lensBlobHashes'))?.lenses ?? {}
+    );
+  }
+
+  private async activeBlobHashes(): Promise<Set<string>> {
     const refs = new Set<string>();
-    if (!this.hasBlobRefs) return refs;
     for (const def of this.definitions.values()) {
       for (const doc of await this.list(def)) {
         for (const hash of this.blobHashesOf(def.name, doc)) refs.add(hash);
       }
+    }
+    return refs;
+  }
+
+  private async referencedBlobHashes(): Promise<Set<string>> {
+    if (!this.hasBlobRefs) return new Set();
+    const refs = await this.activeBlobHashes();
+    for (const [keyId, hashes] of Object.entries(await this.lensBlobHashes())) {
+      if (keyId === (this.lens.keyId ?? '')) continue;
+      for (const hash of hashes) refs.add(hash);
     }
     return refs;
   }
@@ -1002,8 +1128,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const incoming = manifest.collections[name] ?? [];
       let written = 0;
       if (mode === 'replace') {
-        for (const { id } of await this.adapter.getAll(def.key)) {
-          await this.adapter.delete(def.key, id);
+        for (const { id } of await this.adapter.getAll(this.keyOf(def))) {
+          await this.adapter.delete(this.keyOf(def), id);
           this.indexes?.onRemove(def.name, id);
           this.textCache.drop(def.name, id);
         }
@@ -1095,4 +1221,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       text: (id, field) => this.text(def, id, field),
     };
   }
+}
+
+function mergeDetachedText(
+  def: CollectionDefinition
+): ((mine: string | undefined, theirs: string | undefined) => string | undefined) | undefined {
+  const engine = def.textEngine;
+  if (!engine) return undefined;
+  return (mine, theirs) => {
+    const doc = engine.open(def.textFields, mine);
+    try {
+      if (theirs !== undefined) doc.merge(theirs);
+      return doc.encode();
+    } finally {
+      doc.destroy();
+    }
+  };
 }
