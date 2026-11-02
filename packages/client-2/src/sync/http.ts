@@ -105,6 +105,8 @@ export type WireVersion = WireDocument & { writer_id: string; seq: number };
 
 export type PullPage = { documents: WireVersion[]; cursor: number; hasMore: boolean };
 
+export type TaskClaim = { claimed: boolean; expiresAt: number };
+
 export type SessionInfo = { appId: string; user: string | null; deviceName: string };
 
 export class SyncHttp {
@@ -157,5 +159,22 @@ export class SyncHttp {
     const params = new URLSearchParams({ collection, id });
     const page = (await (await this.request(`/sync/pull?${params}`)).json()) as PullPage;
     return page.documents;
+  }
+
+  async claimTask(taskId: string, rev: string): Promise<TaskClaim> {
+    const res = await this.request('/tasks/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId, rev }),
+    });
+    return (await res.json()) as TaskClaim;
+  }
+
+  async releaseTask(taskId: string, rev: string): Promise<void> {
+    await this.request('/tasks/release', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId, rev }),
+    });
   }
 }

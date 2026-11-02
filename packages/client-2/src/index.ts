@@ -17,4 +17,5 @@ export { type TextDocument, type TextEngine, registerTextField } from './text/en
 export { ClockDriftError, MAX_CLOCK_DRIFT_MS } from './clock';
 export type { IndexKey, IndexKeyInput, IndexExtractor, IndexMap } from './store/indexes';
 export * from './store';
+export { defineTask, type TaskConfig, type TaskContext, type TaskDefinition } from './tasks/task';
 export { UnauthorizedError, SyncError } from './sync/http';

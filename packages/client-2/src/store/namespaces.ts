@@ -1,4 +1,7 @@
+import type { z } from 'zod';
 import type { BlobAdapter } from '../blobs/blobAdapter';
+import type { TaskDefinition } from '../tasks/task';
+import type { Storable } from '../types';
 
 export type StoreBackup = {
   /**
@@ -216,4 +219,48 @@ export type StoreSync = {
   resync(): Promise<PullResult>;
   /** When this device last completed a full pull. */
   lastSyncedAt(): Promise<Date | null>;
+};
+
+/**
+ * Slow work, usually a network call, that must finish later and write its
+ * result into documents. Tasks sync like documents; a device claims one
+ * through the server before running it, so it runs once across devices and
+ * another device takes over within about 90 s if the claimer disappears.
+ */
+export type StoreTasks = {
+  /**
+   * Lets this device run tasks with these names. Tasks whose name has no
+   * handler here are left for a device that has one.
+   */
+  register(...tasks: TaskDefinition<any, any>[]): void;
+  /**
+   * Queues the task under `key` (1–256 chars, e.g. `parse:sl-123`). Enqueuing
+   * under a key that already has a task replaces it: its input, attempts
+   * and failure are reset, and a run of the old input never applies.
+   */
+  enqueue<Schema extends z.ZodType<Storable>>(
+    task: TaskDefinition<Schema, any>,
+    key: string,
+    input: z.input<Schema>
+  ): Promise<void>;
+  /** Deletes the task. A run in progress here is aborted and does not apply. */
+  cancel(key: string): Promise<void>;
+  /** Resets a failed task's attempts so it runs again. */
+  retry(key: string): Promise<void>;
+  /** Null when no task is queued under `key`, which includes one that finished. */
+  get(key: string): Promise<TaskState | null>;
+  /** Calls `listener` with the current state, then on every change. Returns an unsubscribe. */
+  watch(key: string, listener: (state: TaskState | null) => void): () => void;
+};
+
+export type TaskState = {
+  key: string;
+  name: string;
+  /** `running` only on the device running it; other devices see `pending`. */
+  status: 'pending' | 'running' | 'failed';
+  attempts: number;
+  /** The last attempt's error. */
+  error: string | null;
+  /** When the next attempt may start, after a failed one. */
+  retryAt: Date | null;
 };

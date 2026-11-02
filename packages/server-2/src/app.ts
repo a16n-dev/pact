@@ -6,6 +6,7 @@ import { allowAnyOrigin, preflight } from './cors';
 import { oauthRoutes } from './oauth/routes';
 import { authRoutes } from './auth/routes';
 import { syncRoutes } from './sync/routes';
+import { taskRoutes } from './tasks/routes';
 import { realtimeRoutes } from './realtime/routes';
 import { aiRoutes } from './ai/routes';
 import { adminRoutes } from './admin/routes';
@@ -34,11 +35,13 @@ app.get('/favicon.svg', (c) =>
 app.use('/oauth/token', preflight('sync'));
 app.use('/auth/*', preflight('sync'));
 app.use('/sync/*', preflight('sync'));
+app.use('/tasks/*', preflight('sync'));
 app.use('/ai/*', preflight('any'));
 
 app.route('/oauth', oauthRoutes);
 app.route('/auth', authRoutes);
 app.route('/sync', syncRoutes);
+app.route('/tasks', taskRoutes);
 app.route('/ai', aiRoutes);
 app.route('/realtime', realtimeRoutes);
 app.route('/admin', adminRoutes);

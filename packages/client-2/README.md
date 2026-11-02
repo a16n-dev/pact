@@ -201,6 +201,28 @@ const answers = await store.ai.decide({
 
 For chat, point any OpenAI-compatible SDK at `<server>/ai/compat` with the token from `store.sync.credentials()` as its API key. Signed out, these throw `SyncError` with the code `signed_out`.
 
+### Background tasks
+
+For slow work, such as an AI call, whose result has to land in documents later. A task syncs like a document, survives reloads, and runs on one signed-in device at a time. If that device disappears, another one takes over within about 90 seconds.
+
+```ts
+const parseNote = defineTask({
+  name: 'parse',
+  input: z.object({ slotId: z.string(), note: z.string() }),
+  run: (input, { signal }) => readRequirements(input.note, signal),
+  apply: async (input, requirements) => {
+    if (!(await store.collection('slots').get(input.slotId))) return;
+    await store.collection('slots').update(input.slotId, { requirements });
+  },
+});
+
+store.tasks.register(parseNote);
+await store.tasks.enqueue(parseNote, `parse:${slot.id}`, { slotId: slot.id, note });
+const stop = store.tasks.watch(`parse:${slot.id}`, (state) => setParsing(state));
+```
+
+Enqueuing again under the same key replaces the task, and a run of the old input never applies. `apply` can run more than once for the same input, so it should set values rather than append, and do nothing when its documents are gone. A task with no handler on this device, or whose input this version's schema rejects, is left for a device that can run it. After 3 attempts (30 s and then 2 min apart by default) a task is `failed` until `store.tasks.retry(key)`. `watch` reports `null` once the task has finished or been cancelled.
+
 ### Backups
 
 ```ts

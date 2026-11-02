@@ -121,6 +121,7 @@ export function deleteAppStatements(db: D1Database, appId: string): D1PreparedSt
   return [
     'DELETE FROM documents WHERE app_id = ?1',
     'DELETE FROM blobs WHERE app_id = ?1',
+    'DELETE FROM task_claims WHERE app_id = ?1',
     'DELETE FROM tokens WHERE app_id = ?1',
     'DELETE FROM auth_codes WHERE app_id = ?1',
     'DELETE FROM app_redirect_uris WHERE app_id = ?1',

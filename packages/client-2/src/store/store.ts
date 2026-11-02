@@ -44,6 +44,7 @@ import type {
   StoreAi,
   StoreEncryption,
   StoreSync,
+  StoreTasks,
 } from './namespaces';
 import { SyncEngine, type ApplyResult, type HeldEntry } from '../sync/engine';
 import {
@@ -68,6 +69,8 @@ import {
 import { TextCache } from './textCache';
 import { createAi } from '../ai/ai';
 import type { TextDocument } from '../text/engine';
+import { TASKS, type TaskDocument } from '../tasks/task';
+import { TaskRunner, type TaskWrite } from '../tasks/runner';
 
 // Any constant works: a wrong key fails to open the sealed check regardless of content.
 const KEYCHECK_SENTINEL = 'pact-keycheck';
@@ -94,12 +97,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   // Without an extractor blob GC cannot tell referenced from orphan and must refuse to run.
   private readonly blobHashesOf: (collection: string, doc: BaseDocument) => Iterable<string>;
   private readonly hasBlobRefs: boolean;
+  private readonly taskRunner: TaskRunner;
 
   readonly sync: StoreSync;
   readonly backup: StoreBackup;
   readonly blobs: StoreBlobs;
   readonly encryption: StoreEncryption;
   readonly ai: StoreAi;
+  readonly tasks: StoreTasks;
 
   private constructor(options: StoreOptions<Defs>, node: string) {
     this.adapter = options.adapter;
@@ -133,9 +138,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       codec: this.codec,
       clock: this.clock,
       node,
-      syncedDefinitions: defs.filter((d) => d.synced),
-      definitionByKey: (key) => this.definitionsByKey.get(key),
-      definitionByName: (name) => this.definitions.get(name),
+      syncedDefinitions: [...defs.filter((d) => d.synced), TASKS],
+      definitionByKey: (key) => (key === TASKS.key ? TASKS : this.definitionsByKey.get(key)),
+      definitionByName: (name) => (name === TASKS.name ? TASKS : this.definitions.get(name)),
       applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
@@ -147,7 +152,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
 
     this.sync = {
       beginSignIn: (start) => this.syncEngine.beginSignIn(start),
-      completeSignIn: (input) => this.syncEngine.completeSignIn(input),
+      completeSignIn: async (input) => {
+        const result = await this.syncEngine.completeSignIn(input);
+        if (result.ok) this.taskRunner.wake();
+        return result;
+      },
       signOut: () => this.syncEngine.signOut(),
       session: () => this.syncEngine.session(),
       registration: () => this.syncEngine.registration(),
@@ -199,6 +208,20 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       credentials: () => this.syncEngine.credentials(),
       onUnauthorized: () => void this.syncEngine.handleSignedOut(),
     });
+    this.taskRunner = new TaskRunner({
+      list: () => this.list(TASKS) as Promise<TaskDocument[]>,
+      get: (key) => this.get(TASKS, key) as Promise<TaskDocument | null>,
+      mutate: (key, decide) => this.mutateTask(key, decide),
+      newRev: () => this.clock.now(),
+      signedIn: async () => (await this.syncEngine.credentials()) !== null,
+      claim: (key, rev) => this.syncEngine.claimTask(key, rev),
+      release: (key, rev) => this.syncEngine.releaseTask(key, rev),
+      onTasksChanged: (listener) =>
+        this.on('change', (collection) => {
+          if (collection === TASKS.name) listener();
+        }),
+    });
+    this.tasks = this.taskRunner.api;
   }
 
   static async create<Defs extends readonly CollectionDefinition[]>(
@@ -236,11 +259,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   }
 
   /**
-   * Closes realtime and releases live text documents. Document reads,
-   * writes and explicit sync calls keep working afterwards.
+   * Closes realtime, stops running tasks and releases live text documents.
+   * Document reads, writes and explicit sync calls keep working afterwards.
    */
   dispose(): void {
     this.syncEngine.stop();
+    this.taskRunner.stop();
     this.textCache.clear();
   }
 
@@ -604,6 +628,30 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     });
   }
 
+  private async mutateTask(
+    key: string,
+    decide: (task: TaskDocument | null) => TaskWrite | null
+  ): Promise<void> {
+    const wrote = await this.serialise(TASKS.name, key, async () => {
+      const existing = await this.loadRecord(TASKS, key);
+      const live =
+        existing && !existing.fields.deletedAt ? this.readDoc(TASKS, key, existing) : null;
+      const write = decide(live as TaskDocument | null);
+      if (!write) return false;
+      if (write.kind === 'replace') await this.insert(TASKS, key, write.fields, existing);
+      else if (existing)
+        await this.modify(
+          TASKS,
+          key,
+          existing,
+          write.kind === 'update' ? write.fields : {},
+          write.kind === 'delete'
+        );
+      return true;
+    });
+    if (wrote) this.emit(TASKS.name);
+  }
+
   private async delete(def: CollectionDefinition, id: string): Promise<void> {
     await this.serialise(def.name, id, async () => {
       const existing = await this.loadRecord(def, id);
@@ -865,7 +913,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private async encryptLocalData(): Promise<{ rewritten: number }> {
     if (!this.cipher) throw new Error('encryptLocal requires the encryption option');
     let rewritten = 0;
-    for (const def of this.definitions.values()) {
+    for (const def of [...this.definitions.values(), TASKS]) {
       for (const { id, record } of await this.adapter.getAll(def.key)) {
         if (isSealedRecord(record)) continue;
         await this.adapter.put(def.key, id, await this.codec.encode(def.key, id, record));
