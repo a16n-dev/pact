@@ -1,5 +1,5 @@
 {
-  "name": "pact-server",
+  "name": "pact-cloudflare-server",
   "version": "0.0.1",
   "private": true,
   "type": "module",

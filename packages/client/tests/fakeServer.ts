@@ -1,6 +1,6 @@
 import { randomId } from '../src/lib/ids';
 
-// An in-memory server implementing packages/server/api.md as far as a
+// An in-memory server implementing packages/cloudflare-server/api.md as far as a
 // client can observe it: discovery, the token exchange, sessions, push and
 // pull, blobs and the realtime socket. Sign-in skips the HTML login page;
 // `authorize()` plays the user who signs in and returns the redirect.

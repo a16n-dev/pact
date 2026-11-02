@@ -1,6 +1,6 @@
 # Pact client
 
-A local-first document store with sync, realtime, collaborative text, blobs, migrations and end-to-end encryption. This is the client half of Pact; it talks to a Pact server over the API in [`../server/api.md`](../server/api.md).
+A local-first document store with sync, realtime, collaborative text, blobs, migrations and end-to-end encryption. This is the client half of Pact; it talks to a Pact server over the API in [`../cloudflare-server/api.md`](../cloudflare-server/api.md).
 
 ```
 npm install @a16n/pact-client
