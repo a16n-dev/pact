@@ -250,9 +250,14 @@ Records are sealed at rest and on the wire; the server sees only `collection`, `
 ```ts
 await store.encryption.setKey(createWebCryptoCipher(otherKey)); // switch lens
 await store.encryption.setKey(null); // back to the plain documents
+await store.encryption.moveToKey(createWebCryptoCipher(newKey)); // re-key the current lens
 ```
 
-Other lenses keep syncing while one is active, and a lens catches up on what it missed when it becomes active again. A custom `DocCipher` must implement `keyId()`, which names the lens on every device holding the key.
+Other lenses keep syncing while one is active, and a lens catches up on what it missed when it becomes active again.
+
+`moveToKey` moves every live document in the current lens to another key (or `null` to decrypt), merging with whatever is already there, then switches to it. It returns how many documents moved and how many it had to leave behind, such as one the target holds at a newer schema version. A device that edits a moved document offline under the old key edits a deleted copy, so move while devices are in sync.
+
+A custom `DocCipher` must implement `keyId()`, which names the lens on every device holding the key.
 
 ### Indexes
 
