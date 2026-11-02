@@ -20,6 +20,7 @@ export function createWebCryptoCipher(rawKey: Uint8Array): DocCipher {
       'decrypt',
     ]));
   const encoder = new TextEncoder();
+  let keyIdPromise: Promise<string> | null = null;
 
   return {
     async seal(plain: Uint8Array, aad: string): Promise<string> {
@@ -51,7 +52,21 @@ export function createWebCryptoCipher(rawKey: Uint8Array): DocCipher {
       );
       return new Uint8Array(plain);
     },
+
+    keyId(): Promise<string> {
+      return (keyIdPromise ??= fingerprint(rawKey));
+    },
   };
+}
+
+const KEY_ID_TAG = new TextEncoder().encode('pact-key-id:');
+
+async function fingerprint(rawKey: Uint8Array): Promise<string> {
+  const input = new Uint8Array(KEY_ID_TAG.length + rawKey.length);
+  input.set(KEY_ID_TAG);
+  input.set(rawKey, KEY_ID_TAG.length);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', input));
+  return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**

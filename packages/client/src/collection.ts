@@ -4,6 +4,7 @@ import { BaseDocumentSchema, type BaseDocument, type Storable } from './types';
 import type { CollectionMigrations } from './migrator';
 import type { IndexMap } from './store/indexes';
 import { textEngineOf, type TextEngine } from './text/engine';
+import { LENS_SUFFIX_LENGTH } from './store/lens';
 
 /**
  * Persisted and synced as an ISO string, read back as a `Date`. Use this
@@ -75,7 +76,7 @@ export type CollectionDefinition<
 };
 
 const DEFAULT_ID_LENGTH = 10;
-const MAX_KEY_LENGTH = 256;
+export const MAX_KEY_LENGTH = 256;
 
 export type CollectionConfig<
   Name extends string = string,
@@ -84,7 +85,7 @@ export type CollectionConfig<
   Ids extends IdKind = IdKind,
 > = {
   name: Name;
-  /** Defaults to `name`; see `CollectionDefinition.key`. 1–256 characters. */
+  /** Defaults to `name`; see `CollectionDefinition.key`. 1–239 characters, without `@`. */
   key?: string;
   /** Must be unique across the domain and must not contain `-`. */
   idPrefix: IdPrefix;
@@ -125,9 +126,9 @@ export type CollectionBuilder<
   ): CollectionDefinition<Name, Schema, IdPrefix, Idx, Ids>;
 };
 
-export function assertKeyLength(what: string, value: string): void {
-  if (value.length < 1 || value.length > MAX_KEY_LENGTH) {
-    throw new Error(`${what} must be 1–${MAX_KEY_LENGTH} characters: "${value}"`);
+export function assertKeyLength(what: string, value: string, max = MAX_KEY_LENGTH): void {
+  if (value.length < 1 || value.length > max) {
+    throw new Error(`${what} must be 1–${max} characters: "${value}"`);
   }
 }
 
@@ -176,7 +177,10 @@ export function defineCollection<
   if (key.startsWith('_')) {
     throw new Error(`Collection key "${key}" is reserved (the _* namespace is internal)`);
   }
-  assertKeyLength('Collection key', key);
+  if (key.includes('@')) {
+    throw new Error(`Collection key "${key}" must not contain "@"`);
+  }
+  assertKeyLength('Collection key', key, MAX_KEY_LENGTH - LENS_SUFFIX_LENGTH);
   if (idPrefix.includes('-')) {
     throw new Error(`Collection id prefix "${idPrefix}" must not contain "-"`);
   }

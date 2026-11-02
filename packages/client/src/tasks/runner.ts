@@ -1,7 +1,9 @@
 import type { TaskClaim } from '../sync/http';
 import type { StoreTasks, TaskState } from '../store/namespaces';
-import { assertKeyLength } from '../collection';
+import { MAX_KEY_LENGTH, assertKeyLength } from '../collection';
+import { LENS_SUFFIX_LENGTH } from '../store/lens';
 import { currentProgress, type TaskDefinition, type TaskDocument, type TaskProgress } from './task';
+import type { Storable } from '../types';
 
 // Well inside the server's 90 s claim, so one slow or dropped renewal never
 // lets another device take over a run that is still going.
@@ -26,12 +28,22 @@ export type TaskStoreAccess = {
   mutate(key: string, decide: (task: TaskDocument | null) => TaskWrite | null): Promise<void>;
   newRev(): string;
   signedIn(): Promise<boolean>;
-  claim(key: string, rev: string): Promise<TaskClaim>;
-  release(key: string, rev: string): Promise<void>;
+  // The server-side claim id for a task key in the active lens.
+  claimId(key: string): string;
+  claim(claimId: string, rev: string): Promise<TaskClaim>;
+  release(claimId: string, rev: string): Promise<void>;
   onTasksChanged(listener: () => void): () => void;
 };
 
-type Run = { rev: string; controller: AbortController };
+// `finishing` is set once the handler returns and covers every write the
+// run makes after it, so stopping can wait for those without waiting on a
+// handler that ignores its signal.
+type Run = {
+  rev: string;
+  claimId: string;
+  controller: AbortController;
+  finishing: Promise<void> | null;
+};
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -65,11 +77,18 @@ export class TaskRunner {
     };
   }
 
-  stop(): void {
+  // Resolves once no run can write any more.
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     for (const run of this.runs.values()) run.controller.abort();
+    await Promise.all(Array.from(this.runs.values(), (run) => run.finishing));
+  }
+
+  resume(): void {
+    this.stopped = false;
+    this.wake();
   }
 
   /** Looks for claimable tasks soon; calls while a scan runs coalesce into one more. */
@@ -90,7 +109,8 @@ export class TaskRunner {
   }
 
   private async enqueue(task: TaskDefinition, key: string, input: unknown): Promise<void> {
-    assertKeyLength('Task key', key);
+    assertKeyLength('Task key', key, MAX_KEY_LENGTH - LENS_SUFFIX_LENGTH);
+    if (key.includes('@')) throw new Error(`Task key "${key}" must not contain "@"`);
     task.input.parse(input);
     // Stored as JSON, so a schema that outputs dates still re-parses on the running device.
     const stored = JSON.parse(JSON.stringify(input)) as TaskDocument['input'];
@@ -207,7 +227,8 @@ export class TaskRunner {
     progress: TaskProgress | null
   ): Promise<void> {
     const { id: key, rev } = task;
-    const claim = await this.access.claim(key, rev);
+    const claimId = this.access.claimId(key);
+    const claim = await this.access.claim(claimId, rev);
     if (!claim.claimed) {
       this.schedule(claim.expiresAt);
       return;
@@ -221,10 +242,10 @@ export class TaskRunner {
       return { kind: 'update', fields: { progress: next } };
     });
     if (!counted) {
-      await this.access.release(key, rev).catch(() => {});
+      await this.access.release(claimId, rev).catch(() => {});
       return;
     }
-    const run: Run = { rev, controller: new AbortController() };
+    const run: Run = { rev, claimId, controller: new AbortController(), finishing: null };
     this.runs.set(key, run);
     this.notifyWatchers();
     void this.execute(key, rev, task.input, handler, attempts, run).finally(() => {
@@ -244,7 +265,7 @@ export class TaskRunner {
   ): Promise<void> {
     const { signal } = run.controller;
     const renew = setInterval(() => {
-      void this.access.claim(key, rev).then(
+      void this.access.claim(run.claimId, rev).then(
         (claim) => {
           if (!claim.claimed) run.controller.abort();
         },
@@ -252,32 +273,51 @@ export class TaskRunner {
       );
     }, RENEW_INTERVAL_MS);
     const input = handler.input.parse(stored);
+    let outcome: { result: unknown } | { error: unknown };
     try {
-      const result = await handler.run(input, { signal });
-      clearInterval(renew);
-      if (signal.aborted || !(await this.stillHeld(key, rev))) return;
+      outcome = { result: await handler.run(input, { signal }) };
+    } catch (error) {
+      outcome = { error };
+    }
+    clearInterval(renew);
+    if (signal.aborted) return;
+    run.finishing = this.finish(key, rev, input, handler, attempts, run, outcome);
+    await run.finishing;
+  }
+
+  private async finish(
+    key: string,
+    rev: string,
+    input: Storable,
+    handler: TaskDefinition,
+    attempts: number,
+    run: Run,
+    outcome: { result: unknown } | { error: unknown }
+  ): Promise<void> {
+    try {
+      if ('error' in outcome) throw outcome.error;
+      if (!(await this.stillHeld(run.claimId, rev))) return;
       let current = false;
       await this.access.mutate(key, (task) => {
         current = task?.rev === rev;
         return null;
       });
-      if (!current) return;
-      await handler.apply(input, result);
+      if (!current || run.controller.signal.aborted) return;
+      await handler.apply(input, outcome.result);
       await this.access.mutate(key, (task) => (task?.rev === rev ? { kind: 'delete' } : null));
     } catch (err) {
-      clearInterval(renew);
-      if (signal.aborted) return;
+      if (run.controller.signal.aborted) return;
       await this.recordFailure(key, rev, handler, attempts, messageOf(err));
     }
-    await this.access.release(key, rev).catch(() => {});
+    await this.access.release(run.claimId, rev).catch(() => {});
   }
 
   // The last renewal before applying. Only the server refusing stops the
   // apply: when the check itself fails the result is applied anyway, since
   // applying twice is harmless and dropping a finished result wastes the run.
-  private async stillHeld(key: string, rev: string): Promise<boolean> {
+  private async stillHeld(claimId: string, rev: string): Promise<boolean> {
     try {
-      return (await this.access.claim(key, rev)).claimed;
+      return (await this.access.claim(claimId, rev)).claimed;
     } catch {
       return true;
     }

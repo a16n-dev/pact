@@ -1,7 +1,7 @@
 import type { DatabaseAdapter } from '../adapters/adapter';
 import type { CollectionDefinition } from '../collection';
 import { ClockDriftError, type HybridClock } from '../clock';
-import type { RecordCodec } from '../crypto/codec';
+import { toWire, type RecordCodec } from '../crypto/codec';
 import { greatestClock, isSealedRecord, type AdapterRecord, type StoredRecord } from '../record';
 import { CONFIG, OUTBOX, configRecord, type OutboxEntry } from '../store/internal';
 import type {
@@ -51,15 +51,24 @@ export type HeldEntry = { collection: string; docId: string; data: AdapterRecord
 
 export type ApplyResult = 'applied' | 'unchanged' | 'held';
 
-/** What the engine needs from the store; the store owns records, the engine owns the session and cursor. */
+// What the engine needs from the store; the store owns records and the
+// active lens, the engine owns the session and cursor. Keys here are storage
+// keys, which carry the lens (`notes@<keyId>`).
 export type SyncStoreAccess = {
   adapter: DatabaseAdapter;
-  codec: RecordCodec;
+  codec(): RecordCodec;
   clock: HybridClock;
   node: string;
-  syncedDefinitions: readonly CollectionDefinition[];
-  definitionByKey(key: string): CollectionDefinition | undefined;
-  definitionByName(name: string): CollectionDefinition | undefined;
+  // The synced storage keys of the active lens.
+  activeKeys(): string[];
+  // The definition behind a synced key of the active lens.
+  activeDefinition(key: string): CollectionDefinition | undefined;
+  activeKeyOf(name: string): string | undefined;
+  // The collection's key outside any lens, for entries queued before lenses.
+  plainKeyOf(name: string): string | undefined;
+  isSyncedKey(key: string): boolean;
+  // Every stored synced key, in any lens.
+  storedSyncedKeys(): Promise<string[]>;
   applyIncoming(def: CollectionDefinition, id: string, record: StoredRecord): Promise<ApplyResult>;
   heldEntries(): Promise<HeldEntry[]>;
   /** Everything but `_config`, for `resync()`. */
@@ -78,6 +87,9 @@ export class SyncEngine {
   // mid-flight makes the runner take one more pass, so nothing is stranded.
   private pullTask: Promise<PullResult> | null = null;
   private pullPending = false;
+  // Set while the store switches lens; a pull pass never straddles a switch.
+  private pullGate: Promise<void> | null = null;
+  private readonly passes = new Set<Promise<void>>();
   private drainTask: Promise<void> | null = null;
   private drainPending = false;
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -244,6 +256,10 @@ export class SyncEngine {
     if (client) await this.setConfig('client', { ...client, token: null });
   }
 
+  requestPull(): void {
+    if (this.http) void this.pull().catch(() => {});
+  }
+
   triggerReadPull(): void {
     if (!this.http) return;
     const now = Date.now();
@@ -267,10 +283,12 @@ export class SyncEngine {
       for (;;) {
         this.pullPending = false;
         try {
-          await this.guarded(async (http) => {
-            await this.backfill(http, total);
-            await this.pullAll(http, total);
-          });
+          await this.pass(() =>
+            this.guarded(async (http) => {
+              await this.backfill(http, total);
+              await this.pullAll(http, total);
+            })
+          );
         } catch (err) {
           if (!this.pullPending) throw err;
           continue;
@@ -280,6 +298,54 @@ export class SyncEngine {
     } finally {
       this.pullTask = null;
     }
+  }
+
+  // Anything that applies pulled versions runs as a pass, so it resolves the
+  // lens and writes into it without a switch in between.
+  private async pass<T>(work: () => Promise<T>): Promise<T> {
+    while (this.pullGate) await this.pullGate;
+    const running = work();
+    const settled = running.then(
+      () => undefined,
+      () => undefined
+    );
+    this.passes.add(settled);
+    void settled.then(() => this.passes.delete(settled));
+    return running;
+  }
+
+  // Waits out the passes in flight and holds back new ones until the returned release runs.
+  async pausePulls(): Promise<() => void> {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    this.pullGate = gate;
+    await Promise.all(this.passes);
+    return () => {
+      if (this.pullGate === gate) this.pullGate = null;
+      release();
+    };
+  }
+
+  // The store-wide pull skips versions outside the active lens, so a lens
+  // being left is caught up from the current cursor when it is next active.
+  async leaveLens(keys: readonly string[]): Promise<void> {
+    const pulled = new Set(
+      (await this.getConfig<{ keys: string[] }>('pulledCollections'))?.keys ?? []
+    );
+    const cursor = (await this.getConfig<{ cursor: number }>('cursor'))?.cursor ?? 0;
+    const resume = await this.resumeCursors();
+    for (const key of keys) {
+      if (!pulled.delete(key)) continue;
+      resume[key] = cursor;
+    }
+    await this.setConfig('pulledCollections', { keys: Array.from(pulled) });
+    await this.setConfig('resumeCursors', { cursors: resume });
+  }
+
+  private async resumeCursors(): Promise<Record<string, number>> {
+    return (
+      (await this.getConfig<{ cursors: Record<string, number> }>('resumeCursors'))?.cursors ?? {}
+    );
   }
 
   // Routes a 401 from any request into the signed-out handling.
@@ -294,20 +360,22 @@ export class SyncEngine {
     }
   }
 
-  // A collection defined after this install first synced has versions below
-  // the cursor; it is caught up on its own before the store-wide loop runs.
-  // A store that has never pulled covers every collection from cursor 0.
+  // A collection defined after this install first synced, or one in a lens
+  // that was not active, has versions below the cursor; it is caught up on its
+  // own before the store-wide loop runs, from where it left off if it was
+  // left. A store that has never pulled covers every collection from cursor 0.
   private async backfill(http: SyncHttp, total: PullResult): Promise<void> {
     const pulled = new Set(
       (await this.getConfig<{ keys: string[] }>('pulledCollections'))?.keys ?? []
     );
-    const keys = this.store.syncedDefinitions.map((d) => d.key);
+    const keys = this.store.activeKeys();
     const missing = keys.filter((key) => !pulled.has(key));
     if (missing.length === 0) return;
     const cursor = (await this.getConfig<{ cursor: number }>('cursor'))?.cursor ?? 0;
     if (cursor > 0) {
+      const resume = await this.resumeCursors();
       for (const key of missing) {
-        let at = 0;
+        let at = resume[key] ?? 0;
         for (;;) {
           const page = await http.pull(at, key);
           await this.applyVersions(page.documents, total);
@@ -315,7 +383,9 @@ export class SyncEngine {
           at = page.cursor;
         }
         pulled.add(key);
+        delete resume[key];
         await this.setConfig('pulledCollections', { keys: Array.from(pulled) });
+        await this.setConfig('resumeCursors', { cursors: resume });
       }
       return;
     }
@@ -340,8 +410,8 @@ export class SyncEngine {
   ): Promise<Set<string>> {
     const touched = new Set<string>();
     for (const version of versions) {
-      const def = this.store.definitionByKey(version.collection);
-      if (!def || !def.synced) continue;
+      const def = this.store.activeDefinition(version.collection);
+      if (!def) continue;
       try {
         this.store.clock.receive(version.hlc);
       } catch (err) {
@@ -349,7 +419,9 @@ export class SyncEngine {
         total.skipped.drift += 1;
         continue;
       }
-      const record = await this.store.codec.fromWire(def.key, version.id, version.data);
+      const record = await this.store
+        .codec()
+        .fromWire(version.collection, version.id, version.data);
       if (!record) {
         total.skipped.sealed += 1;
         continue;
@@ -374,11 +446,17 @@ export class SyncEngine {
   }
 
   async pullDocument(collection: string, id: string): Promise<void> {
-    const def = this.store.definitionByName(collection);
-    if (!def) throw new Error(`Unknown collection "${collection}"`);
-    await this.guarded(async (http) => {
-      const versions = await http.pullDocument(def.key, id);
-      await this.applyVersions(versions, { applied: 0, skipped: { drift: 0, sealed: 0 }, held: 0 });
+    await this.pass(async () => {
+      const key = this.store.activeKeyOf(collection);
+      if (!key) throw new Error(`Unknown collection "${collection}"`);
+      await this.guarded(async (http) => {
+        const versions = await http.pullDocument(key, id);
+        await this.applyVersions(versions, {
+          applied: 0,
+          skipped: { drift: 0, sealed: 0 },
+          held: 0,
+        });
+      });
     });
   }
 
@@ -386,6 +464,7 @@ export class SyncEngine {
     await this.store.clearLocalData();
     await this.setConfig('cursor', { cursor: 0 });
     await this.store.adapter.delete(CONFIG, 'pulledCollections');
+    await this.store.adapter.delete(CONFIG, 'resumeCursors');
     return this.pull();
   }
 
@@ -446,7 +525,7 @@ export class SyncEngine {
 
   private wireDocument(key: string, id: string, stored: AdapterRecord): WireDocument {
     const hlc = isSealedRecord(stored) ? stored.hlc : (greatestClock(stored) ?? '');
-    return { collection: key, id, hlc, data: this.store.codec.toWire(stored) };
+    return { collection: key, id, hlc, data: toWire(stored) };
   }
 
   // Pushes each document's current state, coalescing edits made since it was
@@ -459,13 +538,16 @@ export class SyncEngine {
     const keys: string[] = [];
     const stale: string[] = [];
     for (const { key, entry } of entries) {
-      const def = this.store.definitionByName(entry.collection);
-      const stored = def ? await this.store.adapter.get(def.key, entry.docId) : null;
-      if (!def || !stored) {
+      const storageKey = entry.key ?? this.store.plainKeyOf(entry.collection);
+      const stored =
+        storageKey && this.store.isSyncedKey(storageKey)
+          ? await this.store.adapter.get(storageKey, entry.docId)
+          : null;
+      if (!storageKey || !stored) {
         stale.push(key);
         continue;
       }
-      documents.push(this.wireDocument(def.key, entry.docId, stored));
+      documents.push(this.wireDocument(storageKey, entry.docId, stored));
       keys.push(key);
     }
     for (const key of stale) await this.store.adapter.delete(OUTBOX, key);
@@ -483,10 +565,10 @@ export class SyncEngine {
     await this.guarded(async (http) => {
       const documents: WireDocument[] = [];
       const live = new Set<string>();
-      for (const def of this.store.syncedDefinitions) {
-        for (const { id, record } of await this.store.adapter.getAll(def.key)) {
-          documents.push(this.wireDocument(def.key, id, record));
-          live.add(`${def.key}/${id}`);
+      for (const key of await this.store.storedSyncedKeys()) {
+        for (const { id, record } of await this.store.adapter.getAll(key)) {
+          documents.push(this.wireDocument(key, id, record));
+          live.add(`${key}/${id}`);
         }
       }
       // A held version is re-sent so a key rotation reseals it; one with a live

@@ -60,12 +60,12 @@ describe('defineCollection', () => {
     expect(() =>
       defineCollection({
         name: 'x',
-        key: 'k'.repeat(257),
+        key: 'k'.repeat(240),
         idPrefix: 'x',
         merge: 'field',
         schema: (b) => b,
       })
-    ).toThrow(/1–256/);
+    ).toThrow(/1–239/);
     expect(() =>
       defineCollection({ name: 'x', idPrefix: 'a-b', merge: 'field', schema: (b) => b })
     ).toThrow(/must not contain/);

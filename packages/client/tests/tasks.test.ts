@@ -98,6 +98,10 @@ function controlledParse(store: SlotStore, overrides: { maxAttempts?: number } =
   return { task, calls };
 }
 
+async function lensCipher(): Promise<DocCipher> {
+  return createWebCryptoCipher(await deriveEncryptionKey('lens', 'app', 1_000));
+}
+
 async function watchStates(store: SlotStore, key: string): Promise<Array<TaskState | null>> {
   const states: Array<TaskState | null> = [];
   store.tasks.watch(key, (state) => states.push(state));
@@ -265,6 +269,70 @@ describe('tasks', () => {
     expect(await store.tasks.get('parse:sl-1')).toBeNull();
   });
 
+  it('finishes applying in its own lens before a switch', async () => {
+    const store = await signedInStore('Phone');
+    const applying = deferred<void>();
+    const started = deferred<void>();
+    const task = defineTask({
+      name: 'parse',
+      input: z.object({ slotId: z.string() }),
+      run: async () => 'done',
+      apply: async (input, result: string) => {
+        started.resolve();
+        await applying.promise;
+        await store.collection('slots').update(input.slotId, { parsed: result });
+      },
+      retryDelaysMs: [10],
+    });
+    store.tasks.register(task);
+    await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
+    await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1' });
+    await started.promise;
+    const switched = store.encryption.setKey(await lensCipher());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    applying.resolve();
+    await switched;
+    expect(await store.collection('slots').get('sl-1')).toBeNull();
+    await store.encryption.setKey(null);
+    expect((await store.collection('slots').get('sl-1'))?.parsed).toBe('done');
+  });
+
+  it('drops the result of a run a switch aborted, and claims per lens', async () => {
+    const store = await signedInStore('Phone');
+    const { task, calls } = controlledParse(store);
+    store.tasks.register(task);
+    const cipher = await lensCipher();
+    await store.encryption.setKey(cipher);
+    await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
+    await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(server.claimOf('app', `parse:sl-1@${await cipher.keyId()}`)).toBeDefined();
+    await store.encryption.setKey(null);
+    expect(calls[0]!.signal.aborted).toBe(true);
+    calls[0]!.finish.resolve('late');
+    await store.encryption.setKey(cipher);
+    expect((await store.collection('slots').get('sl-1'))?.parsed).toBeNull();
+  });
+
+  it('keeps tasks stopped after dispose, even across a switch', async () => {
+    const store = await signedInStore('Phone');
+    const { task, calls } = controlledParse(store);
+    store.tasks.register(task);
+    store.dispose();
+    await store.encryption.setKey(await lensCipher());
+    await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects task keys containing "@"', async () => {
+    const store = await openStore();
+    const { task } = controlledParse(store);
+    await expect(
+      store.tasks.enqueue(task, 'parse@sl-1', { slotId: 'sl-1', note: 'eggs' })
+    ).rejects.toThrow(/must not contain "@"/);
+  });
+
   it('encrypts tasks on the wire', async () => {
     const cipher = createWebCryptoCipher(
       await deriveEncryptionKey('passphrase', new TextEncoder().encode('salt-salt-salt-1'))
@@ -273,7 +341,7 @@ describe('tasks', () => {
     const { task } = controlledParse(store);
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'secret eggs' });
     await store.sync.drain();
-    const [version] = server.versionsOf('app', '_tasks', 'parse:sl-1');
+    const [version] = server.versionsOf('app', `_tasks@${await cipher.keyId()}`, 'parse:sl-1');
     expect(version).toBeDefined();
     expect(version!.data).not.toContain('secret eggs');
   });
