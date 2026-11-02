@@ -26,8 +26,13 @@ type App = {
   seq: number;
   versions: Map<string, Version>;
   blobs: Map<string, { bytes: Uint8Array; contentType: string }>;
+  claims: Map<string, Claim>;
   redirectUris: Set<string>;
 };
+
+type Claim = { rev: string; writerId: string; expiresAt: number };
+
+const CLAIM_TTL_MS = 90_000;
 
 type AuthCode = {
   code: string;
@@ -128,6 +133,13 @@ export class FakeServer {
       }
       return new Response(null, { status: 204 });
     }
+    if (path === '/tasks/claim' && method === 'POST') return this.claim(app, auth, init?.body);
+    if (path === '/tasks/release' && method === 'POST') {
+      const { taskId, rev } = JSON.parse(String(init?.body)) as { taskId: string; rev: string };
+      const claim = app.claims.get(taskId);
+      if (claim?.rev === rev && claim.writerId === auth.writerId) app.claims.delete(taskId);
+      return new Response(null, { status: 204 });
+    }
     if (blob && method === 'GET') {
       const stored = app.blobs.get(blob[1]!);
       if (!stored) return error(404, 'not_found');
@@ -148,6 +160,7 @@ export class FakeServer {
       seq: 1_000,
       versions: new Map(),
       blobs: new Map(),
+      claims: new Map(),
       redirectUris: new Set(redirectUris),
     });
   }
@@ -239,7 +252,34 @@ export class FakeServer {
     return this.write(this.app(auth.appId), auth, documents);
   }
 
+  /** The server's view of who may run a task. */
+  claimOf(appId: string, taskId: string): Claim | undefined {
+    return this.app(appId).claims.get(taskId);
+  }
+
+  /** Ends every claim, as if its holder stopped renewing long enough ago. */
+  expireClaims(appId: string): void {
+    for (const claim of this.app(appId).claims.values()) claim.expiresAt = Date.now() - 1;
+  }
+
   // Internals
+
+  private claim(app: App, auth: Token, body: BodyInit | null | undefined): Response {
+    const { taskId, rev } = JSON.parse(String(body)) as { taskId: string; rev: string };
+    const now = Date.now();
+    const held = app.claims.get(taskId);
+    const take =
+      !held ||
+      rev > held.rev ||
+      (rev === held.rev && (held.writerId === auth.writerId || held.expiresAt <= now));
+    if (take)
+      app.claims.set(taskId, { rev, writerId: auth.writerId, expiresAt: now + CLAIM_TTL_MS });
+    const current = app.claims.get(taskId)!;
+    return json(200, {
+      claimed: current.rev === rev && current.writerId === auth.writerId,
+      expiresAt: current.expiresAt,
+    });
+  }
 
   private app(appId: string): App {
     const app = this.apps.get(appId);

@@ -47,6 +47,24 @@ describe('store.ai', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('cancels the request when the signal aborts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init!.signal!;
+          if (signal.aborted) reject(signal.reason);
+          signal.addEventListener('abort', () => reject(signal.reason));
+        })
+    );
+    const controller = new AbortController();
+    const pending = signedIn().decide(
+      { model: 'm/x', questions: {} },
+      { signal: controller.signal }
+    );
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('signs out when the token is rejected', async () => {
     stubFetch(() => new Response(null, { status: 401 }));
     const onUnauthorized = vi.fn();

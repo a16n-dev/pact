@@ -6,6 +6,7 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 const TABLES = [
   'documents',
   'blobs',
+  'task_claims',
   'tokens',
   'auth_codes',
   'login_sessions',

@@ -7,4 +7,5 @@ export const LIMITS = {
   authCodeTtlMs: 60_000,
   loginSessionTtlMs: 30 * 24 * 60 * 60_000,
   lastSeenWriteIntervalMs: 5 * 60_000,
+  taskClaimTtlMs: 90_000,
 };

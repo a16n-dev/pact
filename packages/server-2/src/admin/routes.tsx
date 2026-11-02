@@ -21,6 +21,7 @@ import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
 import { addAppUser, listAppUsers, removeAppUser, setRestricted } from '../db/appUsers';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
+import { wipeTaskClaimsStatement } from '../db/taskClaims';
 import {
   collectionStats,
   documentStats,
@@ -392,6 +393,7 @@ adminRoutes.post('/apps/:id/wipe', async (c) => {
   await c.env.DB.batch([
     wipeDocumentsStatement(c.env.DB, app.id),
     wipeBlobsStatement(c.env.DB, app.id),
+    wipeTaskClaimsStatement(c.env.DB, app.id),
   ]);
   await deleteAppBlobs(c.env.BLOBS, app.id);
   return c.redirect(`/admin/apps/${app.id}/settings`, 303);

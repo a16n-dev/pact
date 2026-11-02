@@ -32,7 +32,9 @@ describe('encryptDoc / decryptDoc', () => {
     expect(sealed.updatedAt).toBe('2026-01-02T00:00:00.000Z');
     expect(sealed.enc).toMatch(/^pactenc\$1\$/);
     expect(isEncryptedDoc(sealed)).toBe(true);
-    const raw = JSON.stringify(sealed);
+    // Only the cleartext fields are checked: random base64 in `enc` can contain "42".
+    const { enc: _enc, ...clear } = sealed;
+    const raw = JSON.stringify(clear);
     expect(raw).not.toContain('Alpha');
     expect(raw).not.toContain('secret');
     expect(raw).not.toContain('42');

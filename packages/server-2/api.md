@@ -168,6 +168,27 @@ Requires auth. `:hash` is the lowercase hex SHA-256 of the bytes.
 
 Blobs are never deleted through this API.
 
+## Task claims
+
+Requires auth. A claim says which writer may run a task right now, so a slow job synced to several devices runs on one of them. The tasks themselves are ordinary documents; the server only stores the claim.
+
+Both routes take the same JSON body:
+
+| Field    | Limit                                                                 |
+| -------- | --------------------------------------------------------------------- |
+| `taskId` | 1–256 chars                                                           |
+| `rev`    | 1–64 chars; ordered by plain string comparison, e.g. an encoded `hlc` |
+
+**`POST /tasks/claim`** → `{ "claimed": true | false, "expiresAt": <ms> }`. The caller gets the claim when:
+
+- nobody holds a claim on `taskId`, or
+- `rev` is greater than the claimed `rev` (new input makes the older run obsolete), or
+- `rev` equals the claimed `rev` and either the caller already holds it or it has expired.
+
+Claiming again as the holder renews it. A claim lasts 90 seconds from the last claim, so a runner renews well within that while it works. `expiresAt` is the current claim's expiry whether or not the caller got it, so a refused caller knows when to try again. A smaller `rev` than the claimed one is always refused.
+
+**`POST /tasks/release`** → 204. Deletes the claim if the caller holds it at that `rev`, so another writer can take the task without waiting for the expiry. Releasing a claim the caller doesn't hold is a no-op.
+
 ## Realtime
 
 `GET /realtime?token=<token>` as a WebSocket upgrade. Browsers can't set headers on an upgrade, so the token is a query parameter. A plain request without the upgrade header gets 426.
@@ -186,7 +207,7 @@ The socket closes with code 1000 and reason `signed out` when the token is signe
 
 Browser clients work from `http://localhost:*` and `http://127.0.0.1:*` without configuration, plus the **App domains** the admin registers for the app. Adding an `https` redirect URI registers its domain too. A request from any other origin gets `403 origin_not_allowed`. Requests without an `Origin` header, such as native apps and scripts, aren't checked. Discovery names no app, so it's served to any origin.
 
-Preflights succeed for any origin. On `/oauth/token`, `/auth/*` and `/sync/*` the allowed request headers are `authorization` and `content-type`; on `/ai/*` any requested header is allowed. The realtime upgrade applies the same origin rule.
+Preflights succeed for any origin. On `/oauth/token`, `/auth/*`, `/sync/*` and `/tasks/*` the allowed request headers are `authorization` and `content-type`; on `/ai/*` any requested header is allowed. The realtime upgrade applies the same origin rule.
 
 ## AI
 

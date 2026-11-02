@@ -16,6 +16,7 @@ import {
   UnauthorizedError,
   discover,
   exchangeCode,
+  type TaskClaim,
   type WireDocument,
   type WireVersion,
 } from './http';
@@ -362,6 +363,14 @@ export class SyncEngine {
     }
     for (const name of touched) this.store.emit(name);
     return touched;
+  }
+
+  claimTask(taskId: string, rev: string): Promise<TaskClaim> {
+    return this.guarded((http) => http.claimTask(taskId, rev));
+  }
+
+  releaseTask(taskId: string, rev: string): Promise<void> {
+    return this.guarded((http) => http.releaseTask(taskId, rev));
   }
 
   async pullDocument(collection: string, id: string): Promise<void> {
