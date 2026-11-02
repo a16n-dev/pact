@@ -92,13 +92,15 @@ export type StoreBlobs = {
  * Runs models through the Pact server's AI routes, signed in as this store.
  * Throws `SyncError` when signed out or when the server refuses, and
  * `UnauthorizedError` (signing the store out) when the token is gone.
+ * Aborting `signal` cancels the request; pass a task's signal from `run`.
  */
 export type StoreAi = {
   /** Generates one image and returns its bytes, whatever form the model gave them in. */
-  image(request: ImageRequest): Promise<GeneratedImage>;
+  image(request: ImageRequest, opts?: { signal?: AbortSignal }): Promise<GeneratedImage>;
   /** Asks a decision model the questions about the state. Returns the answers by question key. */
   decide<Q extends Record<string, unknown>>(
-    request: DecisionRequest<Q>
+    request: DecisionRequest<Q>,
+    opts?: { signal?: AbortSignal }
   ): Promise<Record<keyof Q, unknown>>;
 };
 

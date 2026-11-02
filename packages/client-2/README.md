@@ -199,7 +199,7 @@ const answers = await store.ai.decide({
 });
 ```
 
-For chat, point any OpenAI-compatible SDK at `<server>/ai/compat` with the token from `store.sync.credentials()` as its API key. Signed out, these throw `SyncError` with the code `signed_out`.
+Both take `{ signal }` as a second argument to cancel the request. For chat, point any OpenAI-compatible SDK at `<server>/ai/compat` with the token from `store.sync.credentials()` as its API key. Signed out, these throw `SyncError` with the code `signed_out`.
 
 ### Background tasks
 
@@ -209,10 +209,11 @@ For slow work, such as an AI call, whose result has to land in documents later. 
 const parseNote = defineTask({
   name: 'parse',
   input: z.object({ slotId: z.string(), note: z.string() }),
-  run: (input, { signal }) => readRequirements(input.note, signal),
-  apply: async (input, requirements) => {
+  run: (input, { signal }) =>
+    store.ai.decide({ model: 'typesafe/jev', state: input.note, questions }, { signal }),
+  apply: async (input, answers) => {
     if (!(await store.collection('slots').get(input.slotId))) return;
-    await store.collection('slots').update(input.slotId, { requirements });
+    await store.collection('slots').update(input.slotId, { requirements: answers });
   },
 });
 
