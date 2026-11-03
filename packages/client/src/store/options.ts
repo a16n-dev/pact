@@ -3,6 +3,7 @@ import type { CollectionDefinition } from '../collection';
 import type { DocCipher } from '../crypto/types';
 import type { DatabaseAdapter } from '../adapters/adapter';
 import type { BlobAdapter } from '../blobs/blobAdapter';
+import type { TaskDefinition } from '../tasks/task';
 
 /**
  * The schemas in `collections` define which collections exist: write
@@ -16,6 +17,12 @@ export type StoreOptions<
   adapter: DatabaseAdapter;
   /** Each defined via `defineCollection`. */
   collections: Defs;
+  /**
+   * Each defined via `defineTask`. This device runs queued tasks with these
+   * names, including ones another device started and abandoned; tasks with
+   * other names are left for a device that lists them.
+   */
+  tasks?: readonly TaskDefinition<any, any>[];
   /** Omit on consumers that only deal in JSON documents. */
   blobs?: BlobAdapter | null;
   /**

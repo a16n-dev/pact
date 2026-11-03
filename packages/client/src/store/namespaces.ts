@@ -240,14 +240,10 @@ export type StoreSync = {
  */
 export type StoreTasks = {
   /**
-   * Lets this device run tasks with these names. Tasks whose name has no
-   * handler here are left for a device that has one.
-   */
-  register(...tasks: TaskDefinition<any, any>[]): void;
-  /**
-   * Queues the task under `key` (1–239 chars without `@`, e.g. `parse:sl-123`). Enqueuing
-   * under a key that already has a task replaces it: its input, attempts
-   * and failure are reset, and a run of the old input never applies.
+   * Queues the task, which must be one of `StoreOptions.tasks`, under `key`
+   * (1–239 chars without `@`, e.g. `parse:sl-123`). Enqueuing under a key
+   * that already has a task replaces it: its input, attempts and failure are
+   * reset, and a run of the old input never applies.
    */
   enqueue<Schema extends z.ZodType<Storable>>(
     task: TaskDefinition<Schema, any>,
@@ -262,6 +258,10 @@ export type StoreTasks = {
   get(key: string): Promise<TaskState | null>;
   /** Calls `listener` with the current state, then on every change. Returns an unsubscribe. */
   watch(key: string, listener: (state: TaskState | null) => void): () => void;
+  /** Every queued task, or only those of `task`, sorted by key. */
+  list(task?: TaskDefinition<any, any>): Promise<TaskState[]>;
+  /** Like `list`, called now and on every change. Returns an unsubscribe. */
+  watchAll(listener: (states: TaskState[]) => void, task?: TaskDefinition<any, any>): () => void;
 };
 
 export type TaskState = {

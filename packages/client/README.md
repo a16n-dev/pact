@@ -217,12 +217,13 @@ const parseNote = defineTask({
   },
 });
 
-store.tasks.register(parseNote);
+const store = await Store.create({ adapter, collections, tasks: [parseNote] });
+
 await store.tasks.enqueue(parseNote, `parse:${slot.id}`, { slotId: slot.id, note });
 const stop = store.tasks.watch(`parse:${slot.id}`, (state) => setParsing(state));
 ```
 
-Enqueuing again under the same key replaces the task, and a run of the old input never applies. `apply` can run more than once for the same input, so it should set values rather than append, and do nothing when its documents are gone. A task with no handler on this device, or whose input this version's schema rejects, is left for a device that can run it. After 3 attempts (30 s and then 2 min apart by default) a task is `failed` until `store.tasks.retry(key)`. `watch` reports `null` once the task has finished or been cancelled.
+Enqueuing again under the same key replaces the task, and a run of the old input never applies. `apply` can run more than once for the same input, so it should set values rather than append, and do nothing when its documents are gone. List every task in `tasks` when creating the store, on every device, so any of them can pick up a task another device started. `enqueue` throws for a task that isn't listed. A task whose name this device doesn't list, or whose input this version's schema rejects, is left for a device that can run it. After 3 attempts (30 s and then 2 min apart by default) a task is `failed` until `store.tasks.retry(key)`. `watch` reports `null` once the task has finished or been cancelled. `store.tasks.list()` and `store.tasks.watchAll(listener)` cover every queued task, and passing a task definition, as in `watchAll(listener, parseNote)`, narrows them to that task.
 
 ### Backups
 
