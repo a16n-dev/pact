@@ -22,6 +22,7 @@ export default defineWorkersConfig(async () => {
             bindings: {
               TEST_MIGRATIONS: migrations,
               TURNSTILE_SECRET: 'test-secret',
+              VAULT_KEY: 'test-vault-key',
               ACCESS_TEAM_DOMAIN: 'test.cloudflareaccess.com',
               ACCESS_AUD: 'aud-123',
             },

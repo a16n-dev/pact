@@ -5,6 +5,7 @@
 // own OAuth token can't, which is also why Access is left to the dashboard.
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
@@ -167,6 +168,19 @@ async function ensureAiGateway(account: string): Promise<string | null> {
   return ask('  API token:');
 }
 
+// Stored API credentials are encrypted under this key, so an existing one is never replaced.
+function ensureVaultKey(): void {
+  step('Vault key');
+  const secrets = JSON.parse(wrangler(['secret', 'list', '--format', 'json'])) as {
+    name: string;
+  }[];
+  if (secrets.some((secret) => secret.name === 'VAULT_KEY')) {
+    console.log('  already set; keeping it so stored API credentials stay readable');
+    return;
+  }
+  wrangler(['secret', 'put', 'VAULT_KEY'], randomBytes(32).toString('base64url'));
+}
+
 function setRoute(domain: string): void {
   if (config.includes('"custom_domain": true')) return;
   config = config.replace(
@@ -201,6 +215,7 @@ try {
     step('AI Gateway token');
     wrangler(['secret', 'put', 'AI_GATEWAY_TOKEN'], aiGatewayToken);
   }
+  ensureVaultKey();
 
   console.log(`\nDone. Open https://${domain}/admin to create your first app and user.`);
 } finally {

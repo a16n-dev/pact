@@ -338,6 +338,16 @@ describe('inside an app', () => {
     expect((await getApp(env.DB, 'app-a'))!.ai_proxy).toBe(1);
   });
 
+  it('switches the API proxy off and on, starting on', async () => {
+    expect((await getApp(env.DB, 'app-a'))!.api_proxy).toBe(1);
+    expect((await admin('/apps/app-a/api-proxy', { method: 'POST', form: {} })).status).toBe(303);
+    expect((await getApp(env.DB, 'app-a'))!.api_proxy).toBe(0);
+    expect(
+      (await admin('/apps/app-a/api-proxy', { method: 'POST', form: { enabled: 'on' } })).status
+    ).toBe(303);
+    expect((await getApp(env.DB, 'app-a'))!.api_proxy).toBe(1);
+  });
+
   it('summarises documents by collection', async () => {
     await push(a.token, [doc('n1', 'one'), doc('n2', 'two'), doc('r1', 'rice', 'recipes')]);
     expect((await admin('/apps/app-a')).headers.get('location')).toBe(
