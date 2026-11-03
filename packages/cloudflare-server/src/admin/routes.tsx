@@ -14,6 +14,7 @@ import {
   removeRedirectUri,
   renameApp,
   setAiProxy,
+  setApiProxy,
   setAllowLocalhost,
   type AppRow,
 } from '../db/apps';
@@ -370,6 +371,12 @@ adminRoutes.post('/apps/:id/localhost', async (c) => {
 adminRoutes.post('/apps/:id/ai-proxy', async (c) => {
   const app = c.get('app');
   await setAiProxy(c.env.DB, app.id, field(await c.req.parseBody(), 'enabled') === 'on');
+  return c.redirect(`/admin/apps/${app.id}/settings`, 303);
+});
+
+adminRoutes.post('/apps/:id/api-proxy', async (c) => {
+  const app = c.get('app');
+  await setApiProxy(c.env.DB, app.id, field(await c.req.parseBody(), 'enabled') === 'on');
   return c.redirect(`/admin/apps/${app.id}/settings`, 303);
 });
 

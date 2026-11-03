@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { BlobAdapter } from '../blobs/blobAdapter';
 import type { DocCipher } from '../crypto/types';
 import type { TaskDefinition } from '../tasks/task';
+import type { ApiDefinition, CredentialValues } from '../apis/api';
 import type { Storable } from '../types';
 
 export type StoreBackup = {
@@ -103,6 +104,40 @@ export type StoreAi = {
     request: DecisionRequest<Q>,
     opts?: { signal?: AbortSignal }
   ): Promise<Record<keyof Q, unknown>>;
+};
+
+/**
+ * Calls third-party APIs through the Pact server, which adds the credentials
+ * it holds for the app. Credentials are shared by everyone using the app and
+ * can be replaced or deleted but never read back. Throws `SyncError` when
+ * signed out or when the server refuses, and `UnauthorizedError` (signing
+ * the store out) when the token is gone.
+ */
+export type StoreApis = {
+  /**
+   * Validates `input`, sends the request the method builds, and parses the
+   * response with its schema. Throws `ApiResponseError` when the API answers
+   * outside 2xx, redirects included.
+   */
+  call<Api extends ApiDefinition, Method extends keyof Api['methods'] & string>(
+    api: Api,
+    method: Method,
+    input: z.input<Api['methods'][Method]['request']>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<z.output<Api['methods'][Method]['response']>>;
+  /** Replaces every stored credential for the API, saving them for its current `baseUrl`. */
+  setCredentials<Api extends ApiDefinition>(api: Api, values: CredentialValues<Api>): Promise<void>;
+  deleteCredentials(api: ApiDefinition): Promise<void>;
+  /** Null when none are set. */
+  credentials(api: ApiDefinition): Promise<ApiCredentialsStatus | null>;
+};
+
+export type ApiCredentialsStatus = {
+  baseUrl: string;
+  fields: string[];
+  updatedAt: number;
+  /** Saved for the definition's current `baseUrl`, with every field it declares. */
+  ready: boolean;
 };
 
 export type ImageRequest = {

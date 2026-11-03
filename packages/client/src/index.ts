@@ -19,3 +19,14 @@ export type { IndexKey, IndexKeyInput, IndexExtractor, IndexMap } from './store/
 export * from './store';
 export { defineTask, type TaskConfig, type TaskContext, type TaskDefinition } from './tasks/task';
 export { UnauthorizedError, SyncError } from './sync/http';
+export {
+  defineApi,
+  apiMethod,
+  type ApiDefinition,
+  type ApiMethod,
+  type ApiRequest,
+  type CredentialField,
+  type CredentialPlacement,
+  type CredentialValues,
+} from './apis/api';
+export { ApiResponseError } from './apis/apis';

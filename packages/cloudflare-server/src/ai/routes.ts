@@ -4,6 +4,7 @@ import { type AuthedEnv, requireAuth } from '../auth/bearer';
 import type { Env } from '../lib/env';
 import { ApiError, badRequest } from '../lib/errors';
 import { getApp } from '../db/apps';
+import { readCapped } from '../lib/body';
 
 export const aiRoutes = new Hono<AuthedEnv>();
 
@@ -178,26 +179,11 @@ async function resolveImage(value: string): Promise<Image> {
   }
 }
 
-// Reads the body in chunks so an oversized image is refused before it fills the Worker's memory.
 async function readImage(res: Response): Promise<Image> {
   const contentType = res.headers.get('content-type');
-  const mimeType = isImageType(contentType) ? contentType : null;
-  if (Number(res.headers.get('content-length')) > MAX_IMAGE_BYTES) throw imageTooLarge();
-  if (!res.body) return { bytes: new Uint8Array(), mimeType };
-  const chunks: Uint8Array[] = [];
-  let sizeBytes = 0;
-  for await (const chunk of res.body) {
-    sizeBytes += chunk.byteLength;
-    if (sizeBytes > MAX_IMAGE_BYTES) throw imageTooLarge();
-    chunks.push(chunk);
-  }
-  const bytes = new Uint8Array(sizeBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { bytes, mimeType };
+  const bytes = await readCapped(res, MAX_IMAGE_BYTES);
+  if (!bytes) throw imageTooLarge();
+  return { bytes, mimeType: isImageType(contentType) ? contentType : null };
 }
 
 const OUTPUT_FORMATS = ['png', 'webp', 'jpeg', 'avif'] as const;

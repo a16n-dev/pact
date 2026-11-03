@@ -201,6 +201,36 @@ const answers = await store.ai.decide({
 
 Both take `{ signal }` as a second argument to cancel the request. For chat, point any OpenAI-compatible SDK at `<server>/ai/compat` with the token from `store.sync.credentials()` as its API key. Signed out, these throw `SyncError` with the code `signed_out`.
 
+### Third-party APIs
+
+A signed-in store can call other services through the server, which holds their credentials so devices never store them. Credentials are shared by everyone using the app, and once set they can be replaced or deleted but not read back.
+
+```ts
+const weather = defineApi({
+  name: 'weather',
+  baseUrl: 'https://api.weather.example/v2',
+  credentials: {
+    apiKey: { schema: z.string().min(1), in: 'header', name: 'Authorization', prefix: 'Bearer ' },
+    project: { schema: z.string(), in: 'query', name: 'project' },
+  },
+  methods: {
+    forecast: apiMethod({
+      request: z.object({ city: z.string() }),
+      response: z.object({ high: z.number() }),
+      build: ({ city }) => ({ path: `/forecast/${encodeURIComponent(city)}` }),
+    }),
+  },
+});
+
+await store.apis.setCredentials(weather, { apiKey, project }); // from a settings form
+const status = await store.apis.credentials(weather); // { fields, updatedAt, ready, … } or null
+const { high } = await store.apis.call(weather, 'forecast', { city: 'Wellington' });
+```
+
+`build` returns `{ method?, path, query?, headers?, body? }`. `path` is relative to `baseUrl`, and `body` is sent as JSON. The response is parsed as JSON when the API says it is, otherwise as text, and then checked against `response`. A status outside 2xx throws `ApiResponseError` with the `status` and `body`.
+
+Credentials are saved for the `baseUrl` at the time, and the server only sends them there, so changing `baseUrl` means setting them again. `ready` is false until they're set for the current `baseUrl` with every field the definition lists. Like `store.ai`, these throw `SyncError` when signed out, `call` takes `{ signal }`, and an admin can turn the proxy off per app.
+
 ### Background tasks
 
 For slow work, such as an AI call, whose result has to land in documents later. A task syncs like a document, survives reloads, and runs on one signed-in device at a time. If that device disappears, another one takes over within about 90 seconds.
