@@ -35,10 +35,13 @@ afterEach(() => {
 
 type SlotStore = Store<readonly [typeof slots]>;
 
-async function openStore(cipher?: DocCipher): Promise<SlotStore> {
+type StoreSetup = { tasks?: TaskDefinition<any, any>[]; cipher?: DocCipher };
+
+async function openStore({ tasks, cipher }: StoreSetup = {}): Promise<SlotStore> {
   const store = await Store.create({
     adapter: new InMemoryAdapter(),
     collections: [slots] as const,
+    tasks,
     encryption: cipher ? { cipher } : undefined,
   });
   stores.push(store);
@@ -57,8 +60,8 @@ async function signIn(store: SlotStore, deviceName: string): Promise<void> {
   expect(await store.sync.completeSignIn(redirect)).toEqual({ ok: true });
 }
 
-async function signedInStore(deviceName: string, cipher?: DocCipher): Promise<SlotStore> {
-  const store = await openStore(cipher);
+async function signedInStore(deviceName: string, setup: StoreSetup = {}): Promise<SlotStore> {
+  const store = await openStore(setup);
   await signIn(store, deviceName);
   return store;
 }
@@ -73,8 +76,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-// A parse task whose runs finish only when the test says so.
-function controlledParse(store: SlotStore, overrides: { maxAttempts?: number } = {}) {
+// A parse task whose runs finish only when the test says so. It is defined
+// before the store that lists it, so `apply` reaches the store through a getter.
+function controlledParse(store: () => SlotStore, overrides: { maxAttempts?: number } = {}) {
   const calls: Array<{
     note: string;
     signal: AbortSignal;
@@ -89,8 +93,8 @@ function controlledParse(store: SlotStore, overrides: { maxAttempts?: number } =
       return finish.promise;
     },
     apply: async (input, result) => {
-      if (!(await store.collection('slots').get(input.slotId))) return;
-      await store.collection('slots').update(input.slotId, { parsed: result });
+      if (!(await store().collection('slots').get(input.slotId))) return;
+      await store().collection('slots').update(input.slotId, { parsed: result });
     },
     retryDelaysMs: [10],
     ...overrides,
@@ -111,9 +115,8 @@ async function watchStates(store: SlotStore, key: string): Promise<Array<TaskSta
 
 describe('tasks', () => {
   it('runs a task, applies the result and deletes the task', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task] });
     await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     const states = await watchStates(store, 'parse:sl-1');
@@ -130,9 +133,8 @@ describe('tasks', () => {
   });
 
   it('waits until signed in, so a task enqueued offline runs later', async () => {
-    const store = await openStore();
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await openStore({ tasks: [task] });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     expect((await store.tasks.get('parse:sl-1'))?.status).toBe('pending');
     expect(calls).toHaveLength(0);
@@ -142,33 +144,30 @@ describe('tasks', () => {
   });
 
   it('runs on one device only while the claim is held', async () => {
-    const phone = await signedInStore('Phone');
-    const laptop = await signedInStore('Laptop');
-    const onPhone = controlledParse(phone);
-    const onLaptop = controlledParse(laptop);
-    phone.tasks.register(onPhone.task);
+    const onPhone = controlledParse(() => phone);
+    const onLaptop = controlledParse(() => laptop);
+    const phone = await signedInStore('Phone', { tasks: [onPhone.task] });
     await phone.tasks.enqueue(onPhone.task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     await vi.waitFor(() => expect(onPhone.calls).toHaveLength(1));
 
-    laptop.tasks.register(onLaptop.task);
+    const laptop = await signedInStore('Laptop', { tasks: [onLaptop.task] });
     await vi.waitFor(async () => expect((await laptop.tasks.get('parse:sl-1'))?.attempts).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(onLaptop.calls).toHaveLength(0);
   });
 
   it('lets another device take over once the claim expires', async () => {
-    const phone = await signedInStore('Phone');
-    const laptop = await signedInStore('Laptop');
-    const onPhone = controlledParse(phone);
-    const onLaptop = controlledParse(laptop);
-    phone.tasks.register(onPhone.task);
+    const onPhone = controlledParse(() => phone);
+    const onLaptop = controlledParse(() => laptop);
+    const phone = await signedInStore('Phone', { tasks: [onPhone.task] });
     await phone.tasks.enqueue(onPhone.task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     await vi.waitFor(() => expect(onPhone.calls).toHaveLength(1));
+    await phone.sync.drain();
     // The phone vanishes mid-run: it stops renewing and never releases.
     phone.dispose();
 
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    laptop.tasks.register(onLaptop.task);
+    const laptop = await signedInStore('Laptop', { tasks: [onLaptop.task] });
     await vi.waitFor(async () => expect((await laptop.tasks.get('parse:sl-1'))?.attempts).toBe(1));
     server.expireClaims('app');
     await vi.advanceTimersByTimeAsync(91_000);
@@ -177,9 +176,8 @@ describe('tasks', () => {
   });
 
   it('never applies a run whose input was replaced', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task] });
     await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     await vi.waitFor(() => expect(calls).toHaveLength(1));
@@ -197,9 +195,8 @@ describe('tasks', () => {
   });
 
   it('retries with backoff, then fails until retried', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store, { maxAttempts: 2 });
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store, { maxAttempts: 2 });
+    const store = await signedInStore('Phone', { tasks: [task] });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
 
     await vi.waitFor(() => expect(calls).toHaveLength(1));
@@ -222,34 +219,75 @@ describe('tasks', () => {
     expect((await store.tasks.get('parse:sl-1'))?.attempts).toBe(1);
   });
 
-  it('leaves tasks it cannot handle untouched', async () => {
-    const store = await signedInStore('Phone');
-    const { task: parse, calls } = controlledParse(store);
-    const stricter: TaskDefinition<any, any> = {
-      ...parse,
-      input: z.object({ slotId: z.string(), note: z.string(), locale: z.string() }),
-    };
-    store.tasks.register(stricter);
-    await store.tasks.enqueue(parse, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
-    const other = defineTask({
+  it('leaves tasks it cannot handle for another device', async () => {
+    const onLaptop = controlledParse(() => laptop);
+    const score = defineTask({
       name: 'score',
       input: z.object({}),
-      run: async () => 0,
+      run: () => new Promise<number>(() => {}),
       apply: async () => {},
     });
-    await store.tasks.enqueue(other, 'score:1', {});
+    const laptop = await signedInStore('Laptop', { tasks: [onLaptop.task, score] });
+    await laptop.tasks.enqueue(onLaptop.task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
+    await laptop.tasks.enqueue(score, 'score:1', {});
+    await vi.waitFor(async () => {
+      expect((await laptop.tasks.get('parse:sl-1'))?.attempts).toBe(1);
+      expect((await laptop.tasks.get('score:1'))?.attempts).toBe(1);
+    });
+    await laptop.sync.drain();
+    laptop.dispose();
+    server.expireClaims('app');
 
+    // The phone lists a stricter parse and no score, so it may claim neither.
+    const onPhone = controlledParse(() => phone);
+    const stricter: TaskDefinition<any, any> = {
+      ...onPhone.task,
+      input: z.object({ slotId: z.string(), note: z.string(), locale: z.string() }),
+    };
+    const phone = await signedInStore('Phone', { tasks: [stricter] });
+    await vi.waitFor(async () => expect(await phone.tasks.get('score:1')).not.toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(calls).toHaveLength(0);
-    expect((await store.tasks.get('parse:sl-1'))?.attempts).toBe(0);
-    expect((await store.tasks.get('score:1'))?.attempts).toBe(0);
-    expect(server.claimOf('app', 'parse:sl-1')).toBeUndefined();
+    expect(onPhone.calls).toHaveLength(0);
+    expect((await phone.tasks.get('parse:sl-1'))?.attempts).toBe(1);
+    expect(server.claimOf('app', 'parse:sl-1')!.expiresAt).toBeLessThan(Date.now());
+    expect(server.claimOf('app', 'score:1')!.expiresAt).toBeLessThan(Date.now());
+  });
+
+  it('lists and watches all tasks, or only those of one definition', async () => {
+    const { task: parse, calls } = controlledParse(() => store);
+    const score = defineTask({
+      name: 'score',
+      input: z.object({}),
+      run: () => new Promise<number>(() => {}),
+      apply: async () => {},
+    });
+    const store = await signedInStore('Phone', { tasks: [parse, score] });
+    const all: TaskState[][] = [];
+    const scores: TaskState[][] = [];
+    store.tasks.watchAll((states) => all.push(states));
+    store.tasks.watchAll((states) => scores.push(states), score);
+    await vi.waitFor(() => expect(all.at(-1)).toEqual([]));
+
+    await store.tasks.enqueue(score, 'score:1', {});
+    await store.tasks.enqueue(parse, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(all.at(-1)?.map((state) => [state.key, state.status])).toEqual([
+        ['parse:sl-1', 'running'],
+        ['score:1', 'running'],
+      ])
+    );
+    expect(scores.at(-1)?.map((state) => state.key)).toEqual(['score:1']);
+    expect((await store.tasks.list(parse)).map((state) => state.key)).toEqual(['parse:sl-1']);
+
+    calls[0]!.finish.resolve('2 eggs');
+    await vi.waitFor(() => expect(all.at(-1)?.map((state) => state.key)).toEqual(['score:1']));
+    expect(scores.at(-1)?.map((state) => state.key)).toEqual(['score:1']);
   });
 
   it('aborts and drops a cancelled task', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task] });
     await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
     await vi.waitFor(() => expect(calls).toHaveLength(1));
@@ -263,14 +301,13 @@ describe('tasks', () => {
   });
 
   it('rejects input that fails the schema', async () => {
-    const store = await openStore();
-    const { task } = controlledParse(store);
+    const { task } = controlledParse(() => store);
+    const store = await openStore({ tasks: [task] });
     await expect(store.tasks.enqueue(task, 'parse:sl-1', { slotId: 1 } as never)).rejects.toThrow();
     expect(await store.tasks.get('parse:sl-1')).toBeNull();
   });
 
   it('finishes applying in its own lens before a switch', async () => {
-    const store = await signedInStore('Phone');
     const applying = deferred<void>();
     const started = deferred<void>();
     const task = defineTask({
@@ -284,7 +321,7 @@ describe('tasks', () => {
       },
       retryDelaysMs: [10],
     });
-    store.tasks.register(task);
+    const store = await signedInStore('Phone', { tasks: [task] });
     await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1' });
     await started.promise;
@@ -298,9 +335,8 @@ describe('tasks', () => {
   });
 
   it('drops the result of a run a switch aborted, and claims per lens', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task] });
     const cipher = await lensCipher();
     await store.encryption.setKey(cipher);
     await store.collection('slots').create({ id: 'sl-1', note: 'eggs', parsed: null });
@@ -315,9 +351,8 @@ describe('tasks', () => {
   });
 
   it('keeps tasks stopped after dispose, even across a switch', async () => {
-    const store = await signedInStore('Phone');
-    const { task, calls } = controlledParse(store);
-    store.tasks.register(task);
+    const { task, calls } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task] });
     store.dispose();
     await store.encryption.setKey(await lensCipher());
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' });
@@ -326,19 +361,38 @@ describe('tasks', () => {
   });
 
   it('rejects task keys containing "@"', async () => {
-    const store = await openStore();
-    const { task } = controlledParse(store);
+    const { task } = controlledParse(() => store);
+    const store = await openStore({ tasks: [task] });
     await expect(
       store.tasks.enqueue(task, 'parse@sl-1', { slotId: 'sl-1', note: 'eggs' })
     ).rejects.toThrow(/must not contain "@"/);
+  });
+
+  it('refuses to enqueue a task missing from the store options', async () => {
+    const store = await openStore();
+    const { task } = controlledParse(() => store);
+    await expect(
+      store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'eggs' })
+    ).rejects.toThrow('not in StoreOptions.tasks');
+  });
+
+  it('rejects two tasks with the same name', async () => {
+    const unused = (): SlotStore => {
+      throw new Error('never applied');
+    };
+    const first = controlledParse(unused);
+    const second = controlledParse(unused);
+    await expect(openStore({ tasks: [first.task, second.task] })).rejects.toThrow(
+      'Duplicate task name'
+    );
   });
 
   it('encrypts tasks on the wire', async () => {
     const cipher = createWebCryptoCipher(
       await deriveEncryptionKey('passphrase', new TextEncoder().encode('salt-salt-salt-1'))
     );
-    const store = await signedInStore('Phone', cipher);
-    const { task } = controlledParse(store);
+    const { task } = controlledParse(() => store);
+    const store = await signedInStore('Phone', { tasks: [task], cipher });
     await store.tasks.enqueue(task, 'parse:sl-1', { slotId: 'sl-1', note: 'secret eggs' });
     await store.sync.drain();
     const [version] = server.versionsOf('app', `_tasks@${await cipher.keyId()}`, 'parse:sl-1');

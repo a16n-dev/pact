@@ -221,20 +221,23 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       credentials: () => this.syncEngine.credentials(),
       onUnauthorized: () => void this.syncEngine.handleSignedOut(),
     });
-    this.taskRunner = new TaskRunner({
-      list: () => this.list(TASKS) as Promise<TaskDocument[]>,
-      get: (key) => this.get(TASKS, key) as Promise<TaskDocument | null>,
-      mutate: (key, decide) => this.mutateTask(key, decide),
-      newRev: () => this.clock.now(),
-      signedIn: async () => (await this.syncEngine.credentials()) !== null,
-      claimId: (key) => lensKey(key, this.lens.keyId),
-      claim: (claimId, rev) => this.syncEngine.claimTask(claimId, rev),
-      release: (claimId, rev) => this.syncEngine.releaseTask(claimId, rev),
-      onTasksChanged: (listener) =>
-        this.on('change', (collection) => {
-          if (collection === TASKS.name) listener();
-        }),
-    });
+    this.taskRunner = new TaskRunner(
+      {
+        list: () => this.list(TASKS) as Promise<TaskDocument[]>,
+        get: (key) => this.get(TASKS, key) as Promise<TaskDocument | null>,
+        mutate: (key, decide) => this.mutateTask(key, decide),
+        newRev: () => this.clock.now(),
+        signedIn: async () => (await this.syncEngine.credentials()) !== null,
+        claimId: (key) => lensKey(key, this.lens.keyId),
+        claim: (claimId, rev) => this.syncEngine.claimTask(claimId, rev),
+        release: (claimId, rev) => this.syncEngine.releaseTask(claimId, rev),
+        onTasksChanged: (listener) =>
+          this.on('change', (collection) => {
+            if (collection === TASKS.name) listener();
+          }),
+      },
+      options.tasks ?? []
+    );
     this.tasks = this.taskRunner.api;
   }
 
@@ -246,6 +249,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await store.retryHeld();
     await store.buildIndexes();
     await store.syncEngine.restore();
+    store.taskRunner.wake();
     // Network work never blocks startup; `signedOut` fires if the token is gone.
     void store.syncEngine.start().catch(() => {});
     return store;

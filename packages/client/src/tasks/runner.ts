@@ -45,6 +45,8 @@ type Run = {
   finishing: Promise<void> | null;
 };
 
+type ListWatcher = { name: string | null; listener: (states: TaskState[]) => void };
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -54,6 +56,7 @@ export class TaskRunner {
   private readonly handlers = new Map<string, TaskDefinition<any, any>>();
   private readonly runs = new Map<string, Run>();
   private readonly watchers = new Map<string, Set<(state: TaskState | null) => void>>();
+  private readonly listWatchers = new Set<ListWatcher>();
   private scanTask: Promise<void> | null = null;
   private scanPending = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -61,19 +64,26 @@ export class TaskRunner {
   private stopped = false;
   readonly api: StoreTasks;
 
-  constructor(access: TaskStoreAccess) {
+  constructor(access: TaskStoreAccess, tasks: readonly TaskDefinition<any, any>[]) {
     this.access = access;
+    for (const task of tasks) {
+      if (this.handlers.has(task.name)) {
+        throw new Error(`Duplicate task name "${task.name}" in StoreOptions.tasks`);
+      }
+      this.handlers.set(task.name, task);
+    }
     access.onTasksChanged(() => {
       this.notifyWatchers();
       this.wake();
     });
     this.api = {
-      register: (...tasks) => this.register(tasks),
       enqueue: (task, key, input) => this.enqueue(task, key, input),
       cancel: (key) => this.cancel(key),
       retry: (key) => this.retry(key),
       get: (key) => this.state(key),
       watch: (key, listener) => this.watch(key, listener),
+      list: (task) => this.states(task?.name ?? null),
+      watchAll: (listener, task) => this.watchAll(task?.name ?? null, listener),
     };
   }
 
@@ -98,19 +108,12 @@ export class TaskRunner {
     if (!this.scanTask) this.scanTask = this.runScans();
   }
 
-  private register(tasks: readonly TaskDefinition<any, any>[]): void {
-    for (const task of tasks) {
-      const existing = this.handlers.get(task.name);
-      if (existing && existing !== task)
-        throw new Error(`Task "${task.name}" is already registered`);
-      this.handlers.set(task.name, task);
-    }
-    this.wake();
-  }
-
   private async enqueue(task: TaskDefinition, key: string, input: unknown): Promise<void> {
     assertKeyLength('Task key', key, MAX_KEY_LENGTH - LENS_SUFFIX_LENGTH);
     if (key.includes('@')) throw new Error(`Task key "${key}" must not contain "@"`);
+    if (this.handlers.get(task.name) !== task) {
+      throw new Error(`Task "${task.name}" is not in StoreOptions.tasks`);
+    }
     task.input.parse(input);
     // Stored as JSON, so a schema that outputs dates still re-parses on the running device.
     const stored = JSON.parse(JSON.stringify(input)) as TaskDocument['input'];
@@ -140,11 +143,22 @@ export class TaskRunner {
 
   private async state(key: string): Promise<TaskState | null> {
     const task = await this.access.get(key);
-    if (!task) return null;
+    return task ? this.toState(task) : null;
+  }
+
+  private async states(name: string | null): Promise<TaskState[]> {
+    const tasks = await this.access.list();
+    return tasks
+      .filter((task) => name === null || task.name === name)
+      .map((task) => this.toState(task))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  }
+
+  private toState(task: TaskDocument): TaskState {
     const progress = currentProgress(task);
-    const running = this.runs.get(key)?.rev === task.rev;
+    const running = this.runs.get(task.id)?.rev === task.rev;
     return {
-      key,
+      key: task.id,
       name: task.name,
       status: progress?.failed ? 'failed' : running ? 'running' : 'pending',
       attempts: progress?.attempts ?? 0,
@@ -169,7 +183,21 @@ export class TaskRunner {
     };
   }
 
+  private watchAll(name: string | null, listener: (states: TaskState[]) => void): () => void {
+    const watcher: ListWatcher = { name, listener };
+    this.listWatchers.add(watcher);
+    void this.states(name).then((states) => {
+      if (this.listWatchers.has(watcher)) listener(states);
+    });
+    return () => this.listWatchers.delete(watcher);
+  }
+
   private notifyWatchers(): void {
+    for (const watcher of this.listWatchers) {
+      void this.states(watcher.name).then((states) => {
+        if (this.listWatchers.has(watcher)) watcher.listener(states);
+      });
+    }
     for (const [key, listeners] of this.watchers) {
       void this.state(key).then((state) => {
         for (const listener of listeners) listener(state);
