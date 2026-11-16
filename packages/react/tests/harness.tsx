@@ -1,11 +1,10 @@
 import { blobFields, defineCollection, InMemoryAdapter, Store } from '@a16n/pact-client';
-import { QueryClient, QueryClientProvider, type QueryKey } from '@tanstack/react-query';
 import { cleanup, render } from '@testing-library/react';
 import { Component, type ReactNode, StrictMode, Suspense } from 'react';
 import { afterEach, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
 import { FakeServer } from '../../client/tests/fakeServer';
-import { PactProvider } from '../src';
+import { createPactHooks, PactProvider } from '../src';
 
 export const APP_ID = 'app';
 export const REDIRECT_URI = 'https://app.test/callback';
@@ -93,34 +92,31 @@ export async function signedInStore(
   return store;
 }
 
+export const { usePactStore, useLiveQuery, useDocument, useCollection } =
+  createPactHooks<TestStore>();
+
 export function renderWithPact(
   ui: ReactNode,
-  opts: {
-    open: () => Promise<TestStore>;
-    queryKeys?: Record<string, readonly QueryKey[]>;
-    strict?: boolean;
-    boundary?: boolean;
-  }
+  opts: { open: () => Promise<TestStore>; strict?: boolean; boundary?: boolean }
 ) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const provider = (
     <PactProvider
       open={opts.open}
       appId={APP_ID}
       deviceName='Test device'
       redirectUri={REDIRECT_URI}
-      queryKeys={opts.queryKeys}
     >
-      <Suspense fallback={null}>{ui}</Suspense>
+      <ErrorBoundary>
+        <Suspense fallback={<p>loading</p>}>{ui}</Suspense>
+      </ErrorBoundary>
     </PactProvider>
   );
-  const tree = (
-    <QueryClientProvider client={queryClient}>
-      {opts.boundary ? <ErrorBoundary>{provider}</ErrorBoundary> : provider}
-    </QueryClientProvider>
-  );
-  const result = render(opts.strict ? <StrictMode>{tree}</StrictMode> : tree);
-  return { ...result, queryClient };
+  const tree = opts.boundary ? <ErrorBoundary>{provider}</ErrorBoundary> : provider;
+  return render(opts.strict ? <StrictMode>{tree}</StrictMode> : tree);
+}
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {

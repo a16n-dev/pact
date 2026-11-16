@@ -1,12 +1,10 @@
-export { PactProvider, usePactStore, type PactProviderProps } from './PactProvider';
+export { PactProvider, type PactProviderProps } from './PactProvider';
+export { createPactHooks, useSyncConnection, type LiveQuery } from './liveHooks';
 export {
   SignInError,
-  useBeginSignIn,
-  useCompleteSignIn,
-  useSignOut,
-  useSyncConnection,
-  useSyncNow,
+  usePactSync,
   useSyncOnForeground,
+  type PactSync,
   type SignInFailureReason,
 } from './syncHooks';
 export { useSignInCallback, type SignInCallbackStatus } from './useSignInCallback';

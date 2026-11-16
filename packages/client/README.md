@@ -110,7 +110,7 @@ store.on('signedOut', () => showSignIn());
 
 `normaliseServerUrl(input)` turns what a user typed into a server URL for `beginSignIn`, taking a bare host such as `sync.example.com` to mean `https://`.
 
-In React with TanStack Query, [`@a16n/pact-react`](../react) wraps sign-in and sync in hooks.
+In React, [`@a16n/pact-react`](../react) provides live reads and wraps sign-in and sync in hooks.
 
 ## Collaborative text
 

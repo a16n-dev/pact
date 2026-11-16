@@ -1,7 +1,7 @@
 {
   "name": "@a16n/pact-react",
   "version": "0.1.0",
-  "description": "React bindings for @a16n/pact-client with TanStack Query: a store provider and sign-in and sync hooks.",
+  "description": "React bindings for @a16n/pact-client: a store provider, live reads, and sign-in and sync hooks.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -42,12 +42,10 @@
   },
   "peerDependencies": {
     "@a16n/pact-client": "workspace:^",
-    "@tanstack/react-query": "^5",
     "react": ">=19"
   },
   "devDependencies": {
     "@a16n/pact-client": "workspace:*",
-    "@tanstack/react-query": "catalog:",
     "@testing-library/react": "catalog:",
     "@types/react": "catalog:",
     "jsdom": "catalog:",

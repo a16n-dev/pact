@@ -3,12 +3,9 @@ import { Suspense, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   SignInError,
-  useBeginSignIn,
-  useCompleteSignIn,
+  usePactSync,
   useSignInCallback,
-  useSignOut,
   useSyncConnection,
-  useSyncNow,
   useSyncOnForeground,
 } from '../src';
 import {
@@ -38,25 +35,52 @@ async function withHook<T>(store: TestStore, hook: () => T) {
       <Probe />
       <Connection />
     </>,
-    { open: async () => store, queryKeys: {} }
+    { open: async () => store }
   );
   await screen.findByText(/connected|signed out/);
   return { ...rendered, result: result as { current: T } };
 }
 
-describe('sync hooks', () => {
-  it('useSyncConnection reads the connection from the store', async () => {
-    await withHook(await signedInStore('Laptop'), () => null);
-    expect(screen.getByText('connected: Laptop')).toBeTruthy();
+describe('useSyncConnection', () => {
+  it('follows sign-in, sign-out and a sign-out by the server', async () => {
+    const store = await createStore();
+    const { result } = await withHook(store, usePactSync);
+    expect(screen.getByText('signed out')).toBeTruthy();
+
+    await act(async () => result.current.completeSignIn(await authorize(store, 'Laptop')));
+    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
+
+    await act(() => result.current.signOut());
+    expect(await screen.findByText('signed out')).toBeTruthy();
+    expect(await store.sync.credentials()).toBeNull();
+
+    await act(async () => result.current.completeSignIn(await authorize(store, 'Laptop')));
+    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
+    server.revoke((await store.sync.credentials())!.token);
+    expect(await screen.findByText('signed out')).toBeTruthy();
+  });
+});
+
+describe('usePactSync', () => {
+  it('keeps the same functions across renders', async () => {
+    const store = await createStore();
+    const seen = new Set<unknown>();
+    let rerender: (n: number) => void = () => {};
+    await withHook(store, () => {
+      const [, setCount] = useState(0);
+      rerender = setCount;
+      const sync = usePactSync();
+      seen.add(sync.completeSignIn);
+      return sync;
+    });
+    await act(async () => rerender(1));
+    expect(seen.size).toBe(1);
   });
 
-  it('useBeginSignIn normalises the URL and signs in with the provider config', async () => {
+  it('beginSignIn normalises the URL and signs in with the provider config', async () => {
     const store = await createStore();
-    const { result } = await withHook(store, useBeginSignIn);
-    let authorizeUrl = '';
-    await act(async () => {
-      authorizeUrl = await result.current.mutateAsync('sync.test');
-    });
+    const { result } = await withHook(store, usePactSync);
+    const authorizeUrl = await result.current.beginSignIn('sync.test');
     const params = new URL(authorizeUrl).searchParams;
     expect(authorizeUrl.startsWith(`${server.origin}/oauth/authorize`)).toBe(true);
     expect(params.get('app_id')).toBe(APP_ID);
@@ -64,7 +88,7 @@ describe('sync hooks', () => {
     expect(params.get('redirect_uri')).toBe(REDIRECT_URI);
   });
 
-  it('useCompleteSignIn pushes, then pulls, then syncs blobs and refreshes every query', async () => {
+  it('completeSignIn pushes, then pulls, then syncs blobs', async () => {
     const other = await signedInStore('Phone', { blobs: true });
     const remoteHash = await other.blobs.write(new TextEncoder().encode('remote'), 'image/png');
     await other.collection('notes').create({ id: 'nt-remote', title: 'r', imageHash: remoteHash });
@@ -73,10 +97,8 @@ describe('sync hooks', () => {
     const store = await createStore({ blobs: true });
     const localHash = await store.blobs.write(new TextEncoder().encode('local'), 'image/png');
     await store.collection('notes').create({ id: 'nt-local', title: 'l', imageHash: localHash });
-    const { result, queryClient } = await withHook(store, useCompleteSignIn);
-    expect(screen.getByText('signed out')).toBeTruthy();
+    const { result } = await withHook(store, usePactSync);
     const redirect = await authorize(store, 'Laptop');
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     const calls: string[] = [];
     const track = <T extends object>(name: string, target: T, method: keyof T & string) => {
       const original = target[method] as () => Promise<unknown>;
@@ -90,61 +112,47 @@ describe('sync hooks', () => {
     track('blobs.push', store.blobs, 'push');
     track('blobs.pullReferenced', store.blobs, 'pullReferenced');
 
-    await act(() => result.current.mutateAsync(redirect));
+    await act(() => result.current.completeSignIn(redirect));
 
+    expect(calls).toEqual(['sync.push', 'sync.pull', 'blobs.push', 'blobs.pullReferenced']);
     expect(server.versionsOf(APP_ID, 'notes', 'nt-local')).toHaveLength(1);
     expect((await store.collection('notes').get('nt-remote'))?.title).toBe('r');
     expect(server.requests).toContainEqual({ method: 'PUT', path: `/sync/blobs/${localHash}` });
     expect(await store.blobs.has(remoteHash)).toBe(true);
-    expect(calls).toEqual(['sync.push', 'sync.pull', 'blobs.push', 'blobs.pullReferenced']);
-    expect(invalidate).toHaveBeenCalledWith();
-    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
     other.dispose();
   });
 
-  it('useCompleteSignIn resolves when sign-in succeeds but the first sync fails', async () => {
+  it('completeSignIn resolves when sign-in succeeds but the first sync fails', async () => {
     const store = await createStore();
-    vi.spyOn(store.sync, 'pull').mockRejectedValue(new Error('offline'));
-    const { result, queryClient } = await withHook(store, useCompleteSignIn);
+    await store.collection('notes').create({ title: 'refused' });
+    const { result } = await withHook(store, usePactSync);
     const redirect = await authorize(store, 'Laptop');
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
-    await act(() => result.current.mutateAsync(redirect));
-    await waitFor(() => expect(result.current.status).toBe('success'));
-    expect(invalidate).toHaveBeenCalledWith();
+    server.maxPushDocuments = 0;
+    await act(() => result.current.completeSignIn(redirect));
     expect(await screen.findByText('connected: Laptop')).toBeTruthy();
+    expect(await store.sync.pending()).toBe(1);
   });
 
-  it('useCompleteSignIn rejects with the reason the server gave', async () => {
+  it('completeSignIn rejects with the reason the server gave', async () => {
     const store = await createStore();
-    const { result } = await withHook(store, useCompleteSignIn);
+    const { result } = await withHook(store, usePactSync);
     const { code } = await authorize(store, 'Laptop');
-    let error: unknown;
-    await act(async () => {
-      error = await result.current.mutateAsync({ code, state: 'stale' }).catch((e) => e);
-    });
+    const error = await result.current.completeSignIn({ code, state: 'stale' }).catch((e) => e);
     expect(error).toBeInstanceOf(SignInError);
     expect((error as SignInError).reason).toBe('state');
     expect(await store.sync.connection()).toBeNull();
   });
 
-  it('useSignOut signs the store out and refreshes the connection', async () => {
-    const store = await signedInStore('Laptop');
-    const { result } = await withHook(store, useSignOut);
-    await act(() => result.current.mutateAsync());
-    expect(await store.sync.credentials()).toBeNull();
-    expect(await screen.findByText('signed out')).toBeTruthy();
-  });
-
-  it('useSyncNow drains the outbox and pulls', async () => {
+  it('syncNow drains the outbox and pulls', async () => {
     const store = await signedInStore('Laptop');
     const other = await signedInStore('Phone');
-    const { result } = await withHook(store, useSyncNow);
+    const { result } = await withHook(store, usePactSync);
     server.offline = true;
     await store.collection('notes').create({ id: 'nt-1', title: 'mine' });
     server.offline = false;
     await other.collection('notes').create({ id: 'nt-2', title: 'theirs' });
     await other.sync.drain();
-    await act(() => result.current.mutateAsync());
+    await act(() => result.current.syncNow());
     expect(await store.sync.pending()).toBe(0);
     expect((await store.collection('notes').get('nt-2'))?.title).toBe('theirs');
     other.dispose();
@@ -154,7 +162,7 @@ describe('sync hooks', () => {
 describe('useSyncOnForeground', () => {
   it('syncs only when the app returns to the foreground', async () => {
     const store = await createStore();
-    const syncNow = vi.spyOn(store.sync, 'syncNow').mockResolvedValue();
+    const syncNow = vi.spyOn(store.sync, 'syncNow');
     let report: (foreground: boolean) => void = () => {};
     const unsubscribe = vi.fn();
     const subscribe = (onChange: (foreground: boolean) => void) => {
@@ -179,7 +187,7 @@ describe('useSyncOnForeground', () => {
 
   it('remembers the background across re-renders with an inline subscribe', async () => {
     const store = await createStore();
-    const syncNow = vi.spyOn(store.sync, 'syncNow').mockResolvedValue();
+    const syncNow = vi.spyOn(store.sync, 'syncNow');
     let report: (foreground: boolean) => void = () => {};
     let subscriptions = 0;
     let rerender: (n: number) => void = () => {};
@@ -196,15 +204,16 @@ describe('useSyncOnForeground', () => {
     syncNow.mockClear();
 
     report(false);
-    act(() => rerender(1));
+    await act(async () => rerender(1));
     report(true);
     expect(syncNow).toHaveBeenCalledTimes(1);
     expect(subscriptions).toBe(1);
   });
 
   it('ignores a failed sync', async () => {
-    const store = await createStore();
-    const syncNow = vi.spyOn(store.sync, 'syncNow').mockRejectedValue(new Error('offline'));
+    const store = await signedInStore('Laptop');
+    server.offline = true;
+    const syncNow = vi.spyOn(store.sync, 'syncNow');
     let report: (foreground: boolean) => void = () => {};
     await withHook(store, () =>
       useSyncOnForeground((onChange) => {
@@ -249,8 +258,10 @@ describe('useSignInCallback', () => {
 
   it('reports success when sign-in succeeds but the first sync fails', async () => {
     const store = await createStore();
-    vi.spyOn(store.sync, 'push').mockRejectedValue(new Error('offline'));
-    renderCallback(store, await authorize(store, 'Laptop'));
+    await store.collection('notes').create({ title: 'refused' });
+    const redirect = await authorize(store, 'Laptop');
+    server.maxPushDocuments = 0;
+    renderCallback(store, redirect);
     expect(await screen.findByText('status: success')).toBeTruthy();
     expect(await screen.findByText('connected: Laptop')).toBeTruthy();
   });

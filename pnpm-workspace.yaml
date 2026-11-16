@@ -13,7 +13,6 @@ allowBuilds:
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.12
   '@cloudflare/workers-types': ^4
-  '@tanstack/react-query': ^5
   '@testing-library/react': ^16
   '@types/node': ^22
   '@types/react': ^19

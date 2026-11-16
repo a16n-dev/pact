@@ -13,9 +13,6 @@ catalogs:
     '@cloudflare/workers-types':
       specifier: ^4
       version: 4.20260702.1
-    '@tanstack/react-query':
-      specifier: ^5
-      version: 5.107.1
     '@testing-library/react':
       specifier: ^16
       version: 16.3.3
@@ -167,9 +164,6 @@ importers:
       '@a16n/pact-client':
         specifier: workspace:*
         version: link:../client
-      '@tanstack/react-query':
-        specifier: 'catalog:'
-        version: 5.107.1(@types/react@19.3.0)(react@19.3.1)
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -1356,18 +1350,6 @@ packages:
 
   '@speed-highlight/core@1.2.24':
     resolution: {integrity: sha512-qeW2e1l78afw8VhRPfPQ1Gjj+KU5XFQ/OFV5ti6eTa9bruO7mJyZtA4vw0ofqmA3tKCkROE9xLk3VZoeRc98nw==}
-
-  '@tanstack/query-core@5.107.1':
-    resolution: {integrity: sha512-PSyAik11oQBEVOiVy5hjZWHmoUqOXqK1WYy4v55mcxozEfKaQgpUMsgnXhWjuESzSht8JfzqMS1m6M/9CpNgvg==}
-
-  '@tanstack/react-query@5.107.1':
-    resolution: {integrity: sha512-udCOOLp3ZAheUrIHLCe+ZZge6nr2ZUrGMSWcCuXsjY1Bf2JeeE09oxst97PILiCY6N8xo/7bIo3Hvz13zh06FA==}
-    peerDependencies:
-      '@types/react': ^18 || ^19
-      react: ^18 || ^19
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -3326,15 +3308,6 @@ snapshots:
   '@sindresorhus/is@7.2.0': {}
 
   '@speed-highlight/core@1.2.24': {}
-
-  '@tanstack/query-core@5.107.1': {}
-
-  '@tanstack/react-query@5.107.1(@types/react@19.3.0)(react@19.3.1)':
-    dependencies:
-      '@tanstack/query-core': 5.107.1
-      react: 19.3.1
-    optionalDependencies:
-      '@types/react': 19.3.0
 
   '@testing-library/dom@10.4.2':
     dependencies:

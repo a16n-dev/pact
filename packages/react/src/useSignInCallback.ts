@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { useCompleteSignIn } from './syncHooks';
+import { useEffect, useRef, useState } from 'react';
+import { usePactSync } from './syncHooks';
 
 export type SignInCallbackStatus =
   | { status: 'idle' }
@@ -17,18 +17,30 @@ export function useSignInCallback(params: {
   state: string | null | undefined;
 }): SignInCallbackStatus {
   const { code, state } = params;
-  const { mutate, status, error } = useCompleteSignIn();
+  const { completeSignIn } = usePactSync();
+  const [settled, setSettled] = useState<{ code: string; result: SignInCallbackStatus } | null>(
+    null
+  );
   // The code is single-use, and StrictMode runs this effect twice.
   const sentCode = useRef<string | null>(null);
 
   useEffect(() => {
     if (!code || !state || sentCode.current === code) return;
     sentCode.current = code;
-    mutate({ code, state });
-  }, [code, state, mutate]);
+    completeSignIn({ code, state }).then(
+      () => setSettled({ code, result: { status: 'success' } }),
+      (error: unknown) =>
+        setSettled({
+          code,
+          result: {
+            status: 'error',
+            error: error instanceof Error ? error : new Error(String(error)),
+          },
+        })
+    );
+  }, [code, state, completeSignIn]);
 
   if (!code || !state) return { status: 'idle' };
-  if (status === 'error') return { status, error };
-  if (status === 'success') return { status };
+  if (settled?.code === code) return settled.result;
   return { status: 'pending' };
 }

@@ -1,25 +1,23 @@
 # Pact React
 
-React bindings for [`@a16n/pact-client`](../client) with [TanStack Query](https://tanstack.com/query): a provider that opens the store and keeps the query cache in step with it, and hooks for sign-in and sync. It renders no UI and works on web and React Native alike; anything platform-specific is passed in.
+React bindings for [`@a16n/pact-client`](../client): a provider that opens the store, live reads that update whenever the store changes, and hooks for sign-in and sync. It renders no UI and works on web and React Native alike; anything platform-specific is passed in.
 
 ```
-pnpm add @a16n/pact-react @a16n/pact-client @tanstack/react-query
+pnpm add @a16n/pact-react @a16n/pact-client
 ```
 
 The package is not published to npm yet.
 
-Reading and writing documents stays in your own queries and mutations.
-
 ## Setup
 
-Wrap the app in `PactProvider`, inside a `QueryClientProvider`. It calls `open` once, renders its children when the store is open, syncs once, and disposes the store on unmount.
+Wrap the app in `PactProvider`. It calls `open` once, renders its children when the store is open, syncs once, and disposes the store on unmount. Create the hooks typed to your store once, with `createPactHooks`.
 
 ```tsx
 import { Store } from '@a16n/pact-client';
-import { PactProvider, usePactStore } from '@a16n/pact-react';
+import { createPactHooks, PactProvider } from '@a16n/pact-react';
 
 const collections = [todos, lists] as const;
-export type AppStore = Store<typeof collections>;
+type AppStore = Store<typeof collections>;
 
 async function openStore(): Promise<AppStore> {
   const store = await Store.create({ adapter: createAdapter(), collections });
@@ -27,35 +25,69 @@ async function openStore(): Promise<AppStore> {
   return store;
 }
 
-export const useAppStore = () => usePactStore<AppStore>();
+export const { usePactStore, useLiveQuery, useDocument, useCollection } =
+  createPactHooks<AppStore>();
 
-<QueryClientProvider client={queryClient}>
-  <PactProvider
-    open={openStore}
-    appId='myapp'
-    deviceName={deviceName}
-    redirectUri='https://myapp.example.com/auth/callback'
-    queryKeys={{ todos: [['todos'], ['todo']], lists: [['lists']] }}
-  >
-    <App />
-  </PactProvider>
-</QueryClientProvider>;
+<PactProvider
+  open={openStore}
+  appId='myapp'
+  deviceName={deviceName}
+  redirectUri='https://myapp.example.com/auth/callback'
+>
+  <App />
+</PactProvider>;
 ```
 
-When the store reports a change, the provider invalidates the query keys mapped to that collection, batching changes that arrive together. Besides your collections, the store reports `_outbox` when the outbox changes and `_blobs` when local blobs change: an app that renders blob URIs should map `_blobs` to those queries. Without `queryKeys`, every change invalidates every query, so each local write invalidates everything twice, once for the write and once when the outbox clears. A sign-out from anywhere, such as a revoked token, invalidates every query.
+On React Native, `redirectUri` is your app's deep link, such as `myapp://auth/callback`.
+
+## Live reads
+
+Live reads suspend until their first result, so render them inside a `Suspense` boundary. They re-render when a collection they read changes, whether from a local write, a pull or realtime. A failed read throws to the nearest error boundary.
+
+```tsx
+function TodoList({ listId }: { listId: string }) {
+  const list = useDocument('lists', listId); // null when missing or deleted
+  const todos = useLiveQuery({
+    key: ['todos-in-list', listId],
+    collections: ['todos'],
+    read: (store) => store.collection('todos').listByIndex('byList', listId),
+  });
+  return (
+    <section>
+      <h2>{list?.name}</h2>
+      {todos.map((todo) => (
+        <TodoRow key={todo.id} todo={todo} />
+      ))}
+    </section>
+  );
+}
+```
+
+- `key` identifies the read: components using the same key share one read and one result.
+- `collections` lists what the read depends on. Besides your collections, the store reports `_blobs` when local blobs change, so a read that renders blob URIs should name it.
+- `useCollection(name)` is every live document in a collection.
+
+Writes go straight to the store, e.g. `usePactStore().collection('todos').create(...)`; the reads that depend on them update on their own.
 
 ## Signing in
 
+`usePactSync()` returns stable async functions: `beginSignIn(url)`, `completeSignIn({ code, state })`, `signOut()` and `syncNow()`. They hold no pending or error state; use a transition for that.
+
 ```tsx
 const connection = useSyncConnection(); // suspends; { url, deviceName } or null
-const beginSignIn = useBeginSignIn();
-const signOut = useSignOut();
+const { beginSignIn, signOut } = usePactSync();
+const [isPending, startTransition] = useTransition();
 
-const authorizeUrl = await beginSignIn.mutateAsync('sync.example.com');
-// open authorizeUrl; the server sends the browser back to redirectUri
+const connect = (url: string) =>
+  startTransition(async () => {
+    const authorizeUrl = await beginSignIn(url); // a bare host means https://
+    openBrowser(authorizeUrl);
+  });
 ```
 
-On the page or screen at `redirectUri`, `useSignInCallback` finishes sign-in once per code, even under StrictMode, then pushes everything local and pulls everything remote, blobs included. It reports success once the device is signed in, even if that first sync fails; later syncs catch up:
+`useSyncConnection` follows sign-in and sign-out, including a sign-out the server forces by revoking the token.
+
+On the page or screen at `redirectUri`, `useSignInCallback` finishes sign-in once per code, even under StrictMode, then pushes everything local and pulls everything remote, blobs included. It reports success once the device is signed in, even if that first sync fails; later syncs catch up.
 
 ```tsx
 const result = useSignInCallback({ code, state }); // idle | pending | success | error
@@ -66,11 +98,11 @@ if (result.status === 'error') {
 
 On the web, once it succeeds, remove `code` and `state` from the URL or navigate away: a reload would send the used code again and report an error although the device is signed in.
 
-`SignInError.reason` is `state` or `code` for a stale or reused link, `network` when the server could not be reached, and `server` when it failed. `useCompleteSignIn` is the same as a mutation, for apps that receive the redirect elsewhere.
+`SignInError.reason` is `state` or `code` for a stale or reused link, `network` when the server could not be reached, and `server` when it failed.
 
 ## Syncing
 
-`useSyncNow()` is a mutation for pull-to-refresh and the like. `useSyncOnForeground(subscribe)` syncs whenever the app returns to the foreground. `subscribe` reports whether the app is in the foreground and returns an unsubscribe. Only the first `subscribe` is used while the component is mounted.
+Call `syncNow()` from `usePactSync` for pull-to-refresh, inside a transition for a pending state. `useSyncOnForeground(subscribe)` syncs whenever the app returns to the foreground. `subscribe` reports whether the app is in the foreground and returns an unsubscribe. Only the first `subscribe` is used while the component is mounted.
 
 On the web:
 
