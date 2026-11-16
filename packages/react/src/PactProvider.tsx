@@ -72,7 +72,7 @@ export function PactProvider({
       opened
         ? {
             ...opened,
-            sync: createPactSync(opened.store, opened.cache, { appId, deviceName, redirectUri }),
+            sync: createPactSync(opened.store, { appId, deviceName, redirectUri }),
           }
         : null,
     [opened, appId, deviceName, redirectUri]

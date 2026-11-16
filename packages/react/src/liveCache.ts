@@ -1,12 +1,12 @@
 import type { Store } from '@a16n/pact-client';
 
 const CHANGE_BATCH_DELAY_MS = 50;
-// Long enough for a component suspended on a first read to commit and
-// subscribe after the read settles, including React's fallback throttling.
-const UNUSED_ENTRY_TTL_MS = 1_000;
-
-// Not a collection: reported when this device signs in or out.
-export const SESSION = '_session';
+// After its last subscriber leaves, so a remount soon after reuses the result.
+const UNSUBSCRIBED_ENTRY_TTL_MS = 1_000;
+// A render that has not committed yet holds entries no one has subscribed to;
+// Suspense can hold it back while later reads load, so this is generous, and
+// it still bounds an abandoned render.
+const NEVER_SUBSCRIBED_ENTRY_TTL_MS = 60_000;
 
 type LiveSnapshot<T> = { status: 'ok'; value: T } | { status: 'error'; error: unknown };
 
@@ -19,15 +19,17 @@ class LiveEntry<T> {
   readonly collections: ReadonlySet<string>;
   // Resolves once the first read settles, after which `snapshot` is set.
   readonly loaded: Promise<void>;
-  snapshot!: LiveSnapshot<T>;
+  snapshot: LiveSnapshot<T> | undefined;
   dropped = false;
+  running = false;
+  // Changed while a read ran: another read follows, and the earlier result is
+  // shown only when nothing has been shown yet.
+  stale = false;
   private readonly read: () => Promise<T>;
   private readonly cache: LiveCache;
   private readonly listeners = new Set<() => void>();
   private markLoaded!: () => void;
-  private running = false;
-  // Changed while a read ran: read again after it.
-  private stale = false;
+  private everSubscribed = false;
   // Changed while nothing used it: read again when something subscribes.
   private outdated = false;
   private dropTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -50,20 +52,36 @@ class LiveEntry<T> {
     });
   }
 
+  get failed(): boolean {
+    return this.snapshot?.status === 'error';
+  }
+
+  get idle(): boolean {
+    return this.listeners.size === 0 && !this.running;
+  }
+
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
+    this.everSubscribed = true;
     clearTimeout(this.dropTimeout);
     // A render can commit after its entry was dropped, such as when a
     // sibling held the commit back; subscribing brings the entry back.
-    if (this.dropped) this.cache.revive(this);
-    if (this.outdated) this.refresh();
+    if (this.dropped) {
+      this.cache.revive(this);
+    } else if (this.outdated) {
+      this.refresh();
+    }
     return () => {
       this.listeners.delete(listener);
-      this.dropWhenUnused();
+      if (this.failed && this.idle) {
+        this.cache.drop(this);
+      } else {
+        this.dropWhenUnused();
+      }
     };
   };
 
-  readonly getSnapshot = (): LiveSnapshot<T> => this.snapshot;
+  readonly getSnapshot = (): LiveSnapshot<T> | undefined => this.snapshot;
 
   changed(): void {
     if (this.listeners.size > 0 || this.running) {
@@ -99,6 +117,7 @@ class LiveEntry<T> {
       } catch (error) {
         next = { status: 'error', error };
       }
+      if (this.stale && this.snapshot) continue;
       this.snapshot = next;
       this.markLoaded();
       for (const listener of this.listeners) listener();
@@ -108,9 +127,12 @@ class LiveEntry<T> {
   }
 
   private dropWhenUnused(): void {
-    if (this.listeners.size > 0 || this.running || this.dropped) return;
+    if (!this.idle || this.dropped) return;
     clearTimeout(this.dropTimeout);
-    this.dropTimeout = setTimeout(() => this.cache.drop(this), UNUSED_ENTRY_TTL_MS);
+    this.dropTimeout = setTimeout(
+      () => this.cache.drop(this),
+      this.everSubscribed ? UNSUBSCRIBED_ENTRY_TTL_MS : NEVER_SUBSCRIBED_ENTRY_TTL_MS
+    );
   }
 }
 
@@ -122,14 +144,11 @@ export class LiveCache {
   private readonly live = new Set<LiveEntry<unknown>>();
   private readonly changes = new Set<string>();
   private flushTimeout: ReturnType<typeof setTimeout> | undefined;
-  private readonly unsubscribes: Array<() => void>;
+  private readonly unsubscribe: () => void;
   private disposed = false;
 
   constructor(store: Store<any>) {
-    this.unsubscribes = [
-      store.on('change', (collection) => this.notify(collection)),
-      store.on('signedOut', () => this.notify(SESSION)),
-    ];
+    this.unsubscribe = store.on('change', (collection) => this.notify(collection));
   }
 
   entry<T>(key: string, collections: readonly string[], read: () => Promise<T>): LiveEntry<T> {
@@ -141,9 +160,13 @@ export class LiveCache {
     return created;
   }
 
-  notify(collection: string): void {
-    this.changes.add(collection);
-    this.flushTimeout ??= setTimeout(() => this.flush(), CHANGE_BATCH_DELAY_MS);
+  // Called once a render has thrown an entry's error: the render that retries
+  // in the same task still sees it, and a later one, such as an error
+  // boundary's reset, reads again.
+  retireAfterThrow(entry: LiveEntry<any>): void {
+    setTimeout(() => {
+      if (entry.failed && entry.idle) this.drop(entry);
+    }, 0);
   }
 
   drop(entry: LiveEntry<any>): void {
@@ -162,7 +185,7 @@ export class LiveCache {
   dispose(): void {
     this.disposed = true;
     clearTimeout(this.flushTimeout);
-    for (const unsubscribe of this.unsubscribes) unsubscribe();
+    this.unsubscribe();
     for (const entry of this.live) entry.drop();
     this.live.clear();
     this.byKey.clear();
@@ -171,6 +194,16 @@ export class LiveCache {
   private add(entry: LiveEntry<unknown>): void {
     this.live.add(entry);
     if (!this.byKey.has(entry.key)) this.byKey.set(entry.key, entry);
+  }
+
+  private notify(collection: string): void {
+    // A read already running may have read before this change, so its result
+    // must not be shown; marking it now, not at the batch, covers that.
+    for (const entry of this.live) {
+      if (entry.running && entry.collections.has(collection)) entry.stale = true;
+    }
+    this.changes.add(collection);
+    this.flushTimeout ??= setTimeout(() => this.flush(), CHANGE_BATCH_DELAY_MS);
   }
 
   private flush(): void {

@@ -1,6 +1,5 @@
 import { normaliseServerUrl, type SignInResult, type Store } from '@a16n/pact-client';
 import { useEffect, useRef } from 'react';
-import { type LiveCache, SESSION } from './liveCache';
 import { usePactContext } from './context';
 
 export type SignInFailureReason = Extract<SignInResult, { ok: false }>['reason'];
@@ -39,7 +38,6 @@ export type PactSync = {
 
 export function createPactSync(
   store: Store<any>,
-  cache: LiveCache,
   signIn: { appId: string; deviceName: string; redirectUri: string }
 ): PactSync {
   return {
@@ -53,7 +51,6 @@ export function createPactSync(
     completeSignIn: async (callback) => {
       const result = await store.sync.completeSignIn(callback);
       if (!result.ok) throw new SignInError(result.reason);
-      cache.notify(SESSION);
       try {
         await store.sync.push();
         await store.sync.pull();
@@ -65,10 +62,7 @@ export function createPactSync(
         // The device is signed in by now; writes stay in the outbox for the next sync.
       }
     },
-    signOut: async () => {
-      await store.sync.signOut();
-      cache.notify(SESSION);
-    },
+    signOut: () => store.sync.signOut(),
     syncNow: () => store.sync.syncNow(),
   };
 }

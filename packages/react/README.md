@@ -46,11 +46,16 @@ Live reads suspend until their first result, so render them inside a `Suspense` 
 
 ```tsx
 function TodoList({ listId }: { listId: string }) {
-  const list = useDocument('lists', listId); // null when missing or deleted
-  const todos = useLiveQuery({
-    key: ['todos-in-list', listId],
-    collections: ['todos'],
-    read: (store) => store.collection('todos').listByIndex('byList', listId),
+  const { list, todos } = useLiveQuery({
+    key: ['todo-list', listId],
+    collections: ['lists', 'todos'],
+    read: async (store) => {
+      const [list, todos] = await Promise.all([
+        store.collection('lists').get(listId),
+        store.collection('todos').listByIndex('byList', listId),
+      ]);
+      return { list, todos };
+    },
   });
   return (
     <section>
@@ -63,9 +68,11 @@ function TodoList({ listId }: { listId: string }) {
 }
 ```
 
-- `key` identifies the read: components using the same key share one read and one result.
+- `key` identifies the read: components using the same key share one read and one result. It is a list of strings, numbers, booleans and nulls, and every input `read` uses, such as `listId` here, must be in it.
 - `collections` lists what the read depends on. Besides your collections, the store reports `_blobs` when local blobs change, so a read that renders blob URIs should name it.
-- `useCollection(name)` is every live document in a collection.
+- `useDocument(name, id)` is one document, or `null` when it is missing or deleted, and `useCollection(name)` is every live document in a collection.
+- Each live read in a component suspends in turn, so a second one only starts once the first has loaded. Read what a component needs in one `useLiveQuery`, as above, or split the reads across sibling components.
+- A new key, such as a different `listId`, suspends while it loads and shows the nearest `Suspense` fallback. To keep showing the previous result meanwhile, change it inside a transition or pass it through `useDeferredValue`.
 
 Writes go straight to the store, e.g. `usePactStore().collection('todos').create(...)`; the reads that depend on them update on their own.
 
@@ -85,7 +92,7 @@ const connect = (url: string) =>
   });
 ```
 
-`useSyncConnection` follows sign-in and sign-out, including a sign-out the server forces by revoking the token.
+`useSyncConnection` follows sign-in and sign-out, whether through these functions or on the store directly (such as a deep-link handler outside React), including a sign-out the server forces by revoking the token.
 
 On the page or screen at `redirectUri`, `useSignInCallback` finishes sign-in once per code, even under StrictMode, then pushes everything local and pulls everything remote, blobs included. It reports success once the device is signed in, even if that first sync fails; later syncs catch up.
 

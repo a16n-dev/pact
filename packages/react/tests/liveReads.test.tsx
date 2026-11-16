@@ -12,8 +12,10 @@ import {
   type TestStore,
 } from './harness';
 
-// Longer than the cache keeps an entry nothing uses.
-const PAST_UNUSED_TTL_MS = 1_100;
+// Past the grace an entry gets after its last subscriber leaves.
+const PAST_UNSUBSCRIBED_TTL_MS = 1_100;
+// Past the cap on an entry no component ever subscribed to.
+const PAST_NEVER_SUBSCRIBED_TTL_MS = 61_000;
 
 function NoteTitles() {
   const notes = useCollection('notes');
@@ -28,15 +30,22 @@ function deferred() {
 
 // A note count whose reads are counted and can be held at the first await.
 function countedRead() {
-  const counter = { reads: 0, hold: null as Promise<void> | null };
+  const counter = {
+    reads: 0,
+    settled: 0,
+    hold: null as Promise<void> | null,
+    rendered: [] as number[],
+  };
   const read = async (store: TestStore) => {
     counter.reads += 1;
     const notes = await store.collection('notes').list();
     if (counter.hold) await counter.hold;
+    counter.settled += 1;
     return notes.length;
   };
   function NoteCount({ label = 'count' }: { label?: string }) {
     const count = useLiveQuery({ key: ['note-count'], collections: ['notes'], read });
+    if (counter.rendered.at(-1) !== count) counter.rendered.push(count);
     return (
       <p>
         {label}: {count}
@@ -44,6 +53,12 @@ function countedRead() {
     );
   }
   return { counter, NoteCount };
+}
+
+// Lets microtask-only work finish while timers are faked.
+async function settle(done: () => boolean) {
+  for (let i = 0; i < 10_000 && !done(); i++) await Promise.resolve();
+  if (!done()) throw new Error('did not settle');
 }
 
 function Toggle({ children }: { children: ReactNode }) {
@@ -167,7 +182,7 @@ describe('live reads', () => {
     expect(await screen.findByText('count: 2')).toBeTruthy();
     await sleep(100);
     expect(counter.reads).toBe(3);
-    expect(screen.getByText('count: 2')).toBeTruthy();
+    expect(counter.rendered).toEqual([0, 2]);
   });
 
   it('stops reading when nothing uses it', async () => {
@@ -193,14 +208,36 @@ describe('live reads', () => {
     counter.hold = hold.promise;
     renderWithPact(<NoteCount />, { open: async () => store });
     await waitFor(() => expect(counter.reads).toBe(1));
-    await sleep(PAST_UNUSED_TTL_MS);
+    await sleep(PAST_UNSUBSCRIBED_TTL_MS);
     counter.hold = null;
     hold.resolve();
     expect(await screen.findByText('count: 0')).toBeTruthy();
     expect(counter.reads).toBe(1);
   });
 
-  it('drops a read whose suspended component never mounted, after a grace period', async () => {
+  it('drops a read a few moments after its last subscriber leaves', async () => {
+    const store = await createStore();
+    const { counter, NoteCount } = countedRead();
+    renderWithPact(
+      <Toggle>
+        <NoteCount />
+      </Toggle>,
+      { open: async () => store }
+    );
+    await screen.findByText('count: 0');
+    await act(async () => screen.getByText('hide').click());
+    await act(async () => screen.getByText('show').click());
+    await screen.findByText('count: 0');
+    expect(counter.reads).toBe(1);
+
+    await act(async () => screen.getByText('hide').click());
+    await sleep(PAST_UNSUBSCRIBED_TTL_MS);
+    await act(async () => screen.getByText('show').click());
+    await screen.findByText('count: 0');
+    expect(counter.reads).toBe(2);
+  });
+
+  it('keeps a read whose component never mounted past the short grace', async () => {
     const store = await createStore();
     const { counter, NoteCount } = countedRead();
     const hold = deferred();
@@ -213,15 +250,36 @@ describe('live reads', () => {
     );
     await waitFor(() => expect(counter.reads).toBe(1));
     await act(async () => screen.getByText('hide').click());
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     counter.hold = null;
     hold.resolve();
-    await sleep(100);
+    await settle(() => counter.settled === 1);
+    vi.advanceTimersByTime(PAST_UNSUBSCRIBED_TTL_MS);
+    vi.useRealTimers();
     await act(async () => screen.getByText('show').click());
     await screen.findByText('count: 0');
     expect(counter.reads).toBe(1);
+  });
 
+  it('drops a read whose component never mounted once the cap passes', async () => {
+    const store = await createStore();
+    const { counter, NoteCount } = countedRead();
+    const hold = deferred();
+    counter.hold = hold.promise;
+    renderWithPact(
+      <Toggle>
+        <NoteCount />
+      </Toggle>,
+      { open: async () => store }
+    );
+    await waitFor(() => expect(counter.reads).toBe(1));
     await act(async () => screen.getByText('hide').click());
-    await sleep(PAST_UNUSED_TTL_MS);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    counter.hold = null;
+    hold.resolve();
+    await settle(() => counter.settled === 1);
+    vi.advanceTimersByTime(PAST_NEVER_SUBSCRIBED_TTL_MS);
+    vi.useRealTimers();
     await act(async () => screen.getByText('show').click());
     await screen.findByText('count: 0');
     expect(counter.reads).toBe(2);

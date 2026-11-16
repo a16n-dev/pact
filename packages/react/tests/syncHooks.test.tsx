@@ -61,6 +61,21 @@ describe('useSyncConnection', () => {
   });
 });
 
+describe('useSyncConnection with the store called directly', () => {
+  it('follows a sign-in and a sign-out made on the store', async () => {
+    server.closeSocketsOnSignOut = false;
+    const store = await createStore();
+    renderWithPact(<Connection />, { open: async () => store });
+    await screen.findByText('signed out');
+    await act(async () => {
+      await store.sync.completeSignIn(await authorize(store, 'Laptop'));
+    });
+    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
+    await act(() => store.sync.signOut());
+    expect(await screen.findByText('signed out')).toBeTruthy();
+  });
+});
+
 describe('usePactSync', () => {
   it('keeps the same functions across renders', async () => {
     const store = await createStore();
@@ -127,7 +142,7 @@ describe('usePactSync', () => {
     await store.collection('notes').create({ title: 'refused' });
     const { result } = await withHook(store, usePactSync);
     const redirect = await authorize(store, 'Laptop');
-    server.maxPushDocuments = 0;
+    server.refusePushes = true;
     await act(() => result.current.completeSignIn(redirect));
     expect(await screen.findByText('connected: Laptop')).toBeTruthy();
     expect(await store.sync.pending()).toBe(1);
@@ -260,7 +275,7 @@ describe('useSignInCallback', () => {
     const store = await createStore();
     await store.collection('notes').create({ title: 'refused' });
     const redirect = await authorize(store, 'Laptop');
-    server.maxPushDocuments = 0;
+    server.refusePushes = true;
     renderCallback(store, redirect);
     expect(await screen.findByText('status: success')).toBeTruthy();
     expect(await screen.findByText('connected: Laptop')).toBeTruthy();
