@@ -31,7 +31,7 @@ describe('yjsTextEngine', () => {
     const seen: string[][] = [];
     const off = doc.onLocalChange((fields) => seen.push([...fields]));
     doc.handle('body').insert(0, 'x');
-    doc.replace('title', 'set by store');
+    doc.splice('title', [{ index: 0, deleteCount: 0, insert: 'set by store' }]);
     const other = yjsTextEngine.open(['title', 'body']);
     other.handle('title').insert(0, 'remote');
     doc.merge(other.encode());
@@ -39,6 +39,17 @@ describe('yjsTextEngine', () => {
     off();
     doc.handle('body').insert(0, 'y');
     expect(seen).toHaveLength(1);
+  });
+
+  it('seeds identical states from identical values, which merge as one', () => {
+    const first = yjsTextEngine.seed(['title', 'body'], ['t', 'hello'], 42);
+    const second = yjsTextEngine.seed(['title', 'body'], ['t', 'hello'], 42);
+    expect(second).toBe(first);
+    const doc = yjsTextEngine.open(['title', 'body'], first);
+    doc.handle('body').insert(5, '!');
+    expect(doc.merge(second)).toBe(false);
+    expect(doc.toString('body')).toBe('hello!');
+    expect(doc.toString('title')).toBe('t');
   });
 
   it('rejects unknown fields', () => {

@@ -9,11 +9,13 @@ export * from './migrator';
 export * from './collection';
 export {
   type StoredRecord,
+  type TextGeneration,
   type SealedRecord,
   type AdapterRecord,
   type StoredEntry,
 } from './record';
 export { type TextDocument, type TextEngine, registerTextField } from './text/engine';
+export type { TextSplice } from './text/diff';
 export { ClockDriftError, MAX_CLOCK_DRIFT_MS } from './clock';
 export type { IndexKey, IndexKeyInput, IndexExtractor, IndexMap } from './store/indexes';
 export * from './store';

@@ -5,7 +5,8 @@ import type { IndexKeyInput } from './indexes';
 
 /**
  * Write shape: every field but the base ones, in the schema's input form so
- * defaulted fields are optional. Text fields take a string.
+ * defaulted fields are optional. Text fields take a string, written as the
+ * minimal edit from the current text.
  */
 export type DocumentInput<T extends BaseDocument> = Omit<T, keyof BaseDocument>;
 
@@ -64,6 +65,25 @@ export type Collection<
    * comes back while the document is loaded, every transaction on it is
    * persisted at once, and merges from other devices land in it. Throws
    * when the document does not exist.
+   *
+   * Compaction, here or on another device, replaces the document: the old
+   * `Y.Doc` is destroyed (its `destroy` event fires) and edits to it are
+   * dropped, so an editor binding should fetch the new text and rebind.
    */
   text(id: string, field: TextFields): Promise<YText>;
+  /**
+   * Writes a text field from an editor that hands over its content after
+   * the fact: the edits from `base` (the text the editor started from) to
+   * `next` apply on top of whatever has merged in since, instead of
+   * overwriting it. Where both sides changed the same span, both changes are
+   * kept. Throws when the doc does not exist.
+   */
+  updateText(id: string, field: TextFields, change: { base: string; next: string }): Promise<T>;
+  /**
+   * Rebuilds the document's text state from its current strings, dropping
+   * edit history that otherwise only grows. It happens on its own once the
+   * state is large relative to the text; call this to force it. Pulls the
+   * document first when signed in, and throws if that fails.
+   */
+  compactText(id: string): Promise<void>;
 };

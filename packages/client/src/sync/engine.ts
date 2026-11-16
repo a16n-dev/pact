@@ -473,6 +473,10 @@ export class SyncEngine {
     return at ? new Date(at) : null;
   }
 
+  get signedIn(): boolean {
+    return this.http !== null;
+  }
+
   /** A debounced request coalesces per `key`, which is how text edits avoid a push per keystroke. */
   requestDrain(debounce?: { key: string; delayMs: number }): void {
     if (!this.http) return;

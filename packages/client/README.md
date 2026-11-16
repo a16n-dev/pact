@@ -109,7 +109,7 @@ store.on('signedOut', () => showSignIn());
 
 ## Collaborative text
 
-Declare a text field with `yText()` from the `@a16n/pact-client/yjs` subpath. Reads see a `string`; writes may pass a `string`, which replaces the whole text; and `collection.text(id, field)` hands out the live `Y.Text` for an editor to bind to:
+Declare a text field with `yText()` from the `@a16n/pact-client/yjs` subpath. Reads see a `string`; writes may pass a `string`, which lands as the minimal edit from the current text so concurrent writes merge; and `collection.text(id, field)` hands out the live `Y.Text` for an editor to bind to:
 
 ```ts
 import { yText } from '@a16n/pact-client/yjs';
@@ -125,7 +125,15 @@ const body = await store.collection('notes').text('nt-1', 'body');
 body.insert(0, 'Hello');
 ```
 
-Every transaction on that `Y.Text` is persisted immediately and pushed after a one-second quiet period. Edits from other devices land in the same instance. The `yjs` engine lives behind that subpath, so a store with no text fields never bundles it.
+Every transaction on that `Y.Text` is persisted immediately and pushed after a one-second quiet period (`textPushDelayMs` in the store options changes it). Edits from other devices land in the same instance.
+
+An editor that serialises to a string and hands its content over after the fact (a markdown editor, say) can fall behind edits merged in meanwhile. Pass the text it started from along with its new content, and only its own edits apply:
+
+````ts
+await store.collection('notes').updateText('nt-1', 'body', { base: loaded, next: editor.getMarkdown() });
+``` The `yjs` engine lives behind that subpath, so a store with no text fields never bundles it.
+
+Yjs state keeps growing as a text is edited, even when the text itself doesn't. Once the state is large relative to the text, the store compacts it: it rebuilds the state from the current text with no history, and the new generation replaces the old one on every device. Edits another device hadn't pushed yet are replayed on top. Compaction never runs on a document whose `Y.Text` this device has handed out. When another device compacts it, the old `Y.Doc` is destroyed, so an editor binding should listen for its `destroy` event, fetch the text again and rebind. `collection.compactText(id)` compacts on demand.
 
 ## What you might need to know
 
@@ -142,7 +150,7 @@ const todos = defineCollection({
     migrations: [{ from: 1, to: 2, up: (fields) => ({ ...fields, completed: fields.done }) }],
   },
 });
-```
+````
 
 Documents upgrade lazily as they are read. A field that survives a migration keeps its clock. Versions written by a newer build than this one are held aside, hidden from reads, until the app upgrades; `pull()` reports them under `held`.
 
