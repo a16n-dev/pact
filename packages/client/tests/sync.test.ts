@@ -9,6 +9,7 @@ import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
 import { blobFields } from '../src/blobs/blobFields';
 import { normaliseServerUrl } from '../src/sync/serverUrl';
+import { UnauthorizedError } from '../src/sync/http';
 import { FakeServer } from './fakeServer';
 import type { StoredRecord } from '../src/record';
 
@@ -768,6 +769,37 @@ describe('syncNow and connection', () => {
     const paths = server.requests.map((r) => r.path.split('?')[0]);
     expect(paths.indexOf('/sync/push')).toBeGreaterThanOrEqual(0);
     expect(paths.lastIndexOf('/sync/pull')).toBeGreaterThan(paths.indexOf('/sync/push'));
+  });
+
+  it('still pulls when the server refuses the outbox, then throws the drain error', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    a.store.dispose();
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'refused' });
+    server.offline = false;
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    await b.store.sync.drain();
+    server.maxPushDocuments = 0;
+    await expect(a.store.sync.syncNow()).rejects.toMatchObject({ status: 413 });
+    expect((await a.store.collection('notes').get('nt-2'))?.title).toBe('from b');
+    expect(await a.store.sync.pending()).toBe(1);
+  });
+
+  it('does not pull when the drain finds the device signed out', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    a.store.dispose();
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'mine' });
+    server.offline = false;
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    await b.store.sync.drain();
+    server.revoke((await a.store.sync.credentials())!.token);
+    server.requests.length = 0;
+    await expect(a.store.sync.syncNow()).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(server.requests.some((r) => r.path.startsWith('/sync/pull'))).toBe(false);
+    expect(await a.store.collection('notes').get('nt-2')).toBeNull();
   });
 
   it('skips the blob step without a blob adapter', async () => {

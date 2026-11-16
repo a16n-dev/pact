@@ -274,7 +274,9 @@ export type StoreSync = {
   /**
    * Routine sync for app launch, foreground and pull-to-refresh: drains the
    * outbox, pulls, then pushes blobs and pulls the referenced ones when the
-   * store has a blob adapter. A no-op when signed out.
+   * store has a blob adapter. A no-op when signed out. When the drain fails
+   * it still pulls, unless the device was signed out, then throws the
+   * drain's error without the blob step.
    */
   syncNow(): Promise<void>;
   /** Documents written locally but not yet accepted by the server. */

@@ -51,6 +51,7 @@ import type {
   StoreTasks,
 } from './namespaces';
 import { SyncEngine, type ApplyResult, type HeldEntry } from '../sync/engine';
+import { UnauthorizedError } from '../sync/http';
 import {
   CONFIG,
   HELD,
@@ -205,7 +206,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       push: () => this.syncEngine.push(),
       syncNow: async () => {
         if (!this.syncEngine.signedIn) return;
-        await this.syncEngine.drain();
+        try {
+          await this.syncEngine.drain();
+        } catch (err) {
+          // One write the server keeps refusing must not stop this device from pulling.
+          if (!(err instanceof UnauthorizedError)) await this.syncEngine.pull().catch(() => {});
+          throw err;
+        }
         await this.syncEngine.pull();
         if (!blobSync) return;
         await blobSync.push();
