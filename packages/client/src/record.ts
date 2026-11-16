@@ -17,7 +17,17 @@ export type StoredRecord = {
   clock?: string;
   /** Base64 Yjs state, present only when the collection has text fields. */
   text?: string;
+  /** Set once `text` has been compacted; absent is generation 0. */
+  textGeneration?: TextGeneration;
 };
+
+/**
+ * Compacting re-creates the text state from its strings, so states from
+ * different generations share no history and cannot merge: the greater
+ * generation wins outright. `seed` derives from the compacted strings and
+ * breaks ties between concurrent compactions.
+ */
+export type TextGeneration = { number: number; seed: number };
 
 /** A record sealed by the store's cipher, as stored at rest and sent on the wire. */
 export type SealedRecord = {
@@ -39,6 +49,7 @@ export const StoredRecordSchema = z.object({
   clocks: z.record(z.string(), z.string()).optional(),
   clock: z.string().optional(),
   text: z.string().optional(),
+  textGeneration: z.object({ number: z.number().int(), seed: z.number().int() }).optional(),
 });
 
 export function greatestClock(record: StoredRecord): string | undefined {
@@ -60,6 +71,13 @@ export type TextMerge = (
 
 export type MergeResult = { record: StoredRecord; changed: boolean };
 
+export function compareTextGenerations(
+  a: TextGeneration | undefined,
+  b: TextGeneration | undefined
+): number {
+  return (a?.number ?? 0) - (b?.number ?? 0) || (a?.seed ?? 0) - (b?.seed ?? 0);
+}
+
 function earlierCreatedAt(local: StoredRecord, incoming: StoredRecord): string {
   const a = local.fields.createdAt as string;
   const b = incoming.fields.createdAt as string;
@@ -80,8 +98,13 @@ export function mergeRecords(
   const merged =
     mode === 'document' ? mergeByDocument(local, incoming) : mergeByField(local, incoming);
   if (local.text !== undefined || incoming.text !== undefined) {
-    if (!mergeText) throw new Error('Merging records with text fields needs a text merge');
-    merged.text = mergeText(local.text, incoming.text);
+    const order = compareTextGenerations(local.textGeneration, incoming.textGeneration);
+    const winner = order >= 0 ? local : incoming;
+    if (order === 0) {
+      if (!mergeText) throw new Error('Merging records with text fields needs a text merge');
+      merged.text = mergeText(local.text, incoming.text);
+    } else merged.text = winner.text;
+    if (winner.textGeneration) merged.textGeneration = winner.textGeneration;
   }
   merged.schemaVersion = Math.max(local.schemaVersion, incoming.schemaVersion);
   merged.fields.createdAt = earlierCreatedAt(local, incoming);

@@ -46,6 +46,7 @@
     "format": "eslint --fix . && prettier --write ."
   },
   "dependencies": {
+    "fast-diff": "catalog:",
     "nanoid": "catalog:",
     "yjs": "catalog:",
     "zod": "catalog:"

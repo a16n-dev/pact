@@ -15,11 +15,18 @@ export type NodeConfig = { node: string };
 // at push time, from whichever lens queued it. `order` is the clock of the
 // write that queued it. `key` is the storage key, absent on entries queued
 // before lenses existed, which are all plain.
-export type OutboxEntry = { collection: string; key?: string; docId: string; order: string };
+export type OutboxEntry = {
+  collection: string;
+  key?: string;
+  docId: string;
+  order: string;
+  // The text fields' values before the first queued write, in collections with text.
+  textBase?: Record<string, string>;
+};
 
 export function outboxKey(collectionKey: string, docId: string): string {
   return `${collectionKey}/${docId}`;
 }
 
 export const MAX_DOCUMENT_BYTES = 1_000_000;
-export const TEXT_PUSH_DEBOUNCE_MS = 1_000;
+export const DEFAULT_TEXT_PUSH_DELAY_MS = 1_000;

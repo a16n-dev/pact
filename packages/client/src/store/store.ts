@@ -21,6 +21,7 @@ import {
 import {
   greatestClock,
   isSealedRecord,
+  compareTextGenerations,
   mergeRecords,
   type AdapterRecord,
   type TextMerge,
@@ -55,7 +56,7 @@ import {
   HELD,
   MAX_DOCUMENT_BYTES,
   OUTBOX,
-  TEXT_PUSH_DEBOUNCE_MS,
+  DEFAULT_TEXT_PUSH_DELAY_MS,
   configRecord,
   outboxKey,
   type NodeConfig,
@@ -73,6 +74,7 @@ import { TextCache } from './textCache';
 import { createAi } from '../ai/ai';
 import { createApis } from '../apis/apis';
 import type { TextDocument } from '../text/engine';
+import { rebaseText, textSplices } from '../text/diff';
 import { TASKS, type TaskDocument } from '../tasks/task';
 import { TaskRunner, type TaskWrite } from '../tasks/runner';
 
@@ -102,6 +104,11 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private readonly blobHashesOf: (collection: string, doc: BaseDocument) => Iterable<string>;
   private readonly hasBlobRefs: boolean;
   private readonly taskRunner: TaskRunner;
+  private readonly textPushDelayMs: number;
+  private readonly compactions = new Map<string, Promise<void>>();
+  // Documents whose live text was handed out, which compact only before that
+  // happens so an editor is never rebound mid-edit by its own device.
+  private readonly textHandedOut = new Set<string>();
 
   readonly sync: StoreSync;
   readonly backup: StoreBackup;
@@ -115,6 +122,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.adapter = options.adapter;
     this.lens = lens;
     this.blobAdapter = options.blobs ?? null;
+    this.textPushDelayMs = options.textPushDelayMs ?? DEFAULT_TEXT_PUSH_DELAY_MS;
     const defs = options.collections;
     this.definitions = new Map(defs.map((d) => [d.name, d]));
     if (this.definitions.size !== defs.length) {
@@ -290,6 +298,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.syncEngine.stop();
     void this.taskRunner.stop();
     this.textCache.clear();
+    this.textHandedOut.clear();
   }
 
   private emit(collection: string): void {
@@ -519,21 +528,49 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { plain, text };
   }
 
+  // `textBase` gives the text before this write; it is kept on the entry
+  // from the first write until the push, as the base for rebasing those
+  // writes if a newer text generation arrives first.
   private async queueOutbox(
     def: CollectionDefinition,
     id: string,
     clock: string,
-    debounceMs?: number,
-    storageKey = this.keyOf(def)
+    opts: {
+      debounceMs?: number;
+      storageKey?: string;
+      textBase?: () => Record<string, string>;
+    } = {}
   ): Promise<void> {
     if (!def.synced) return;
+    const storageKey = opts.storageKey ?? this.keyOf(def);
     const key = outboxKey(storageKey, id);
     const entry: OutboxEntry = { collection: def.name, key: storageKey, docId: id, order: clock };
+    if (opts.textBase) {
+      const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
+      entry.textBase = queued?.textBase ?? opts.textBase();
+    }
     await this.adapter.put(OUTBOX, key, configRecord(key, entry));
     this.emit(OUTBOX);
+    const { debounceMs } = opts;
     this.syncEngine.requestDrain(
       debounceMs === undefined ? undefined : { key, delayMs: debounceMs }
     );
+  }
+
+  private textValues(def: CollectionDefinition, state: string | undefined): Record<string, string> {
+    const doc = def.textEngine!.open(def.textFields, state);
+    try {
+      return Object.fromEntries(def.textFields.map((field) => [field, doc.toString(field)]));
+    } finally {
+      doc.destroy();
+    }
+  }
+
+  private textBaseOf(
+    def: CollectionDefinition,
+    record: StoredRecord | null
+  ): (() => Record<string, string>) | undefined {
+    return def.textEngine ? () => this.textValues(def, record?.text) : undefined;
   }
 
   private async insert(
@@ -561,8 +598,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     };
     if (def.textEngine) {
       const doc = this.openText(def, id, existing?.text);
-      for (const field of def.textFields) doc.replace(field, parsed[field] as string);
+      for (const field of def.textFields) writeText(doc, field, parsed[field] as string);
       record.text = doc.encode();
+      if (existing?.textGeneration) record.textGeneration = existing.textGeneration;
     }
     // Reviving a tombstone drops its old fields, so those are stamped too.
     const stamped = new Set([
@@ -572,7 +610,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     ]);
     this.stamp(def, record, stamped, clock);
     await this.putRecord(def, id, record);
-    await this.queueOutbox(def, id, clock);
+    await this.queueOutbox(def, id, clock, { textBase: this.textBaseOf(def, existing) });
+    this.compactIfDue(def, id, record);
     return this.readDoc(def, id, record)!;
   }
 
@@ -581,7 +620,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     id: string,
     existing: StoredRecord,
     input: Record<string, unknown>,
-    tombstone: boolean
+    tombstone: boolean,
+    pushDelayMs?: number
   ): Promise<AnyDocument> {
     const clock = this.clock.now();
     const now = clockToIso(clock);
@@ -599,7 +639,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     } as AnyDocument);
     const record: StoredRecord = { ...existing, fields: this.fieldsFrom(def, parsed) };
     if (doc) {
-      for (const field of Object.keys(text)) doc.replace(field, parsed[field] as string);
+      for (const field of Object.keys(text)) writeText(doc, field, parsed[field] as string);
       record.text = doc.encode();
     }
     const stamped = [
@@ -609,20 +649,30 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     ];
     this.stamp(def, record, stamped, clock);
     await this.putRecord(def, id, record);
-    await this.queueOutbox(def, id, clock);
+    await this.queueOutbox(def, id, clock, {
+      debounceMs: pushDelayMs,
+      textBase: this.textBaseOf(def, existing),
+    });
+    this.compactIfDue(def, id, record);
     return this.readDoc(def, id, record)!;
   }
 
   private onTextEdited(def: CollectionDefinition, id: string, fields: readonly string[]): void {
     void this.serialise(def.name, id, async () => {
-      const existing = await this.loadRecord(def, id);
+      // The stored state still predates the edit, unlike the materialised one.
+      const raw = await this.loadRaw(def, id);
+      const existing = raw ? await this.materialise(def, id, raw) : null;
       const doc = this.textCache.get(def.name, id);
       if (!existing || !doc) return;
       const clock = this.clock.now();
       const record: StoredRecord = { ...existing, text: doc.encode() };
       this.stamp(def, record, fields, clock);
       await this.putRecord(def, id, record);
-      await this.queueOutbox(def, id, clock, TEXT_PUSH_DEBOUNCE_MS);
+      await this.queueOutbox(def, id, clock, {
+        debounceMs: this.textPushDelayMs,
+        textBase: this.textBaseOf(def, raw),
+      });
+      this.compactIfDue(def, id, record);
       this.emit(def.name);
       // Nothing can be reported to the editor; the next write surfaces a persistent fault.
     }).catch(() => {});
@@ -661,6 +711,25 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const existing = await this.loadRecord(def, id);
       if (!existing) throw new Error(`Document not found: ${def.name}/${id}`);
       const doc = await this.modify(def, id, existing, input, false);
+      this.emit(def.name);
+      return doc;
+    });
+  }
+
+  private async updateText(
+    def: CollectionDefinition,
+    id: string,
+    field: string,
+    change: { base: string; next: string }
+  ): Promise<AnyDocument> {
+    this.assertTextField(def, field);
+    return this.serialise(def.name, id, async () => {
+      const existing = await this.loadRecord(def, id);
+      if (!existing) throw new Error(`Document not found: ${def.name}/${id}`);
+      const current = this.openText(def, id, existing.text).toString(field);
+      const merged = rebaseText(change.base, current, change.next);
+      const input = { [field]: merged };
+      const doc = await this.modify(def, id, existing, input, false, this.textPushDelayMs);
       this.emit(def.name);
       return doc;
     });
@@ -780,12 +849,19 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     if (ids.length > 0) this.emit(def.name);
   }
 
-  private async text(def: CollectionDefinition, id: string, field: string): Promise<YText> {
+  private assertTextField(def: CollectionDefinition, field: string): void {
     if (!def.textEngine || !def.textFields.includes(field)) {
       throw new Error(`"${field}" is not a text field of ${def.name}`);
     }
+  }
+
+  private async text(def: CollectionDefinition, id: string, field: string): Promise<YText> {
+    this.assertTextField(def, field);
+    const key = `${def.name}/${id}`;
+    if (!this.textHandedOut.has(key)) await this.compactText(def, id, false).catch(() => {});
     const record = await this.loadRecord(def, id);
     if (!record) throw new Error(`Document not found: ${def.name}/${id}`);
+    this.textHandedOut.add(key);
     return this.openText(def, id, record.text).handle(field) as YText;
   }
 
@@ -880,11 +956,103 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           : undefined;
         const { record, changed } = mergeRecords(local, migrated, def.merge, mergeText);
         if (!changed) return 'unchanged';
+        const replaced =
+          def.textEngine &&
+          compareTextGenerations(local.textGeneration, record.textGeneration) !== 0;
+        if (replaced) this.textCache.drop(def.name, id);
         await this.putRecord(def, id, record);
+        if (replaced) await this.rebaseQueuedText(def, id, local, record);
         return 'applied';
       },
       gated
     );
+  }
+
+  // `local` lost to a newer text generation. Edits it has not pushed yet are
+  // replayed on top of the winner, from the base its outbox entry kept.
+  private async rebaseQueuedText(
+    def: CollectionDefinition,
+    id: string,
+    local: StoredRecord,
+    winner: StoredRecord
+  ): Promise<void> {
+    const key = outboxKey(this.keyOf(def), id);
+    const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
+    if (!queued?.textBase) return;
+    const mine = this.textValues(def, local.text);
+    const doc = this.openText(def, id, winner.text);
+    const theirs = Object.fromEntries(def.textFields.map((field) => [field, doc.toString(field)]));
+    const edited = def.textFields.filter((field) => {
+      const merged = rebaseText(queued.textBase![field] ?? '', theirs[field]!, mine[field]!);
+      writeText(doc, field, merged);
+      return merged !== theirs[field];
+    });
+    await this.adapter.delete(OUTBOX, key);
+    if (edited.length === 0) {
+      await this.adapter.put(OUTBOX, key, configRecord(key, { ...queued, textBase: theirs }));
+      return;
+    }
+    const clock = this.clock.now();
+    const record: StoredRecord = { ...winner, text: doc.encode() };
+    this.stamp(def, record, edited, clock);
+    await this.putRecord(def, id, record);
+    await this.queueOutbox(def, id, clock, { textBase: () => theirs });
+  }
+
+  private compactIfDue(def: CollectionDefinition, id: string, record: StoredRecord): void {
+    if (record.text === undefined || record.text.length < COMPACT_MIN_STATE_CHARS) return;
+    if (this.textHandedOut.has(`${def.name}/${id}`)) return;
+    const doc = this.textCache.get(def.name, id);
+    if (!doc || !compactionDue(record.text, textLength(def, doc))) return;
+    void this.compactText(def, id, false).catch(() => {});
+  }
+
+  private compactText(def: CollectionDefinition, id: string, force: boolean): Promise<void> {
+    if (!def.textEngine) {
+      return Promise.reject(new Error(`Collection "${def.name}" has no text fields`));
+    }
+    const key = `${def.name}/${id}`;
+    const running = this.compactions.get(key);
+    if (running) return running;
+    const task = this.runCompaction(def, id, force).finally(() => this.compactions.delete(key));
+    this.compactions.set(key, task);
+    return task;
+  }
+
+  private async runCompaction(
+    def: CollectionDefinition,
+    id: string,
+    force: boolean
+  ): Promise<void> {
+    if (!force && !(await this.compactionDue(def, id))) return;
+    // Pulling first folds in every edit already on the server; one pushed
+    // between this pull and the compaction's own push is lost.
+    if (def.synced && this.syncEngine.signedIn) await this.syncEngine.pullDocument(def.name, id);
+    await this.serialise(def.name, id, async () => {
+      const record = await this.loadRecord(def, id);
+      if (!record) throw new Error(`Document not found: ${def.name}/${id}`);
+      if (!force && !(await this.compactionDue(def, id))) return;
+      const doc = this.openText(def, id, record.text);
+      const values = def.textFields.map((field) => doc.toString(field));
+      const seed = seedOf(values);
+      const compacted: StoredRecord = {
+        ...record,
+        text: def.textEngine!.seed(def.textFields, values, seed),
+        textGeneration: { number: (record.textGeneration?.number ?? 0) + 1, seed },
+      };
+      const clock = this.clock.now();
+      this.stamp(def, compacted, def.textFields, clock);
+      this.textCache.drop(def.name, id);
+      await this.putRecord(def, id, compacted);
+      await this.queueOutbox(def, id, clock, { textBase: this.textBaseOf(def, record) });
+      this.emit(def.name);
+    });
+  }
+
+  private async compactionDue(def: CollectionDefinition, id: string): Promise<boolean> {
+    const record = await this.loadRecord(def, id);
+    if (record?.text === undefined || record.text.length < COMPACT_MIN_STATE_CHARS) return false;
+    return compactionDue(record.text, textLength(def, this.openText(def, id, record.text)));
   }
 
   private validateIncoming(def: CollectionDefinition, record: StoredRecord): boolean {
@@ -946,6 +1114,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     }
     this.indexes?.clear();
     this.textCache.clear();
+    this.textHandedOut.clear();
     for (const name of this.definitions.keys()) this.emit(name);
   }
 
@@ -1054,7 +1223,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         await this.seal(target.codec, targetKey, def, id, moved)
       );
       const clock = greatestClock(moved);
-      if (clock !== undefined) await this.queueOutbox(def, id, clock, undefined, targetKey);
+      if (clock !== undefined) await this.queueOutbox(def, id, clock, { storageKey: targetKey });
       await this.modify(def, id, record, {}, true);
       total.moved += 1;
     }
@@ -1074,6 +1243,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.syncEngine.leaveLens(this.syncedDefinitions().map((def) => this.keyOf(def)));
     this.lens = lens;
     this.textCache.clear();
+    this.textHandedOut.clear();
     await this.retryHeld(false);
     await this.buildIndexes();
     for (const name of [...this.definitions.keys(), TASKS.name]) this.emit(name);
@@ -1266,8 +1436,41 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       delete: (id) => this.delete(def, id),
       deleteMany: (ids) => this.deleteMany(def, ids),
       text: (id, field) => this.text(def, id, field),
+      updateText: (id, field, change) => this.updateText(def, id, field, change) as Promise<T>,
+      compactText: (id) => this.compactText(def, id, true),
     };
   }
+}
+
+// Compaction runs once the state passes both the floor and a multiple of
+// the text, or the ceiling regardless, since a long text never reaches the
+// multiple before the document size limit.
+const COMPACT_MIN_STATE_CHARS = 100_000;
+const COMPACT_MAX_STATE_CHARS = 500_000;
+const COMPACT_STATE_TO_TEXT_RATIO = 8;
+
+function compactionDue(state: string, textChars: number): boolean {
+  if (state.length < COMPACT_MIN_STATE_CHARS) return false;
+  if (state.length >= COMPACT_STATE_TO_TEXT_RATIO * textChars) return true;
+  return state.length >= COMPACT_MAX_STATE_CHARS && state.length >= 2 * textChars;
+}
+
+function textLength(def: CollectionDefinition, doc: TextDocument): number {
+  return def.textFields.reduce((sum, field) => sum + doc.toString(field).length, 0);
+}
+
+// FNV-1a over the values, as an unsigned 32-bit Yjs client id.
+function seedOf(values: readonly string[]): number {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify(values)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function writeText(doc: TextDocument, field: string, value: string): void {
+  doc.splice(field, textSplices(doc.toString(field), value));
 }
 
 // Detached documents are opened for one merge and destroyed; cached ones stay

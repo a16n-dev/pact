@@ -86,6 +86,31 @@ describe('mergeRecords by field', () => {
     expect(record.clocks?.body).toBe(at(2));
     expect(() => mergeRecords(local, incoming, 'field')).toThrow(/text merge/);
   });
+
+  it('takes the text of the greater generation outright, in either order', () => {
+    const merge = (a?: string, b?: string) => `${a}+${b}`;
+    const old = fieldRecord({}, { body: at(3) }, { text: 'old' });
+    const compacted = fieldRecord(
+      {},
+      { body: at(2) },
+      { text: 'new', textGeneration: { number: 1, seed: 5 } }
+    );
+    for (const [local, incoming] of [
+      [old, compacted],
+      [compacted, old],
+    ] as const) {
+      const { record } = mergeRecords(local, incoming, 'field', merge);
+      expect(record.text).toBe('new');
+      expect(record.textGeneration).toEqual({ number: 1, seed: 5 });
+    }
+    const rival = fieldRecord(
+      {},
+      { body: at(2) },
+      { text: 'rival', textGeneration: { number: 1, seed: 9 } }
+    );
+    expect(mergeRecords(compacted, rival, 'field', merge).record.text).toBe('rival');
+    expect(mergeRecords(rival, compacted, 'field', merge).record.text).toBe('rival');
+  });
 });
 
 describe('mergeRecords by document', () => {

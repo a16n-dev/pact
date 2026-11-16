@@ -48,7 +48,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-type Options = { adapter?: InMemoryAdapter; cipher?: DocCipher; collections?: any[] };
+type Options = {
+  adapter?: InMemoryAdapter;
+  cipher?: DocCipher;
+  collections?: any[];
+  textPushDelayMs?: number;
+};
 
 async function signedInStore(deviceName: string, opts: Options = {}) {
   const adapter = opts.adapter ?? new InMemoryAdapter();
@@ -56,6 +61,7 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
     adapter,
     collections: opts.collections ?? [notes, docs, local],
     encryption: opts.cipher ? { cipher: opts.cipher } : undefined,
+    textPushDelayMs: opts.textPushDelayMs,
   });
   const begun = await store.sync.beginSignIn({
     url: server.origin,
@@ -224,8 +230,8 @@ describe('push and pull', () => {
   });
 
   it('merges concurrent text edits', async () => {
-    const a = await signedInStore('A');
-    const b = await signedInStore('B');
+    const a = await signedInStore('A', { textPushDelayMs: 50 });
+    const b = await signedInStore('B', { textPushDelayMs: 50 });
     await a.store.collection('docs').create({ id: 'd-1', body: 'hello' });
     await a.store.sync.drain();
     await vi.waitFor(async () =>
@@ -234,6 +240,15 @@ describe('push and pull', () => {
 
     (await a.store.collection('docs').text('d-1', 'body')).insert(5, ' world');
     (await b.store.collection('docs').text('d-1', 'body')).insert(0, 'oh ');
+    const t0 = Date.now();
+    await vi.waitFor(
+      async () => {
+        expect(await a.store.sync.pending()).toBe(0);
+        expect(await b.store.sync.pending()).toBe(0);
+      },
+      { timeout: 5000 }
+    );
+    console.error('ELAPSED', Date.now() - t0, await a.store.collection('docs').get('d-1'));
     await vi.waitFor(async () => {
       expect(await a.store.sync.pending()).toBe(0);
       expect(await b.store.sync.pending()).toBe(0);
@@ -244,6 +259,69 @@ describe('push and pull', () => {
     const textA = await a.store.collection('docs').text('d-1', 'body');
     expect(textA.toString()).toBe('oh hello world');
     expect((await b.store.collection('docs').get('d-1'))?.body).toBe('oh hello world');
+  });
+
+  it('merges concurrent string writes to a text field', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    await a.store.collection('docs').create({ id: 'd-1', body: 'hello world' });
+    await a.store.sync.drain();
+    await vi.waitFor(async () =>
+      expect(await b.store.collection('docs').get('d-1')).not.toBeNull()
+    );
+
+    await a.store.collection('docs').update('d-1', { body: 'hello brave world' });
+    await b.store.collection('docs').update('d-1', { body: 'hello world!' });
+    await settled(a.store);
+    await settled(b.store);
+    await settled(a.store);
+    expect((await a.store.collection('docs').get('d-1'))?.body).toBe('hello brave world!');
+    expect((await b.store.collection('docs').get('d-1'))?.body).toBe('hello brave world!');
+  });
+
+  it('rebases unpushed text edits onto a compaction from another device', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B', { textPushDelayMs: 60_000 });
+    await a.store.collection('docs').create({ id: 'd-1', body: 'one two three' });
+    await a.store.sync.drain();
+    await vi.waitFor(async () =>
+      expect(await b.store.collection('docs').get('d-1')).not.toBeNull()
+    );
+    // B stays offline so its edit is still queued when the compaction lands.
+    b.store.dispose();
+    await b.store.collection('docs').updateText('d-1', 'body', {
+      base: 'one two three',
+      next: 'one two three four',
+    });
+    await a.store.collection('docs').update('d-1', { body: 'zero one two three' });
+    await a.store.collection('docs').compactText('d-1');
+    await a.store.sync.drain();
+
+    await b.store.sync.pull();
+    expect((await b.store.collection('docs').get('d-1'))?.body).toBe('zero one two three four');
+    await b.store.sync.drain();
+    await a.store.sync.pull();
+    expect((await a.store.collection('docs').get('d-1'))?.body).toBe('zero one two three four');
+  });
+
+  it('merges the same compaction made on two devices into one text', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    await a.store.collection('docs').create({ id: 'd-1', body: 'hello' });
+    await a.store.sync.drain();
+    await vi.waitFor(async () =>
+      expect(await b.store.collection('docs').get('d-1')).not.toBeNull()
+    );
+    a.store.dispose();
+    b.store.dispose();
+    await a.store.collection('docs').compactText('d-1');
+    await b.store.collection('docs').compactText('d-1');
+    await a.store.sync.drain();
+    await b.store.sync.drain();
+    await a.store.sync.pull();
+    await b.store.sync.pull();
+    expect((await a.store.collection('docs').get('d-1'))?.body).toBe('hello');
+    expect((await b.store.collection('docs').get('d-1'))?.body).toBe('hello');
   });
 
   it('debounces text pushes per document', async () => {
@@ -259,6 +337,16 @@ describe('push and pull', () => {
     await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0), { timeout: 3_000 });
     expect(server.versionsOf('app', 'docs', 'd-1')).toHaveLength(1);
     expect(server.requests.filter((r) => r.path === '/sync/push').length - before).toBe(1);
+  });
+
+  it('waits the configured delay before pushing text edits', async () => {
+    const { store } = await signedInStore('A', { textPushDelayMs: 50 });
+    store.dispose();
+    await store.collection('docs').create({ id: 'd-1', body: 'a' });
+    await store.sync.drain();
+    await store.collection('docs').updateText('d-1', 'body', { base: 'a', next: 'ab' });
+    expect(await store.sync.pending()).toBe(1);
+    await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0), { timeout: 500 });
   });
 
   it('queues writes made before sign-in and pushes them after', async () => {

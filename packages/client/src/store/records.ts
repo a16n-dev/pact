@@ -33,6 +33,7 @@ export function migrateRecord(
     fields,
   };
   if (record.text !== undefined) out.text = record.text;
+  if (record.textGeneration) out.textGeneration = record.textGeneration;
   if (def.merge === 'document') {
     out.clock = record.clock;
     return out;

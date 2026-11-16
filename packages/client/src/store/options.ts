@@ -42,6 +42,12 @@ export type StoreOptions<
    * `_tasks` are not encrypted.
    */
   encryption?: { cipher: DocCipher };
+  /**
+   * How long text edits wait for more edits before the document is pushed,
+   * so typing pushes once per pause rather than per keystroke. Lower it when
+   * other devices watch edits live. Defaults to 1000.
+   */
+  textPushDelayMs?: number;
 };
 
 /** Subscriber for `store.on('change')`. Blob activity arrives as `_blobs`. */

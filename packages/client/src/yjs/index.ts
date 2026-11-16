@@ -1,9 +1,10 @@
 import * as Y from 'yjs';
 import { z } from 'zod';
+import type { TextSplice } from '../text/diff';
 import { registerTextField, type TextDocument, type TextEngine } from '../text/engine';
 import { fromBase64, toBase64 } from '../crypto/base64';
 
-/** Origin tag for transactions the store applies itself (remote merges, replace-all writes). */
+/** Origin tag for transactions the store applies itself (remote merges, string writes). */
 const STORE_ORIGIN = Symbol('pact');
 
 class YjsTextDocument implements TextDocument<Y.Text> {
@@ -24,12 +25,14 @@ class YjsTextDocument implements TextDocument<Y.Text> {
     return this.handle(field).toString();
   }
 
-  replace(field: string, value: string): void {
+  splice(field: string, splices: readonly TextSplice[]): void {
     const text = this.handle(field);
-    if (text.toString() === value) return;
+    if (splices.length === 0) return;
     this.doc.transact(() => {
-      text.delete(0, text.length);
-      text.insert(0, value);
+      for (const { index, deleteCount, insert } of splices) {
+        if (deleteCount > 0) text.delete(index, deleteCount);
+        if (insert) text.insert(index, insert);
+      }
     }, STORE_ORIGIN);
   }
 
@@ -72,12 +75,27 @@ export const yjsTextEngine: TextEngine<Y.Text> = {
   open(fields, state) {
     return new YjsTextDocument(fields, state);
   },
+  seed(fields, values, seed) {
+    const doc = new Y.Doc();
+    // The seed becomes the client id so identical seeds produce identical
+    // structs. Edits never use it: the store reopens the state, which gives
+    // the document a random client id.
+    doc.clientID = seed;
+    doc.transact(() => {
+      fields.forEach((field, i) => {
+        if (values[i]) doc.getText(field).insert(0, values[i]);
+      });
+    });
+    const state = toBase64(Y.encodeStateAsUpdate(doc));
+    doc.destroy();
+    return state;
+  },
 };
 
 /**
  * A collaborative text field. Reads project it to a `string`; edits go
  * through the `Y.Text` from `collection.text(id, field)`. Writes may pass a
- * `string`, which lands as a replace-all edit.
+ * `string`, which lands as the minimal edit from the current text.
  */
 export function yText(): z.ZodString {
   const schema = z.string();

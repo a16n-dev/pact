@@ -236,7 +236,7 @@ describe('Store CRUD', () => {
 });
 
 describe('text fields', () => {
-  it('projects text to a string and applies string writes as replace-all', async () => {
+  it('projects text to a string and applies string writes', async () => {
     const { adapter, store } = await setup();
     const col = store.collection('notes');
     const created = await col.create({ id: 'nt-1', title: 't', body: 'hello' });
@@ -265,6 +265,74 @@ describe('text fields', () => {
     expect((await col.get('nt-1'))?.body).toBe('hello world');
     expect(await col.text('nt-1', 'body')).toBe(text);
     await expect(col.text('nt-9', 'body')).rejects.toThrow(/not found/);
+  });
+
+  it('applies a string write as the minimal edit to the live text', async () => {
+    const { store } = await setup();
+    const col = store.collection('notes');
+    await col.create({ id: 'nt-1', title: 't', body: 'one two three' });
+    const text = await col.text('nt-1', 'body');
+    const deltas: unknown[] = [];
+    text.observe((event) => deltas.push(event.delta));
+    await col.update('nt-1', { body: 'one 2 three' });
+    expect(deltas).toEqual([[{ retain: 4 }, { delete: 3 }, { insert: '2' }]]);
+  });
+
+  it('rebases an updateText onto edits merged since its base', async () => {
+    const { store } = await setup();
+    const col = store.collection('notes');
+    await col.create({ id: 'nt-1', title: 't', body: 'hello world' });
+    (await col.text('nt-1', 'body')).insert(0, '> ');
+    const doc = await col.updateText('nt-1', 'body', { base: 'hello world', next: 'hello, world' });
+    expect(doc.body).toBe('> hello, world');
+    await expect(col.updateText('nt-1', 'title', { base: '', next: '' })).rejects.toThrow(
+      /not a text field/
+    );
+  });
+
+  it('compacts text to a fresh generation that keeps the text', async () => {
+    const { adapter, store } = await setup();
+    const col = store.collection('notes');
+    await col.create({ id: 'nt-1', title: 't', body: 'x' });
+    for (let i = 0; i < 50; i++) {
+      const body = (await col.get('nt-1'))!.body;
+      await col.update('nt-1', { body: `${i}${body.slice(0, 20)}${i}` });
+    }
+    const before = await stored(adapter, 'n', 'nt-1');
+    const text = await col.text('nt-1', 'body');
+    const destroyed = vi.fn();
+    text.doc!.on('destroy', destroyed);
+
+    await col.compactText('nt-1');
+    const after = await stored(adapter, 'n', 'nt-1');
+    expect(after.textGeneration?.number).toBe(1);
+    expect(after.text!.length).toBeLessThan(before.text!.length / 4);
+    expect((await col.get('nt-1'))?.body).toBe(text.toString());
+    expect(destroyed).toHaveBeenCalled();
+
+    const fresh = await col.text('nt-1', 'body');
+    expect(fresh).not.toBe(text);
+    fresh.insert(0, '>');
+    await vi.waitFor(async () => expect((await col.get('nt-1'))?.body).toBe(`>${text}`));
+    expect((await stored(adapter, 'n', 'nt-1')).textGeneration?.number).toBe(1);
+    await expect(store.collection('widgets').compactText('w-1')).rejects.toThrow(/no text fields/);
+  });
+
+  it('compacts on its own once the state outgrows the text', async () => {
+    const { adapter, store } = await setup();
+    const col = store.collection('notes');
+    const words = Array.from({ length: 400 }, (_, i) => `w${i}`);
+    await col.create({ id: 'nt-1', title: 't', body: words.join(' ') });
+    for (let round = 0; round < 200; round++) {
+      const body = (await col.get('nt-1'))!.body.split(' ');
+      for (let i = round % 7; i < body.length; i += 7)
+        body[i] = `${body[i]}${round % 10}`.slice(-4);
+      await col.update('nt-1', { body: body.join(' ') });
+      if ((await stored(adapter, 'n', 'nt-1')).textGeneration) break;
+    }
+    await vi.waitFor(async () =>
+      expect((await stored(adapter, 'n', 'nt-1')).textGeneration?.number).toBe(1)
+    );
   });
 
   it('reopens text state from storage on a new store', async () => {
