@@ -166,6 +166,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           (key) => this.definitionOfKey(key)?.def.synced
         ),
       applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
+      clearPushed: (key, pushed) => this.clearPushed(key, pushed),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
       emit: (collection) => this.emit(collection),
@@ -554,6 +555,21 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const { debounceMs } = opts;
     this.syncEngine.requestDrain(
       debounceMs === undefined ? undefined : { key, delayMs: debounceMs }
+    );
+  }
+
+  // Writes queue their entry under the document lock, so taking it here means
+  // none can land between the check and the delete. Ungated because it only
+  // touches the outbox row, which a lens switch does not move.
+  private clearPushed(key: string, pushed: OutboxEntry): Promise<void> {
+    return this.serialise(
+      pushed.collection,
+      pushed.docId,
+      async () => {
+        const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
+        if (queued?.order === pushed.order) await this.adapter.delete(OUTBOX, key);
+      },
+      false
     );
   }
 

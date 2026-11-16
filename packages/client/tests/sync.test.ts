@@ -324,6 +324,23 @@ describe('push and pull', () => {
     expect((await b.store.collection('docs').get('d-1'))?.body).toBe('hello');
   });
 
+  it('keeps a write made while its document is being pushed queued', async () => {
+    const { store } = await signedInStore('A');
+    store.dispose();
+    const network = heldNetwork();
+    await store.collection('notes').create({ id: 'nt-1', title: 'first' });
+    const drained = store.sync.drain();
+    // Lets the drain read the first version and block on its push.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await store.collection('notes').update('nt-1', { title: 'second' });
+    network.release();
+    await drained;
+    vi.unstubAllGlobals();
+    await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
+    const versions = server.versionsOf('app', 'n', 'nt-1');
+    expect(versions.map((v) => JSON.parse(v.data).fields.title)).toContain('second');
+  });
+
   it('debounces text pushes per document', async () => {
     const { store } = await signedInStore('A');
     // Realtime's open-time pull and drain would otherwise race the edits below.
@@ -484,6 +501,8 @@ describe('push and pull', () => {
 
   it('resync drops local state and pulls everything again', async () => {
     const { store, adapter } = await signedInStore('A');
+    // Realtime's open-time pull and drain would otherwise race the resync.
+    store.dispose();
     await store.collection('notes').create({ id: 'nt-1', title: 'a' });
     await store.sync.drain();
     server.offline = true;
