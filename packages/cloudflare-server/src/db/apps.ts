@@ -1,5 +1,5 @@
 // A registered app. `seq` is the app-wide counter that stamps every document version written;
-// `allow_localhost`, `restricted` and `ai_proxy` are SQLite booleans.
+// `allow_localhost`, `restricted`, `ai_proxy` and `api_proxy` are SQLite booleans.
 export type AppRow = {
   id: string;
   name: string;
@@ -7,6 +7,7 @@ export type AppRow = {
   allow_localhost: number;
   restricted: number;
   ai_proxy: number;
+  api_proxy: number;
   created_at: number;
 };
 
@@ -20,7 +21,7 @@ export type AppSummary = AppRow & {
 export async function getApp(db: D1Database, id: string): Promise<AppRow | null> {
   return db
     .prepare(
-      'SELECT id, name, seq, allow_localhost, restricted, ai_proxy, created_at FROM apps WHERE id = ?1'
+      'SELECT id, name, seq, allow_localhost, restricted, ai_proxy, api_proxy, created_at FROM apps WHERE id = ?1'
     )
     .bind(id)
     .first();
@@ -29,7 +30,7 @@ export async function getApp(db: D1Database, id: string): Promise<AppRow | null>
 export async function listApps(db: D1Database): Promise<AppSummary[]> {
   const { results } = await db
     .prepare(
-      `SELECT a.id, a.name, a.seq, a.allow_localhost, a.restricted, a.ai_proxy, a.created_at,
+      `SELECT a.id, a.name, a.seq, a.allow_localhost, a.restricted, a.ai_proxy, a.api_proxy, a.created_at,
          (SELECT COUNT(*) FROM documents d WHERE d.app_id = a.id) AS document_count,
          (SELECT COUNT(*) FROM blobs b WHERE b.app_id = a.id) AS blob_count,
          (SELECT COALESCE(SUM(size), 0) FROM blobs b WHERE b.app_id = a.id) AS blob_bytes
@@ -69,6 +70,13 @@ export async function setAllowLocalhost(db: D1Database, id: string, allow: boole
 export async function setAiProxy(db: D1Database, id: string, enabled: boolean): Promise<void> {
   await db
     .prepare('UPDATE apps SET ai_proxy = ?2 WHERE id = ?1')
+    .bind(id, enabled ? 1 : 0)
+    .run();
+}
+
+export async function setApiProxy(db: D1Database, id: string, enabled: boolean): Promise<void> {
+  await db
+    .prepare('UPDATE apps SET api_proxy = ?2 WHERE id = ?1')
     .bind(id, enabled ? 1 : 0)
     .run();
 }
@@ -122,6 +130,7 @@ export function deleteAppStatements(db: D1Database, appId: string): D1PreparedSt
     'DELETE FROM documents WHERE app_id = ?1',
     'DELETE FROM blobs WHERE app_id = ?1',
     'DELETE FROM task_claims WHERE app_id = ?1',
+    'DELETE FROM api_credentials WHERE app_id = ?1',
     'DELETE FROM tokens WHERE app_id = ?1',
     'DELETE FROM auth_codes WHERE app_id = ?1',
     'DELETE FROM app_redirect_uris WHERE app_id = ?1',

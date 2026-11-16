@@ -7,6 +7,7 @@ const TABLES = [
   'documents',
   'blobs',
   'task_claims',
+  'api_credentials',
   'tokens',
   'auth_codes',
   'login_sessions',

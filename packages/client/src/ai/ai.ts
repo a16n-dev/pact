@@ -1,32 +1,15 @@
-import { SyncError, UnauthorizedError, failed } from '../sync/http';
+import { authedFetch, type AuthedFetchDeps } from '../sync/authedFetch';
 import type { DecisionRequest, GeneratedImage, ImageRequest, StoreAi } from '../store/namespaces';
 
-type Credentials = { url: string; token: string };
-
-type AiDeps = {
-  credentials(): Promise<Credentials | null>;
-  onUnauthorized(): void;
-};
-
-export function createAi(deps: AiDeps): StoreAi {
-  const post = async (path: string, body: unknown, signal?: AbortSignal): Promise<Response> => {
-    const creds = await deps.credentials();
-    if (!creds) throw new SyncError(401, 'signed_out', 'Sign in to a Pact server to use AI');
-    // No timeout: generating an image can take well over a minute.
-    const res = await fetch(`${creds.url}${path}`, {
+export function createAi(deps: AuthedFetchDeps): StoreAi {
+  const send = authedFetch(deps, 'Sign in to a Pact server to use AI');
+  const post = (path: string, body: unknown, signal?: AbortSignal): Promise<Response> =>
+    send(path, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${creds.token}`, 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
       signal,
     });
-    if (res.ok) return res;
-    try {
-      return await failed(res);
-    } catch (error) {
-      if (error instanceof UnauthorizedError) deps.onUnauthorized();
-      throw error;
-    }
-  };
 
   return {
     async image(request: ImageRequest, opts?: { signal?: AbortSignal }): Promise<GeneratedImage> {

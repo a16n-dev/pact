@@ -12,7 +12,11 @@ type ErrorCode =
   | 'blob_too_large'
   | 'ai_upstream_error'
   | 'ai_not_configured'
-  | 'ai_disabled';
+  | 'ai_disabled'
+  | 'api_upstream_error'
+  | 'api_not_configured'
+  | 'api_disabled'
+  | 'api_base_url_changed';
 
 export class ApiError extends Error {
   constructor(

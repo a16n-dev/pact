@@ -9,6 +9,7 @@ import { syncRoutes } from './sync/routes';
 import { taskRoutes } from './tasks/routes';
 import { realtimeRoutes } from './realtime/routes';
 import { aiRoutes } from './ai/routes';
+import { apiRoutes } from './apis/routes';
 import { adminRoutes } from './admin/routes';
 import favicon from './ui/favicon.svg';
 
@@ -37,12 +38,14 @@ app.use('/auth/*', preflight('sync'));
 app.use('/sync/*', preflight('sync'));
 app.use('/tasks/*', preflight('sync'));
 app.use('/ai/*', preflight('any'));
+app.use('/apis/*', preflight('sync'));
 
 app.route('/oauth', oauthRoutes);
 app.route('/auth', authRoutes);
 app.route('/sync', syncRoutes);
 app.route('/tasks', taskRoutes);
 app.route('/ai', aiRoutes);
+app.route('/apis', apiRoutes);
 app.route('/realtime', realtimeRoutes);
 app.route('/admin', adminRoutes);
 

@@ -150,6 +150,32 @@ export function SettingsPage({ app, redirectUris, origins, counts, dialog }: Set
         </div>
       </section>
 
+      <section class='card' aria-labelledby='h-apis'>
+        <div class='card-head'>
+          <h2 id='h-apis'>Third-party APIs</h2>
+        </div>
+        <div class='card-row'>
+          <div>
+            <div class='title'>API proxy</div>
+            <div class='muted small'>
+              Lets this app call other services through the server at <code>/apis</code>, using
+              credentials kept here that the app can't read back.
+            </div>
+          </div>
+          <form method='post' action={`${base}/api-proxy`} data-autosubmit>
+            <label class='switch'>
+              <input
+                type='checkbox'
+                name='enabled'
+                checked={app.api_proxy === 1}
+                aria-label='API proxy'
+              />
+              <span class='switch-track' aria-hidden='true' />
+            </label>
+          </form>
+        </div>
+      </section>
+
       <section class='card' aria-labelledby='h-danger'>
         <div class='card-head'>
           <h2 id='h-danger'>Danger zone</h2>

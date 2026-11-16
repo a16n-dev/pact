@@ -236,25 +236,57 @@ A missing or empty `model` or `prompt`, or `questions` that isn't an object, is 
 
 An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pass through as-is. A server with no gateway configured answers `503 ai_not_configured`.
 
+## Third-party APIs
+
+`/apis/:name/*`. Requires auth; any token works, including API tokens. `:name` is 1–64 letters, digits, `_`, `.` or `-`. An admin can turn the API proxy off for an app in its settings, after which every request here is `403 api_disabled`. A server without a `VAULT_KEY` secret answers `503 api_not_configured`.
+
+Each app keeps one set of credentials per API name, shared by everyone signed in to it. The server encrypts them at rest and never returns them; it adds them to the requests it forwards.
+
+**`PUT /apis/:name/credentials`** with `{ baseUrl, credentials }` replaces the set. `baseUrl` is an https URL with no query, fragment or user info. `credentials` maps 1–16 field names (`[A-Za-z0-9_]`, up to 64 chars) to where each value goes:
+
+```json
+{
+  "baseUrl": "https://api.example.com/v1",
+  "credentials": {
+    "token": { "in": "header", "name": "Authorization", "prefix": "Bearer ", "value": "sk-…" },
+    "project": { "in": "query", "name": "project", "value": "p-42" }
+  }
+}
+```
+
+A header credential can't be `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Cookie` or `cf-*`. Values are 1–8192 chars without line breaks. Returns `204`.
+
+**`GET /apis/:name/credentials`** returns `{ "baseUrl": "…", "fields": ["project", "token"], "updatedAt": 1730000000000 }`, or `404 not_found` when none are set.
+
+**`DELETE /apis/:name/credentials`** returns `204`, whether or not any were set.
+
+**`POST /apis/:name/call`** with `{ baseUrl, method, path, query?, headers?, body? }` sends one request with the credentials applied. `baseUrl` must equal the one the credentials were saved for, or the call is `409 api_base_url_changed`. `method` is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. `path` starts with `/`, is appended to `baseUrl` and must stay under it after `..` segments resolve. `query` and `headers` are string maps, and credentials override any entry with the same name. `body`, when present, is sent as JSON; a `GET` can't have one.
+
+The response is `200` with the API's body and `Content-Type`, and its status in `pact-upstream-status`, so a 401 from the API never reads as the Pact token being rejected. Redirects are returned rather than followed, so credentials only ever go to `baseUrl`'s host. The server gives up after 30 seconds, and a failed request or a response over 10 MB is `502 api_upstream_error`.
+
 ## Errors
 
 JSON endpoints return `{ "error": "<human-readable message>", "code": "<code>" }`.
 
-| Status | `code`               | When                                                    |
-| ------ | -------------------- | ------------------------------------------------------- |
-| 400    | `bad_request`        | malformed body or params, or a field outside its limits |
-| 400    | `hash_mismatch`      | the blob body doesn't hash to `:hash`                   |
-| 401    | `unauthorized`       | missing, unknown, signed-out or revoked token           |
-| 403    | `origin_not_allowed` | the request's `Origin` isn't allowed for the app        |
-| 404    | `not_found`          | unknown blob or route                                   |
-| 413    | `too_many_documents` | push exceeds `max_push_documents`                       |
-| 413    | `document_too_large` | a document's `data` exceeds 1 MB                        |
-| 413    | `blob_too_large`     | blob exceeds 50 MB                                      |
-| 426    | `bad_request`        | `/realtime` called without a WebSocket upgrade          |
-| 500    | `internal_error`     | unexpected server failure                               |
-| 502    | `ai_upstream_error`  | AI Gateway returned an error or failed                  |
-| 403    | `ai_disabled`        | the admin turned the AI proxy off for the app           |
-| 503    | `ai_not_configured`  | the server has no AI Gateway configured                 |
+| Status | `code`                 | When                                                                        |
+| ------ | ---------------------- | --------------------------------------------------------------------------- |
+| 400    | `bad_request`          | malformed body or params, or a field outside its limits                     |
+| 400    | `hash_mismatch`        | the blob body doesn't hash to `:hash`                                       |
+| 401    | `unauthorized`         | missing, unknown, signed-out or revoked token                               |
+| 403    | `origin_not_allowed`   | the request's `Origin` isn't allowed for the app                            |
+| 404    | `not_found`            | unknown blob or route, or an API with no credentials                        |
+| 413    | `too_many_documents`   | push exceeds `max_push_documents`                                           |
+| 413    | `document_too_large`   | a document's `data` exceeds 1 MB                                            |
+| 413    | `blob_too_large`       | blob exceeds 50 MB                                                          |
+| 426    | `bad_request`          | `/realtime` called without a WebSocket upgrade                              |
+| 500    | `internal_error`       | unexpected server failure                                                   |
+| 502    | `ai_upstream_error`    | AI Gateway returned an error or failed                                      |
+| 403    | `ai_disabled`          | the admin turned the AI proxy off for the app                               |
+| 503    | `ai_not_configured`    | the server has no AI Gateway configured                                     |
+| 403    | `api_disabled`         | the admin turned the API proxy off for the app                              |
+| 409    | `api_base_url_changed` | the call's `baseUrl` isn't the one the credentials were saved for           |
+| 502    | `api_upstream_error`   | the API failed, timed out or sent over 10 MB                                |
+| 503    | `api_not_configured`   | the server has no `VAULT_KEY`, or it no longer opens the stored credentials |
 
 A 401 means the token is gone for good: clear it and send the user through sign-in again.
 

@@ -7,6 +7,8 @@ export type {
   StoreBlobs,
   StoreEncryption,
   StoreAi,
+  StoreApis,
+  ApiCredentialsStatus,
   StoreTasks,
   TaskState,
   ImageRequest,

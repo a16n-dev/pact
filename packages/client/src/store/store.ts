@@ -44,6 +44,7 @@ import type {
   StoreBackup,
   StoreBlobs,
   StoreAi,
+  StoreApis,
   StoreEncryption,
   StoreSync,
   StoreTasks,
@@ -70,6 +71,7 @@ import {
 } from './records';
 import { TextCache } from './textCache';
 import { createAi } from '../ai/ai';
+import { createApis } from '../apis/apis';
 import type { TextDocument } from '../text/engine';
 import { TASKS, type TaskDocument } from '../tasks/task';
 import { TaskRunner, type TaskWrite } from '../tasks/runner';
@@ -106,6 +108,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   readonly blobs: StoreBlobs;
   readonly encryption: StoreEncryption;
   readonly ai: StoreAi;
+  readonly apis: StoreApis;
   readonly tasks: StoreTasks;
 
   private constructor(options: StoreOptions<Defs>, node: string, lens: Lens) {
@@ -217,10 +220,12 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       setKey: (cipher) => this.setKey(cipher),
       moveToKey: (cipher) => this.moveToKey(cipher),
     };
-    this.ai = createAi({
+    const serverDeps = {
       credentials: () => this.syncEngine.credentials(),
       onUnauthorized: () => void this.syncEngine.handleSignedOut(),
-    });
+    };
+    this.ai = createAi(serverDeps);
+    this.apis = createApis(serverDeps);
     this.taskRunner = new TaskRunner(
       {
         list: () => this.list(TASKS) as Promise<TaskDocument[]>,
