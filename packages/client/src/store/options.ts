@@ -50,5 +50,8 @@ export type StoreOptions<
   textPushDelayMs?: number;
 };
 
-/** Subscriber for `store.on('change')`. Blob activity arrives as `_blobs`. */
+/**
+ * Subscriber for `store.on('change')`. Blob activity arrives as `_blobs`,
+ * outbox changes as `_outbox`, and signing in or out as `_session`.
+ */
 export type ChangeHandler = (collection: string) => void;

@@ -780,8 +780,8 @@ describe('syncNow and connection', () => {
     server.offline = false;
     await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
     await b.store.sync.drain();
-    server.maxPushDocuments = 0;
-    await expect(a.store.sync.syncNow()).rejects.toMatchObject({ status: 413 });
+    server.refusePushes = true;
+    await expect(a.store.sync.syncNow()).rejects.toMatchObject({ status: 400 });
     expect((await a.store.collection('notes').get('nt-2'))?.title).toBe('from b');
     expect(await a.store.sync.pending()).toBe(1);
   });
@@ -800,6 +800,47 @@ describe('syncNow and connection', () => {
     await expect(a.store.sync.syncNow()).rejects.toBeInstanceOf(UnauthorizedError);
     expect(server.requests.some((r) => r.path.startsWith('/sync/pull'))).toBe(false);
     expect(await a.store.collection('notes').get('nt-2')).toBeNull();
+  });
+
+  it('reports the session on sign-in, sign-out and a revoked token', async () => {
+    server.closeSocketsOnSignOut = false;
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    const changes: string[] = [];
+    store.on('change', (name) => changes.push(name));
+    const begun = await store.sync.beginSignIn({
+      url: server.origin,
+      appId: 'app',
+      deviceName: 'Laptop',
+      redirectUri: 'https://app.test/callback',
+    });
+    const redirect = server.authorize(begun.authorizeUrl, { username: 'alice', password: 'pw' });
+    if ('error' in redirect) throw new Error(redirect.error);
+    await store.sync.completeSignIn(redirect);
+    expect(changes).toEqual(['_session']);
+    await store.sync.signOut();
+    expect(changes).toEqual(['_session', '_session']);
+
+    const { store: other } = await signedInStore('Phone');
+    const otherChanges: string[] = [];
+    other.on('change', (name) => otherChanges.push(name));
+    server.revoke((await other.sync.credentials())!.token);
+    await vi.waitFor(() => expect(otherChanges).toContain('_session'));
+  });
+
+  it('does not open realtime when sign-in finishes after dispose', async () => {
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    const begun = await store.sync.beginSignIn({
+      url: server.origin,
+      appId: 'app',
+      deviceName: 'Laptop',
+      redirectUri: 'https://app.test/callback',
+    });
+    const redirect = server.authorize(begun.authorizeUrl, { username: 'alice', password: 'pw' });
+    if ('error' in redirect) throw new Error(redirect.error);
+    store.dispose();
+    expect(await store.sync.completeSignIn(redirect)).toEqual({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.openSockets('app')).toBe(0);
   });
 
   it('skips the blob step without a blob adapter', async () => {

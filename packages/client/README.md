@@ -75,6 +75,8 @@ store.on('change', (collection) => {
 });
 ```
 
+Besides collection names, the store reports `_blobs` when local blobs change, `_outbox` when the outbox does, and `_session` when this device signs in or out, including a sign-out forced by a revoked token.
+
 ## Syncing
 
 ### Signing in

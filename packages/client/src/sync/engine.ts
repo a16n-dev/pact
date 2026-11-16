@@ -3,7 +3,7 @@ import type { CollectionDefinition } from '../collection';
 import { ClockDriftError, type HybridClock } from '../clock';
 import { toWire, type RecordCodec } from '../crypto/codec';
 import { greatestClock, isSealedRecord, type AdapterRecord, type StoredRecord } from '../record';
-import { CONFIG, OUTBOX, configRecord, type OutboxEntry } from '../store/internal';
+import { CONFIG, OUTBOX, SESSION, configRecord, type OutboxEntry } from '../store/internal';
 import type {
   PullResult,
   Registration,
@@ -94,7 +94,7 @@ export class SyncEngine {
   private drainTask: Promise<void> | null = null;
   private drainPending = false;
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  // Set by stop(); a start() still validating its token must not open realtime after it.
+  // Set by stop(); a sign-in or a start() still in flight must not open realtime after it.
   private stopped = false;
 
   constructor(store: SyncStoreAccess) {
@@ -206,7 +206,8 @@ export class SyncEngine {
     await this.setConfig('client', client);
     await this.store.adapter.delete(CONFIG, 'signIn');
     this.connect({ ...client, token: result.token });
-    this.openRealtime({ ...client, token: result.token });
+    if (!this.stopped) this.openRealtime({ ...client, token: result.token });
+    this.store.emit(SESSION);
     return { ok: true };
   }
 
@@ -264,6 +265,7 @@ export class SyncEngine {
     this.realtime = null;
     const client = await this.getConfig<ClientConfig>('client');
     if (client) await this.setConfig('client', { ...client, token: null });
+    this.store.emit(SESSION);
   }
 
   requestPull(): void {
