@@ -8,6 +8,7 @@ import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCry
 import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
 import { FakeServer } from './fakeServer';
+import { signIn } from './signIn';
 import type { StoredRecord } from '../src/record';
 
 const notes = defineCollection({
@@ -63,16 +64,7 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
     encryption: opts.cipher ? { cipher: opts.cipher } : undefined,
     textPushDelayMs: opts.textPushDelayMs,
   });
-  const begun = await store.sync.beginSignIn({
-    url: server.origin,
-    appId: 'app',
-    deviceName,
-    redirectUri: 'https://app.test/callback',
-  });
-  const redirect = server.authorize(begun.authorizeUrl, { username: 'alice', password: 'pw' });
-  if ('error' in redirect) throw new Error(redirect.error);
-  const result = await store.sync.completeSignIn(redirect);
-  expect(result).toEqual({ ok: true });
+  await signIn(store, server, deviceName);
   await vi.waitFor(() => expect(server.openSockets('app')).toBeGreaterThan(0));
   return { store, adapter };
 }
