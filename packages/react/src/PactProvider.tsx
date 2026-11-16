@@ -30,8 +30,10 @@ export type PactProviderProps<S extends AnyStore> = {
   redirectUri: string;
   /**
    * The queries that read each collection, refreshed when it changes.
-   * Collections left out, such as the store's own `_outbox`, refresh nothing.
-   * Without a map every change refreshes every query.
+   * Besides collection names, the store reports `_outbox` when the outbox
+   * changes and `_blobs` when local blobs change; map `_blobs` to the queries
+   * that render blob URIs. Names left out refresh nothing. Without a map
+   * every change refreshes every query.
    */
   queryKeys?: Record<string, readonly QueryKey[]>;
   children: ReactNode;
@@ -54,8 +56,8 @@ export function PactProvider<S extends AnyStore>({
   const queryClient = useQueryClient();
   const [store, setStore] = useState<S | null>(null);
   const [openFailure, setOpenFailure] = useState<{ error: unknown } | null>(null);
-  // StrictMode mounts twice; each open waits for the previous store to be
-  // disposed so two stores never share the adapter while one is starting.
+  // Within this provider, an open waits for the previous store to be disposed,
+  // and one whose effect was already cleaned up (StrictMode's first mount) is skipped.
   const previousClose = useRef<Promise<void>>(Promise.resolve());
   // Read when a batch flushes, so an inline map does not resubscribe each render.
   const queryKeysRef = useRef(queryKeys);
@@ -63,10 +65,10 @@ export function PactProvider<S extends AnyStore>({
 
   useEffect(() => {
     let cancelled = false;
-    const opening = previousClose.current.then(() => open());
+    const opening = previousClose.current.then(() => (cancelled ? null : open()));
     opening.then(
       (opened) => {
-        if (!cancelled) setStore(opened);
+        if (opened && !cancelled) setStore(opened);
       },
       (error: unknown) => {
         if (!cancelled) setOpenFailure({ error });
@@ -76,7 +78,7 @@ export function PactProvider<S extends AnyStore>({
       cancelled = true;
       setStore(null);
       previousClose.current = opening.then(
-        (opened) => opened.dispose(),
+        (opened) => opened?.dispose(),
         () => {}
       );
     };

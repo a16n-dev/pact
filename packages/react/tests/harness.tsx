@@ -57,16 +57,17 @@ export function memoryBlobs() {
   };
 }
 
-export function createStore(opts: { blobs?: boolean } = {}): Promise<TestStore> {
+type StoreOptions = { blobs?: boolean; adapter?: InMemoryAdapter };
+
+export function createStore(opts: StoreOptions = {}): Promise<TestStore> {
   return Store.create({
-    adapter: new InMemoryAdapter(),
+    adapter: opts.adapter ?? new InMemoryAdapter(),
     collections,
     blobs: opts.blobs ? memoryBlobs() : undefined,
     blobHashes: opts.blobs ? blobFields({ notes: ['imageHash'] }) : undefined,
   });
 }
 
-/** Signs in as the user on the server's page, returning the redirect's query. */
 export async function authorize(
   store: TestStore,
   deviceName: string
@@ -84,7 +85,7 @@ export async function authorize(
 
 export async function signedInStore(
   deviceName: string,
-  opts: { blobs?: boolean } = {}
+  opts: StoreOptions = {}
 ): Promise<TestStore> {
   const store = await createStore(opts);
   const result = await store.sync.completeSignIn(await authorize(store, deviceName));

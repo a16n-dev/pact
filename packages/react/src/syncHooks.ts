@@ -1,6 +1,6 @@
 import { normaliseServerUrl, type SignInResult, type SyncConnection } from '@a16n/pact-client';
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePact } from './PactProvider';
 
 const CONNECTION_KEY = ['pact', 'connection'] as const;
@@ -89,18 +89,20 @@ export function useSyncNow() {
 /**
  * Syncs each time the app returns to the foreground. `subscribe` reports
  * whether the app is in the foreground whenever that may have changed, and
- * returns an unsubscribe; keep it stable, such as a module-level function.
- * The app counts as in the foreground when this mounts.
+ * returns an unsubscribe. The first `subscribe` is used for as long as the
+ * component stays mounted. The app counts as in the foreground when this mounts.
  */
 export function useSyncOnForeground(
   subscribe: (onChange: (foreground: boolean) => void) => () => void
 ): void {
   const { store } = usePact();
+  // Only the first is used: resubscribing on re-render would forget a background state.
+  const subscribeRef = useRef(subscribe);
   useEffect(() => {
     let wasForeground = true;
-    return subscribe((foreground) => {
+    return subscribeRef.current((foreground) => {
       if (foreground && !wasForeground) store.sync.syncNow().catch(() => {});
       wasForeground = foreground;
     });
-  }, [store, subscribe]);
+  }, [store]);
 }

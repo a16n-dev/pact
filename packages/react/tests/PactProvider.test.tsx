@@ -1,7 +1,15 @@
 import { screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { usePactStore } from '../src';
-import { createStore, renderWithPact, server, signedInStore, type TestStore } from './harness';
+import { InMemoryAdapter } from '@a16n/pact-client';
+import {
+  APP_ID,
+  createStore,
+  renderWithPact,
+  server,
+  signedInStore,
+  type TestStore,
+} from './harness';
 
 let probed: TestStore | null = null;
 
@@ -36,20 +44,35 @@ describe('PactProvider', () => {
     await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
   });
 
-  it('opens one store at a time under StrictMode', async () => {
-    const stores: TestStore[] = [];
-    let openCount = 0;
-    const open = async () => {
-      openCount += 1;
-      expect(stores.every((s) => vi.mocked(s.dispose).mock.calls.length > 0)).toBe(true);
-      const store = await createStore();
-      vi.spyOn(store, 'dispose');
-      stores.push(store);
-      return store;
-    };
+  it('opens the store once under StrictMode', async () => {
+    const open = vi.fn(() => createStore());
     renderWithPact(<StoreProbe />, { open, strict: true });
     await screen.findByText('open');
-    expect(openCount).toBe(2);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps one realtime connection for a signed-in store under StrictMode', async () => {
+    const adapter = new InMemoryAdapter();
+    (await signedInStore('Laptop', { adapter })).dispose();
+    await waitFor(() => expect(server.openSockets(APP_ID)).toBe(0));
+    renderWithPact(<StoreProbe />, { open: () => createStore({ adapter }), strict: true });
+    await screen.findByText('open');
+    await waitFor(() => expect(server.openSockets(APP_ID)).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.openSockets(APP_ID)).toBe(1);
+  });
+
+  it('stops listening to the store on unmount', async () => {
+    const store = await signedInStore('Laptop');
+    const { queryClient, unmount } = renderWithPact(<StoreProbe />, { open: async () => store });
+    await screen.findByText('open');
+    unmount();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await store.collection('notes').create({ title: 'after' });
+    server.revoke((await store.sync.credentials())!.token);
+    await store.sync.session();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it('throws an open failure to the error boundary', async () => {

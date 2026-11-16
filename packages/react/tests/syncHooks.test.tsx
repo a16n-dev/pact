@@ -1,4 +1,5 @@
 import { act, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   SignInError,
@@ -26,7 +27,6 @@ function Connection() {
   return <p>{connection ? `connected: ${connection.deviceName}` : 'signed out'}</p>;
 }
 
-// Renders a hook inside the provider and the connection, so a test can see both.
 async function withHook<T>(store: TestStore, hook: () => T) {
   const result: { current: T | null } = { current: null };
   function Probe() {
@@ -163,6 +163,31 @@ describe('useSyncOnForeground', () => {
     expect(syncNow).toHaveBeenCalledTimes(1);
     unmount();
     expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it('remembers the background across re-renders with an inline subscribe', async () => {
+    const store = await createStore();
+    const syncNow = vi.spyOn(store.sync, 'syncNow').mockResolvedValue();
+    let report: (foreground: boolean) => void = () => {};
+    let subscriptions = 0;
+    let rerender: (n: number) => void = () => {};
+    await withHook(store, () => {
+      const [, setCount] = useState(0);
+      rerender = setCount;
+      useSyncOnForeground((onChange) => {
+        subscriptions += 1;
+        report = onChange;
+        return () => {};
+      });
+    });
+    await waitFor(() => expect(syncNow).toHaveBeenCalledTimes(1));
+    syncNow.mockClear();
+
+    report(false);
+    act(() => rerender(1));
+    report(true);
+    expect(syncNow).toHaveBeenCalledTimes(1);
+    expect(subscriptions).toBe(1);
   });
 
   it('ignores a failed sync', async () => {

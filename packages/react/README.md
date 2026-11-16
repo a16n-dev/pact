@@ -3,8 +3,10 @@
 React bindings for [`@a16n/pact-client`](../client) with [TanStack Query](https://tanstack.com/query): a provider that opens the store and keeps the query cache in step with it, and hooks for sign-in and sync. It renders no UI and works on web and React Native alike; anything platform-specific is passed in.
 
 ```
-npm install @a16n/pact-react @a16n/pact-client @tanstack/react-query
+pnpm add @a16n/pact-react @a16n/pact-client @tanstack/react-query
 ```
+
+The package is not published to npm yet.
 
 Reading and writing documents stays in your own queries and mutations.
 
@@ -40,7 +42,7 @@ export const useAppStore = () => usePactStore<AppStore>();
 </QueryClientProvider>;
 ```
 
-When the store reports a change, the provider invalidates the query keys mapped to that collection, batching changes that arrive together. Without `queryKeys`, every change invalidates every query. A sign-out from anywhere, such as a revoked token, invalidates every query.
+When the store reports a change, the provider invalidates the query keys mapped to that collection, batching changes that arrive together. Besides your collections, the store reports `_outbox` when the outbox changes and `_blobs` when local blobs change: an app that renders blob URIs should map `_blobs` to those queries. Without `queryKeys`, every change invalidates every query, so each local write invalidates everything twice, once for the write and once when the outbox clears. A sign-out from anywhere, such as a revoked token, invalidates every query.
 
 ## Signing in
 
@@ -62,11 +64,13 @@ if (result.status === 'error') {
 }
 ```
 
+On the web, once it succeeds, remove `code` and `state` from the URL or navigate away: a reload would send the used code again and report an error although the device is signed in.
+
 `SignInError.reason` is `state` or `code` for a stale or reused link, `network` when the server could not be reached, and `server` when it failed. `useCompleteSignIn` is the same as a mutation, for apps that receive the redirect elsewhere.
 
 ## Syncing
 
-`useSyncNow()` is a mutation for pull-to-refresh and the like. `useSyncOnForeground(subscribe)` syncs whenever the app returns to the foreground. `subscribe` reports whether the app is in the foreground and returns an unsubscribe; define it outside the component so it stays the same.
+`useSyncNow()` is a mutation for pull-to-refresh and the like. `useSyncOnForeground(subscribe)` syncs whenever the app returns to the foreground. `subscribe` reports whether the app is in the foreground and returns an unsubscribe. Only the first `subscribe` is used while the component is mounted.
 
 On the web:
 
