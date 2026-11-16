@@ -102,24 +102,21 @@ describe('an encrypted store', () => {
     store.dispose();
   });
 
-  it.fails(
-    'keeps text field values out of the adapter while edits wait in the outbox',
-    async () => {
-      const { store, adapter, entries } = await encryptedStore();
-      await entries.create({
-        id: 'jr-1',
-        zqx_title: 'title',
-        zqx_tags: [],
-        zqx_body: 'zqx_ synced body',
-      });
-      await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
-      server.offline = true;
-      await entries.update('jr-1', { zqx_body: 'edited offline' });
-      expect(await store.sync.pending()).toBe(1);
-      expect(await adapterContents(adapter)).not.toMatch(/zqx_ synced body/);
-      store.dispose();
-    }
-  );
+  it('keeps text field values out of the adapter while edits wait in the outbox', async () => {
+    const { store, adapter, entries } = await encryptedStore();
+    await entries.create({
+      id: 'jr-1',
+      zqx_title: 'title',
+      zqx_tags: [],
+      zqx_body: 'zqx_ synced body',
+    });
+    await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
+    server.offline = true;
+    await entries.update('jr-1', { zqx_body: 'edited offline' });
+    expect(await store.sync.pending()).toBe(1);
+    expect(await adapterContents(adapter)).not.toMatch(MARKER);
+    store.dispose();
+  });
 });
 
 async function keyIdOf(adapter: InMemoryAdapter): Promise<string> {

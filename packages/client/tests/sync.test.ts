@@ -8,6 +8,7 @@ import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCry
 import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
 import { FakeServer } from './fakeServer';
+import { dumpAdapter } from './fixtureSupport';
 import { signIn } from './signIn';
 import type { StoredRecord } from '../src/record';
 
@@ -67,6 +68,15 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
   await signIn(store, server, deviceName);
   await vi.waitFor(() => expect(server.openSockets('app')).toBeGreaterThan(0));
   return { store, adapter };
+}
+
+class SilentSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onclose: ((e: { code: number; reason: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  send(): void {}
+  close(): void {}
 }
 
 // Holds every request until released, so a test can overlap work with a switch.
@@ -178,6 +188,9 @@ describe('sign-in', () => {
 
   it('signs out when a stored token is rejected at startup', async () => {
     const { store, adapter } = await signedInStore('Laptop');
+    // Realtime's open-time pull would otherwise meet the revoked token and
+    // clear it before the second store reads it.
+    await store.sync.pull();
     const token = (await store.sync.credentials())!.token;
     store.dispose();
     server.revoke(token);
@@ -344,26 +357,6 @@ describe('push and pull', () => {
     await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
     const versions = server.versionsOf('app', 'n', 'nt-1');
     expect(versions.map((v) => JSON.parse(v.data).fields.title)).toContain('second');
-  });
-
-  it('moves the text base of a kept entry past the edits just pushed', async () => {
-    const { store, adapter } = await signedInStore('A', { textPushDelayMs: 60_000 });
-    store.dispose();
-    // Realtime's open-time drain may push the second write too, so the base
-    // is checked as it is written rather than read back afterwards.
-    const bases: unknown[] = [];
-    const put = adapter.put.bind(adapter);
-    vi.spyOn(adapter, 'put').mockImplementation(async (collection, id, record) => {
-      if (collection === '_outbox') bases.push((record as StoredRecord).fields.textBase);
-      return put(collection, id, record);
-    });
-    const push = heldPush();
-    await store.collection('docs').create({ id: 'd-1', body: 'abc' });
-    await push.started;
-    await store.collection('docs').updateText('d-1', 'body', { base: 'abc', next: 'abcd' });
-    push.release();
-    await vi.waitFor(() => expect(bases).toContainEqual({ body: 'abc' }));
-    expect(bases.slice(0, 2)).toEqual([{ body: '' }, { body: '' }]);
   });
 
   it('debounces text pushes per document', async () => {
@@ -571,6 +564,162 @@ describe('push and pull', () => {
       const cursor = await adapter.get('_config', 'cursor');
       expect(cursor && !('enc' in cursor) ? cursor.fields.cursor : null).toBe(seq);
     });
+  });
+});
+
+describe.each([
+  { name: 'unencrypted', phrase: null },
+  { name: 'with a shared key', phrase: 'shared' },
+])('text edits around a compaction ($name)', ({ phrase }) => {
+  let cipher: DocCipher | undefined;
+
+  beforeEach(async () => {
+    cipher = phrase
+      ? createWebCryptoCipher(await deriveEncryptionKey(phrase, 'app', 1_000))
+      : undefined;
+  });
+
+  // Realtime would pull and push on its own schedule, so these devices sync
+  // only when the test says.
+  async function device(name: string, opts: Options = {}) {
+    const signedIn = await signedInStore(name, { ...opts, cipher });
+    signedIn.store.dispose();
+    return { ...signedIn, docs: signedIn.store.collection('docs') };
+  }
+
+  async function bodyOf(store: Store<any>): Promise<string | undefined> {
+    return ((await store.collection('docs').get('d-1')) as { body: string } | null)?.body;
+  }
+
+  it('replays an edit pushed after a compaction it had not seen, across a reload', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    await b.store.sync.drain();
+
+    const reopened = await Store.create({
+      adapter: b.adapter,
+      collections: [notes, docs, local],
+      encryption: cipher ? { cipher } : undefined,
+    });
+    reopened.dispose();
+    await reopened.sync.pull();
+    expect(await bodyOf(reopened)).toBe('one two');
+    await reopened.sync.drain();
+    await a.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('one two');
+  });
+
+  it('carries over an edit pushed while another device was compacting', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    const aToken = (await a.store.sync.credentials())!.token;
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (input.endsWith('/sync/push') && auth === `Bearer ${aToken}`) {
+        throw new TypeError('fetch failed');
+      }
+      return server.fetch(input, init);
+    });
+    await a.docs.compactText('d-1');
+    await b.store.sync.drain();
+    vi.stubGlobal('fetch', server.fetch);
+    await a.store.sync.drain();
+
+    await b.store.sync.pull();
+    await a.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('one two');
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    expect(await bodyOf(b.store)).toBe('one two');
+  });
+
+  it('replays a queued edit across compactions by two other devices', async () => {
+    const a = await device('A');
+    const b = await device('B');
+    const c = await device('C', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await c.store.sync.pull();
+    await c.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await a.docs.update('d-1', { body: 'zero one' });
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await b.docs.compactText('d-1');
+    await b.store.sync.drain();
+    await c.store.sync.drain();
+
+    await c.store.sync.pull();
+    expect(await bodyOf(c.store)).toBe('zero one two');
+    await c.store.sync.drain();
+    await a.store.sync.pull();
+    await b.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('zero one two');
+    expect(await bodyOf(b.store)).toBe('zero one two');
+  });
+
+  it('replays only the edits a push had not sent when a compaction saw that push', async () => {
+    const a = await device('A', { textPushDelayMs: 60_000 });
+    const b = await device('B');
+    const key = cipher ? `docs@${await cipher.keyId()}` : 'docs';
+    const push = heldPush();
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await push.started;
+    await a.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    push.release();
+    await vi.waitFor(() => expect(server.versionsOf('app', key, 'd-1')).toHaveLength(1));
+    await b.store.sync.pull();
+    await b.docs.compactText('d-1');
+    await b.store.sync.drain();
+
+    await a.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('one two');
+  });
+
+  it('turns the plaintext text base an older build queued into a sealed one', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'zqx_ one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await b.docs.updateText('d-1', 'body', { base: 'zqx_ one', next: 'zqx_ one two' });
+    const [queued] = await b.adapter.getAll('_outbox');
+    const entry = queued!.record as StoredRecord;
+    await b.adapter.put('_outbox', queued!.id, {
+      ...entry,
+      fields: { ...entry.fields, textBase: { body: 'zqx_ one' } },
+    });
+    for (const { id } of await b.adapter.getAll('_textBases')) {
+      await b.adapter.delete('_textBases', id);
+    }
+
+    // Realtime's open-time drain would push the edit before the compaction lands.
+    vi.stubGlobal('WebSocket', SilentSocket);
+    const reopened = await Store.create({
+      adapter: b.adapter,
+      collections: [notes, docs, local],
+      encryption: cipher ? { cipher } : undefined,
+    });
+    reopened.dispose();
+    const [upgraded] = await b.adapter.getAll('_outbox');
+    expect((upgraded!.record as StoredRecord).fields).not.toHaveProperty('textBase');
+
+    if (cipher) expect(JSON.stringify(await dumpAdapter(b.adapter))).not.toMatch(/zqx_/);
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    await reopened.sync.pull();
+    expect(await bodyOf(reopened)).toBe('zqx_ one two');
   });
 });
 

@@ -1,0 +1,57 @@
+{
+  "collection": "docs",
+  "storageKey": "docs",
+  "fields": [
+    "body"
+  ],
+  "records": [
+    {
+      "id": "d-edited",
+      "compacted": false,
+      "record": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "d-edited",
+          "createdAt": "2026-01-01T00:00:07.000Z",
+          "deletedAt": null,
+          "title": "Text"
+        },
+        "text": "AQWxz+DvCgABAQRib2R5A4Sxz+DvCgIHIHF1aWNrIIGxz+DvCgkGhLHP4O8KDxtmb3gganVtcHMgb3ZlciB0aGUgbGF6eSBkb2fEsc/g7woCsc/g7woDAUEBsc/g7woCAAMKBg==",
+        "clocks": {
+          "deletedAt": "1767225607000-0000-fixtureNode1",
+          "title": "1767225607000-0000-fixtureNode1",
+          "body": "1767225609000-0000-fixtureNode1"
+        }
+      },
+      "text": {
+        "body": "A quick fox jumps over the lazy dog"
+      }
+    },
+    {
+      "id": "d-compacted",
+      "compacted": true,
+      "record": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "d-compacted",
+          "createdAt": "2026-01-01T00:00:10.000Z",
+          "deletedAt": null,
+          "title": "Text"
+        },
+        "text": "AQHWo6i+AwAEAQRib2R5I0EgcXVpY2sgZm94IGp1bXBzIG92ZXIgdGhlIGxhenkgZG9nAA==",
+        "clocks": {
+          "deletedAt": "1767225610000-0000-fixtureNode1",
+          "title": "1767225610000-0000-fixtureNode1",
+          "body": "1767225613000-0000-fixtureNode1"
+        },
+        "textGeneration": {
+          "number": 1,
+          "seed": 935989718
+        }
+      },
+      "text": {
+        "body": "A quick fox jumps over the lazy dog"
+      }
+    }
+  ]
+}

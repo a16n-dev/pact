@@ -11,7 +11,7 @@ import { fromBase64, toBase64 } from '../src/crypto/base64';
 import { encryptedCodec, plainCodec, toWire } from '../src/crypto/codec';
 import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
 import { Migrator } from '../src/migrator';
-import { StoredRecordSchema } from '../src/record';
+import { StoredRecordSchema, type StoredRecord } from '../src/record';
 import { Store } from '../src/store';
 import { yjsTextEngine } from '../src/yjs';
 import { FakeServer } from './fakeServer';
@@ -217,33 +217,39 @@ describe.each(versions)('fixtures %s', (version) => {
     async function open(key: SnapshotFixture['views'][number]['key']) {
       server.offline = true;
       const cipher = key ? await cipherFor(key) : null;
+      const adapter = await loadAdapter(fixture.adapter);
       const store = await Store.create({
-        adapter: await loadAdapter(fixture.adapter),
+        adapter,
         collections: fixtureCollections,
         encryption: cipher ? { cipher } : undefined,
       });
       await vi.waitFor(() =>
         expect(server.requests.some((r) => r.path === '/auth/check')).toBe(true)
       );
-      return store;
+      return { store, adapter };
     }
 
     it.each(fixture.views.map((view) => ({ lens: view.key?.password ?? 'plain', ...view })))(
       'opens the $lens lens and reads the expected documents and session',
       async ({ key, documents }) => {
-        const store = await open(key);
+        const { store, adapter } = await open(key);
         expect(await readDocuments(store)).toEqual(documents);
         expect(await store.sync.registration()).toEqual(fixture.registration);
         expect(await store.sync.credentials()).toEqual(fixture.credentials);
         expect((await store.sync.lastSyncedAt())?.toISOString()).toBe(fixture.lastSyncedAt);
         expect(await store.sync.pending()).toBe(fixture.pending.length);
+        // v1 kept each pending entry's text base on the entry, in plaintext.
+        const outbox = await adapter.getAll('_outbox');
+        expect(outbox.map(({ record }) => (record as StoredRecord).fields)).not.toContainEqual(
+          expect.objectContaining({ textBase: expect.anything() })
+        );
         await store.sync.pull().catch(() => {});
         store.dispose();
       }
     );
 
     it('pushes its pending outbox after signing in, pulling from the stored cursor', async () => {
-      const store = await open(fixture.views[0]!.key);
+      const { store } = await open(fixture.views[0]!.key);
       server.offline = false;
       await signIn(store, server);
       await store.sync.drain();

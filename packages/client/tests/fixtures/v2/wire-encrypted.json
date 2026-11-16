@@ -1,0 +1,30 @@
+{
+  "key": {
+    "password": "fixture password",
+    "salt": "fixture salt",
+    "iterations": 1000
+  },
+  "rawKey": "iEE53SzqIVYOWPgbN48HECvNpn8iK/Oe89MzNdVcUR8=",
+  "keyId": "ac17d4801639c52e",
+  "collection": "n@ac17d4801639c52e",
+  "id": "nt-wire",
+  "envelope": "pactenc$1$Gt8xK5pXmrNhKFGJ$9Nl/U/OVldFapu23pOi8HfcpdjmpVuglPMhOjoeNrHzgJCsmwjLnm/r0YdSq/22zt/+1WTOInPFWddNdZ96ap9nBR79+LxaxQ8XD4D1IeL7nkkCBhUT48Fl7d+U27cJsrLXpJ/CZbePo75CyWlP2u546o2nBcXVOkBwabfFW06uovH4q7vur5cVubZGJ3yAiEdrkwZl9RWCc7UuyEO8WOvWcv1rcM7t/GE0Akc6mukr5eAVrEB1plhFBDCCUoEafXCidx+fOFg8cyxZrCk89bESzHl9XS6xYqxU9vSwsbcLWXZ/uRCkaY7qhjjaEhTwABOCE2+E1tRBcNg6H5DeCvpEpIzF/eXJpDfL6b2jpz+0T0zgLTKcWYK9I14wgNPNvwUWivoxkw3decsdknTAD4xg=",
+  "record": {
+    "schemaVersion": 3,
+    "fields": {
+      "id": "nt-wire",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "deletedAt": null,
+      "title": "On the wire",
+      "tags": [
+        "plain",
+        "üñî"
+      ]
+    },
+    "clocks": {
+      "title": "1767225600000-0000-fixtureNode1",
+      "tags": "1767225601000-0003-fixtureNode1",
+      "deletedAt": "1767225600000-0000-fixtureNode1"
+    }
+  }
+}
