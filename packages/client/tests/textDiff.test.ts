@@ -25,6 +25,10 @@ describe('textSplices', () => {
     ]);
     expect(textSplices('same', 'same')).toEqual([]);
   });
+
+  it('keeps every character the new text keeps', () => {
+    expect(textSplices('ab', 'xayb').every((splice) => splice.deleteCount === 0)).toBe(true);
+  });
 });
 
 describe('rebaseText', () => {
@@ -49,5 +53,9 @@ describe('rebaseText', () => {
 
   it('drops text deleted on either side', () => {
     expect(rebaseText('one two three', 'one three', 'one two three!')).toBe('one three!');
+  });
+
+  it('does not bring back text the other side deleted next to its inserts', () => {
+    expect(rebaseText('ab', 'c', 'xayb')).toBe('xyc');
   });
 });

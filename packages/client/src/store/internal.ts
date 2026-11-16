@@ -1,8 +1,9 @@
-import type { StoredRecord } from '../record';
+import type { AdapterRecord, StoredRecord } from '../record';
 
 export const CONFIG = '_config';
 export const OUTBOX = '_outbox';
 export const HELD = '_held';
+export const TEXT_BASES = '_textBases';
 
 /** Internal `_*` rows reuse the record shape with their payload in `fields` and no clocks. */
 export function configRecord(id: string, value: Record<string, unknown>): StoredRecord {
@@ -20,9 +21,17 @@ export type OutboxEntry = {
   key?: string;
   docId: string;
   order: string;
-  // The text fields' values before the first queued write, in collections with text.
-  textBase?: Record<string, string>;
 };
+
+// This device's text edits to one document that a compaction elsewhere may
+// still have missed, in runs split at each push. `base` is the document before
+// the run, sealed like the document, with every version of its text generation
+// that arrived since merged in, so its text differs from the local text by
+// just those edits; null when the run created the document. `start` is the
+// clock of the run's first write and `seq` the push that sent it.
+export type TextBaseRun = { base: AdapterRecord | null; start: string; seq?: number };
+
+export type TextBases = { key: string; docId: string; runs: TextBaseRun[] };
 
 export function outboxKey(collectionKey: string, docId: string): string {
   return `${collectionKey}/${docId}`;

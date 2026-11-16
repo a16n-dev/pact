@@ -1,0 +1,331 @@
+{
+  "adapter": {
+    "_config": {
+      "node": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "node",
+          "createdAt": "",
+          "node": "fixtureNode1"
+        }
+      },
+      "client": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "client",
+          "createdAt": "",
+          "url": "https://sync.test",
+          "appId": "app",
+          "deviceId": "fixtureNode1",
+          "deviceName": "Fixture device",
+          "token": "pact_fixtureToken",
+          "maxPushDocuments": 50
+        }
+      },
+      "pulledCollections": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "pulledCollections",
+          "createdAt": "",
+          "keys": [
+            "n",
+            "docs",
+            "settings",
+            "_tasks"
+          ]
+        }
+      },
+      "cursor": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "cursor",
+          "createdAt": "",
+          "cursor": 1006
+        }
+      },
+      "lastSyncedAt": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "lastSyncedAt",
+          "createdAt": "",
+          "at": "2026-01-01T00:00:20.000Z"
+        }
+      }
+    },
+    "_outbox": {
+      "n/nt-kept": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "n/nt-kept",
+          "createdAt": "",
+          "collection": "notes",
+          "key": "n",
+          "docId": "nt-kept",
+          "order": "1767225621000-0000-fixtureNode1"
+        }
+      },
+      "n/nt-offline": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "n/nt-offline",
+          "createdAt": "",
+          "collection": "notes",
+          "key": "n",
+          "docId": "nt-offline",
+          "order": "1767225622000-0000-fixtureNode1"
+        }
+      },
+      "docs/d-letter": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "docs/d-letter",
+          "createdAt": "",
+          "collection": "docs",
+          "key": "docs",
+          "docId": "d-letter",
+          "order": "1767225623000-0000-fixtureNode1"
+        }
+      },
+      "settings/st-main": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "settings/st-main",
+          "createdAt": "",
+          "collection": "settings",
+          "key": "settings",
+          "docId": "st-main",
+          "order": "1767225624000-0000-fixtureNode1"
+        }
+      }
+    },
+    "n": {
+      "nt-kept": {
+        "schemaVersion": 3,
+        "fields": {
+          "id": "nt-kept",
+          "createdAt": "2026-01-01T00:00:14.000Z",
+          "deletedAt": null,
+          "title": "Kept, renamed offline",
+          "tags": [
+            "a",
+            "b"
+          ]
+        },
+        "clocks": {
+          "deletedAt": "1767225614000-0000-fixtureNode1",
+          "title": "1767225621000-0000-fixtureNode1",
+          "tags": "1767225614000-0000-fixtureNode1"
+        }
+      },
+      "nt-gone": {
+        "schemaVersion": 3,
+        "fields": {
+          "id": "nt-gone",
+          "createdAt": "2026-01-01T00:00:15.000Z",
+          "deletedAt": "2026-01-01T00:00:16.000Z",
+          "title": "Gone",
+          "tags": []
+        },
+        "clocks": {
+          "deletedAt": "1767225616000-0000-fixtureNode1",
+          "title": "1767225615000-0000-fixtureNode1",
+          "tags": "1767225615000-0000-fixtureNode1"
+        }
+      },
+      "nt-offline": {
+        "schemaVersion": 3,
+        "fields": {
+          "id": "nt-offline",
+          "createdAt": "2026-01-01T00:00:22.000Z",
+          "deletedAt": null,
+          "title": "Written offline",
+          "tags": []
+        },
+        "clocks": {
+          "deletedAt": "1767225622000-0000-fixtureNode1",
+          "title": "1767225622000-0000-fixtureNode1",
+          "tags": "1767225622000-0000-fixtureNode1"
+        }
+      }
+    },
+    "_textBases": {
+      "docs/d-letter": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "docs/d-letter",
+          "createdAt": "",
+          "key": "docs",
+          "docId": "d-letter",
+          "runs": [
+            {
+              "base": {
+                "schemaVersion": 1,
+                "fields": {
+                  "id": "d-letter",
+                  "createdAt": "2026-01-01T00:00:17.000Z",
+                  "deletedAt": null,
+                  "title": "Letter"
+                },
+                "text": "AQHH0oeMBQAEAQRib2R5EURlYXIgZGlhcnksIGhlbGxvAA==",
+                "clocks": {
+                  "deletedAt": "1767225617000-0000-fixtureNode1",
+                  "title": "1767225617000-0000-fixtureNode1",
+                  "body": "1767225618000-0000-fixtureNode1"
+                }
+              },
+              "start": "1767225623000-0000-fixtureNode1"
+            }
+          ]
+        }
+      }
+    },
+    "docs": {
+      "d-letter": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "d-letter",
+          "createdAt": "2026-01-01T00:00:17.000Z",
+          "deletedAt": null,
+          "title": "Letter"
+        },
+        "text": "AQHH0oeMBQAEAQRib2R5F0RlYXIgZGlhcnksIGhlbGxvIGFnYWluAA==",
+        "clocks": {
+          "deletedAt": "1767225617000-0000-fixtureNode1",
+          "title": "1767225617000-0000-fixtureNode1",
+          "body": "1767225623000-0000-fixtureNode1"
+        }
+      }
+    },
+    "settings": {
+      "st-main": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "st-main",
+          "createdAt": "2026-01-01T00:00:19.000Z",
+          "deletedAt": null,
+          "theme": "dark",
+          "fontSizePx": 16
+        },
+        "clock": "1767225624000-0000-fixtureNode1"
+      }
+    },
+    "prefs": {
+      "p-local": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "p-local",
+          "createdAt": "2026-01-01T00:00:20.000Z",
+          "deletedAt": null,
+          "theme": "light"
+        },
+        "clocks": {
+          "deletedAt": "1767225620000-0000-fixtureNode1",
+          "theme": "1767225620000-0000-fixtureNode1"
+        }
+      }
+    }
+  },
+  "registration": {
+    "url": "https://sync.test",
+    "appId": "app",
+    "deviceId": "fixtureNode1",
+    "deviceName": "Fixture device"
+  },
+  "credentials": {
+    "url": "https://sync.test",
+    "token": "pact_fixtureToken"
+  },
+  "lastSyncedAt": "2026-01-01T00:00:20.000Z",
+  "cursor": 1006,
+  "views": [
+    {
+      "key": null,
+      "documents": {
+        "notes": [
+          {
+            "id": "nt-gone",
+            "createdAt": "2026-01-01T00:00:15.000Z",
+            "updatedAt": "2026-01-01T00:00:16.000Z",
+            "deletedAt": "2026-01-01T00:00:16.000Z",
+            "title": "Gone",
+            "tags": []
+          },
+          {
+            "id": "nt-kept",
+            "createdAt": "2026-01-01T00:00:14.000Z",
+            "updatedAt": "2026-01-01T00:00:21.000Z",
+            "deletedAt": null,
+            "title": "Kept, renamed offline",
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          {
+            "id": "nt-offline",
+            "createdAt": "2026-01-01T00:00:22.000Z",
+            "updatedAt": "2026-01-01T00:00:22.000Z",
+            "deletedAt": null,
+            "title": "Written offline",
+            "tags": []
+          }
+        ],
+        "docs": [
+          {
+            "id": "d-letter",
+            "createdAt": "2026-01-01T00:00:17.000Z",
+            "updatedAt": "2026-01-01T00:00:23.000Z",
+            "deletedAt": null,
+            "title": "Letter",
+            "body": "Dear diary, hello again"
+          }
+        ],
+        "settings": [
+          {
+            "id": "st-main",
+            "createdAt": "2026-01-01T00:00:19.000Z",
+            "updatedAt": "2026-01-01T00:00:24.000Z",
+            "deletedAt": null,
+            "theme": "dark",
+            "fontSizePx": 16
+          }
+        ],
+        "prefs": [
+          {
+            "id": "p-local",
+            "createdAt": "2026-01-01T00:00:20.000Z",
+            "updatedAt": "2026-01-01T00:00:20.000Z",
+            "deletedAt": null,
+            "theme": "light"
+          }
+        ]
+      }
+    }
+  ],
+  "pending": [
+    {
+      "collection": "n",
+      "id": "nt-kept",
+      "hlc": "1767225621000-0000-fixtureNode1",
+      "data": "{\"schemaVersion\":3,\"fields\":{\"id\":\"nt-kept\",\"createdAt\":\"2026-01-01T00:00:14.000Z\",\"deletedAt\":null,\"title\":\"Kept, renamed offline\",\"tags\":[\"a\",\"b\"]},\"clocks\":{\"deletedAt\":\"1767225614000-0000-fixtureNode1\",\"title\":\"1767225621000-0000-fixtureNode1\",\"tags\":\"1767225614000-0000-fixtureNode1\"}}"
+    },
+    {
+      "collection": "n",
+      "id": "nt-offline",
+      "hlc": "1767225622000-0000-fixtureNode1",
+      "data": "{\"schemaVersion\":3,\"fields\":{\"id\":\"nt-offline\",\"createdAt\":\"2026-01-01T00:00:22.000Z\",\"deletedAt\":null,\"title\":\"Written offline\",\"tags\":[]},\"clocks\":{\"deletedAt\":\"1767225622000-0000-fixtureNode1\",\"title\":\"1767225622000-0000-fixtureNode1\",\"tags\":\"1767225622000-0000-fixtureNode1\"}}"
+    },
+    {
+      "collection": "docs",
+      "id": "d-letter",
+      "hlc": "1767225623000-0000-fixtureNode1",
+      "data": "{\"schemaVersion\":1,\"fields\":{\"id\":\"d-letter\",\"createdAt\":\"2026-01-01T00:00:17.000Z\",\"deletedAt\":null,\"title\":\"Letter\"},\"text\":\"AQHH0oeMBQAEAQRib2R5F0RlYXIgZGlhcnksIGhlbGxvIGFnYWluAA==\",\"clocks\":{\"deletedAt\":\"1767225617000-0000-fixtureNode1\",\"title\":\"1767225617000-0000-fixtureNode1\",\"body\":\"1767225623000-0000-fixtureNode1\"}}"
+    },
+    {
+      "collection": "settings",
+      "id": "st-main",
+      "hlc": "1767225624000-0000-fixtureNode1",
+      "data": "{\"schemaVersion\":1,\"fields\":{\"id\":\"st-main\",\"createdAt\":\"2026-01-01T00:00:19.000Z\",\"deletedAt\":null,\"theme\":\"dark\",\"fontSizePx\":16},\"clock\":\"1767225624000-0000-fixtureNode1\"}"
+    }
+  ]
+}

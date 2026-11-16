@@ -7,7 +7,7 @@ import { toWire, type RecordCodec } from '../crypto/codec';
 import type { DocCipher } from '../crypto/types';
 import { Migrator } from '../migrator';
 import { randomId } from '../lib/ids';
-import { ClockDriftError, HybridClock, clockToIso } from '../clock';
+import { ClockDriftError, HybridClock, clockToIso, decodeHlc } from '../clock';
 import {
   assertKeyLength,
   type CollectionDefinition,
@@ -56,11 +56,14 @@ import {
   HELD,
   MAX_DOCUMENT_BYTES,
   OUTBOX,
+  TEXT_BASES,
   DEFAULT_TEXT_PUSH_DELAY_MS,
   configRecord,
   outboxKey,
   type NodeConfig,
   type OutboxEntry,
+  type TextBaseRun,
+  type TextBases,
 } from './internal';
 import { lensFor, lensKey, parseLensKey, type Lens } from './lens';
 import {
@@ -89,6 +92,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   private readonly indexes: IndexManager | null;
   private readonly textCache = new TextCache();
   private readonly clock: HybridClock;
+  private readonly node: string;
   // Writes and merges to one document run one at a time, in arrival order.
   private readonly locks = new Map<string, Promise<unknown>>();
   // Set while the lens changes: new document work waits, and the switch waits
@@ -143,6 +147,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const indexManager = new IndexManager(defs);
     this.indexes = indexManager.isEmpty ? null : indexManager;
     this.clock = new HybridClock(node);
+    this.node = node;
     this.hasBlobRefs = options.blobHashes !== undefined;
     this.blobHashesOf = options.blobHashes ?? (() => []);
     this.syncEngine = new SyncEngine({
@@ -165,8 +170,9 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         (await this.adapter.listCollections()).filter(
           (key) => this.definitionOfKey(key)?.def.synced
         ),
-      applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
-      clearQueued: (key, entry, pushed) => this.clearQueued(key, entry, pushed),
+      applyIncoming: (def, id, record, seq) => this.applyIncoming(def, id, record, true, seq),
+      clearQueued: (key, entry, pushed, seq) => this.clearQueued(key, entry, pushed, seq),
+      pulledThrough: (cursor) => this.confirmTextBases(cursor),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
       emit: (collection) => this.emit(collection),
@@ -260,6 +266,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
   ): Promise<Store<Defs>> {
     const lens = await lensFor(options.encryption?.cipher ?? null);
     const store = new Store(options, await Store.loadNode(options.adapter), lens);
+    await store.upgradeOutbox();
     await store.retryHeld();
     await store.buildIndexes();
     await store.syncEngine.restore();
@@ -529,27 +536,21 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     return { plain, text };
   }
 
-  // `textBase` gives the text before this write; it is kept on the entry
-  // from the first write until the push, as the base for rebasing those
-  // writes if a newer text generation arrives first.
+  // `before` is the document as this write found it, given for writes to
+  // text collections in the active lens.
   private async queueOutbox(
     def: CollectionDefinition,
     id: string,
     clock: string,
-    opts: {
-      debounceMs?: number;
-      storageKey?: string;
-      textBase?: () => Record<string, string>;
-    } = {}
+    opts: { debounceMs?: number; storageKey?: string; before?: StoredRecord | null } = {}
   ): Promise<void> {
     if (!def.synced) return;
     const storageKey = opts.storageKey ?? this.keyOf(def);
     const key = outboxKey(storageKey, id);
-    const entry: OutboxEntry = { collection: def.name, key: storageKey, docId: id, order: clock };
-    if (opts.textBase) {
-      const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
-      entry.textBase = queued?.textBase ?? opts.textBase();
+    if (def.textEngine && opts.before !== undefined) {
+      await this.startTextRun(storageKey, id, clock, opts.before);
     }
+    const entry: OutboxEntry = { collection: def.name, key: storageKey, docId: id, order: clock };
     await this.adapter.put(OUTBOX, key, configRecord(key, entry));
     this.emit(OUTBOX);
     const { debounceMs } = opts;
@@ -558,32 +559,61 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     );
   }
 
+  private async startTextRun(
+    storageKey: string,
+    id: string,
+    clock: string,
+    before: StoredRecord | null
+  ): Promise<void> {
+    const runs = await this.textRuns(storageKey, id);
+    const last = runs.at(-1);
+    if (last && last.seq === undefined) return;
+    const base = before && (await this.codec.encode(storageKey, id, before));
+    await this.setTextRuns(storageKey, id, [...runs, { base, start: clock }]);
+  }
+
+  private async textRuns(storageKey: string, id: string): Promise<TextBaseRun[]> {
+    const key = outboxKey(storageKey, id);
+    return (await this.getConfigFrom<TextBases>(TEXT_BASES, key))?.runs ?? [];
+  }
+
+  private async setTextRuns(storageKey: string, id: string, runs: TextBaseRun[]): Promise<void> {
+    const key = outboxKey(storageKey, id);
+    if (runs.length === 0) {
+      await this.adapter.delete(TEXT_BASES, key);
+      return;
+    }
+    const value: TextBases = { key: storageKey, docId: id, runs };
+    await this.adapter.put(TEXT_BASES, key, configRecord(key, value));
+  }
+
   // Writes queue their entry under the document lock, so taking it here means
   // none can land between the check and the delete.
-  private clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord): Promise<void> {
+  private clearQueued(
+    key: string,
+    entry: OutboxEntry,
+    pushed?: AdapterRecord,
+    seq?: number
+  ): Promise<void> {
     return this.serialise(entry.collection, entry.docId, async () => {
       const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
       if (!queued) return;
-      if (queued.order === entry.order) {
-        await this.adapter.delete(OUTBOX, key);
+      const cleared = queued.order === entry.order;
+      if (cleared) await this.adapter.delete(OUTBOX, key);
+      const storageKey = queued.key ?? this.definitionByName(entry.collection)?.key;
+      if (storageKey === undefined) return;
+      if (!pushed || seq === undefined) {
+        if (cleared) await this.setTextRuns(storageKey, entry.docId, []);
         return;
       }
-      if (!pushed || !queued.textBase) return;
-      // The pushed edits are on the server now, so the rebase base moves past
-      // them. A push from another lens cannot be decoded here; its entry
-      // loses the base, and a rebase then takes the winner as it is.
-      const def = this.definitions.get(entry.collection);
-      let textBase: Record<string, string> | undefined;
-      if (def?.textEngine && (queued.key ?? def.key) === this.keyOf(def)) {
-        const record = await this.codec.decode(this.keyOf(def), entry.docId, pushed);
-        textBase = this.textValues(def, record.text);
-      }
-      const { textBase: _replaced, ...rest } = queued;
-      await this.adapter.put(
-        OUTBOX,
-        key,
-        configRecord(key, textBase ? { ...rest, textBase } : rest)
-      );
+      // A run started after the drain read the entry, as a rebase starts one,
+      // was not in this push.
+      const runs = await this.textRuns(storageKey, entry.docId);
+      const last = runs.at(-1);
+      if (!last || last.seq !== undefined || compareClocks(last.start, entry.order) > 0) return;
+      last.seq = seq;
+      if (!cleared) runs.push({ base: pushed, start: queued.order });
+      await this.setTextRuns(storageKey, entry.docId, runs);
     });
   }
 
@@ -594,13 +624,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     } finally {
       doc.destroy();
     }
-  }
-
-  private textBaseOf(
-    def: CollectionDefinition,
-    record: StoredRecord | null
-  ): (() => Record<string, string>) | undefined {
-    return def.textEngine ? () => this.textValues(def, record?.text) : undefined;
   }
 
   private async insert(
@@ -640,7 +663,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     ]);
     this.stamp(def, record, stamped, clock);
     await this.putRecord(def, id, record);
-    await this.queueOutbox(def, id, clock, { textBase: this.textBaseOf(def, existing) });
+    await this.queueOutbox(def, id, clock, { before: existing });
     this.compactIfDue(def, id, record);
     return this.readDoc(def, id, record)!;
   }
@@ -679,10 +702,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     ];
     this.stamp(def, record, stamped, clock);
     await this.putRecord(def, id, record);
-    await this.queueOutbox(def, id, clock, {
-      debounceMs: pushDelayMs,
-      textBase: this.textBaseOf(def, existing),
-    });
+    await this.queueOutbox(def, id, clock, { debounceMs: pushDelayMs, before: existing });
     this.compactIfDue(def, id, record);
     return this.readDoc(def, id, record)!;
   }
@@ -698,10 +718,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       const record: StoredRecord = { ...existing, text: doc.encode() };
       this.stamp(def, record, fields, clock);
       await this.putRecord(def, id, record);
-      await this.queueOutbox(def, id, clock, {
-        debounceMs: this.textPushDelayMs,
-        textBase: this.textBaseOf(def, raw),
-      });
+      await this.queueOutbox(def, id, clock, { debounceMs: this.textPushDelayMs, before: raw });
       this.compactIfDue(def, id, record);
       this.emit(def.name);
       // Nothing can be reported to the editor; the next write surfaces a persistent fault.
@@ -957,12 +974,14 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
    * Merges a version from another writer, or an archive, into the local
    * record. Held versions wait in `_held` until a build can migrate and
    * validate them; the caller has already checked the clock for drift.
+   * `seq` is absent for versions that did not come straight from a pull.
    */
   private applyIncoming(
     def: CollectionDefinition,
     id: string,
     incoming: StoredRecord,
-    gated = true
+    gated = true,
+    seq?: number
   ): Promise<ApplyResult> {
     return this.serialise(
       def.name,
@@ -985,48 +1004,175 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           ? textMerge((state) => this.openText(def, id, state))
           : undefined;
         const { record, changed } = mergeRecords(local, migrated, def.merge, mergeText);
-        if (!changed) return 'unchanged';
-        const replaced =
-          def.textEngine &&
-          compareTextGenerations(local.textGeneration, record.textGeneration) !== 0;
-        if (replaced) this.textCache.drop(def.name, id);
-        await this.putRecord(def, id, record);
-        if (replaced) await this.rebaseQueuedText(def, id, local, record);
-        return 'applied';
+        if (changed) {
+          if (
+            def.textEngine &&
+            compareTextGenerations(local.textGeneration, record.textGeneration)
+          ) {
+            this.textCache.drop(def.name, id);
+          }
+          await this.putRecord(def, id, record);
+        }
+        const rebased = def.textEngine
+          ? await this.reconcileTextRuns(def, id, local, migrated, record, seq)
+          : false;
+        return changed || rebased ? 'applied' : 'unchanged';
       },
       gated
     );
   }
 
-  // `local` lost to a newer text generation. Edits it has not pushed yet are
-  // replayed on top of the winner, from the base its outbox entry kept.
-  private async rebaseQueuedText(
+  // Versions arrive in seq order. A newer generation that arrives before a
+  // run's push could not have seen that run, so the run is replayed onto it.
+  // Once a version past the push arrives the run is confirmed: a compaction
+  // pushed later either pulled the run or carries it over through the
+  // compacting device's own runs.
+  private async reconcileTextRuns(
     def: CollectionDefinition,
     id: string,
     local: StoredRecord,
-    winner: StoredRecord
+    incoming: StoredRecord,
+    merged: StoredRecord,
+    seq: number | undefined
+  ): Promise<boolean> {
+    const storageKey = this.keyOf(def);
+    const stored = await this.textRuns(storageKey, id);
+    if (stored.length === 0) return false;
+    const runs = stored.filter(
+      (run) => seq === undefined || run.seq === undefined || run.seq > seq
+    );
+    if (seq !== undefined) await this.landLostPush(storageKey, id, runs, incoming);
+    if (compareTextGenerations(local.textGeneration, merged.textGeneration) !== 0) {
+      // Without a seq there is no telling whether a compaction saw a push,
+      // so only unpushed edits are replayed.
+      const from = seq === undefined ? runs.find((run) => run.seq === undefined) : runs[0];
+      await this.setTextRuns(storageKey, id, []);
+      if (!from) return false;
+      const base = await this.decodeBase(storageKey, id, from.base);
+      const doc = this.openText(def, id, merged.text);
+      const mine = this.textValues(def, local.text);
+      const edited = rebaseOnto(doc, def.textFields, this.textValues(def, base?.text), mine);
+      return this.writeRebased(def, id, merged, doc, edited);
+    }
+    if (incoming.text === undefined) {
+      if (runs.length !== stored.length) await this.setTextRuns(storageKey, id, runs);
+      return false;
+    }
+    const sameGeneration = (record: StoredRecord | null) =>
+      compareTextGenerations(record?.textGeneration, incoming.textGeneration) === 0;
+    const bases = await Promise.all(runs.map((run) => this.decodeBase(storageKey, id, run.base)));
+    // A version this device's newer generation beat, such as one pushed while
+    // this device was compacting, is carried over through the run that still
+    // holds its generation.
+    let ported: { doc: TextDocument; edited: string[] } | null = null;
+    const bridge = bases.filter(sameGeneration).at(-1);
+    if (
+      bridge !== undefined &&
+      compareTextGenerations(incoming.textGeneration, merged.textGeneration) < 0
+    ) {
+      const before = this.textValues(def, bridge?.text);
+      const after = this.textValues(def, mergeStates(def, bridge?.text, incoming.text));
+      const doc = this.openText(def, id, merged.text);
+      ported = { doc, edited: rebaseOnto(doc, def.textFields, before, after) };
+    }
+    for (const [i, base] of bases.entries()) {
+      if (!sameGeneration(base)) continue;
+      const absorbed: StoredRecord = base
+        ? { ...base, text: mergeStates(def, base.text, incoming.text) }
+        : incoming;
+      if (base && absorbed.text === base.text) continue;
+      runs[i] = { ...runs[i]!, base: await this.codec.encode(storageKey, id, absorbed) };
+    }
+    await this.setTextRuns(storageKey, id, runs);
+    return ported ? this.writeRebased(def, id, merged, ported.doc, ported.edited) : false;
+  }
+
+  // This device's own version arriving for a run it never heard back about
+  // means a push whose reply was lost landed here, confirming the writes it
+  // covered. Later writes keep the run, whose base then takes this version in
+  // like any other of its generation.
+  private async landLostPush(
+    storageKey: string,
+    id: string,
+    runs: TextBaseRun[],
+    incoming: StoredRecord
   ): Promise<void> {
-    const key = outboxKey(this.keyOf(def), id);
-    const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
-    if (!queued?.textBase) return;
-    const mine = this.textValues(def, local.text);
-    const doc = this.openText(def, id, winner.text);
-    const theirs = Object.fromEntries(def.textFields.map((field) => [field, doc.toString(field)]));
-    const edited = def.textFields.filter((field) => {
-      const merged = rebaseText(queued.textBase![field] ?? '', theirs[field]!, mine[field]!);
-      writeText(doc, field, merged);
-      return merged !== theirs[field];
-    });
-    await this.adapter.delete(OUTBOX, key);
-    if (edited.length === 0) {
-      await this.adapter.put(OUTBOX, key, configRecord(key, { ...queued, textBase: theirs }));
+    const last = runs.at(-1);
+    const clock = greatestClock(incoming);
+    if (!last || last.seq !== undefined || clock === undefined) return;
+    if (decodeHlc(clock).node !== this.node || compareClocks(last.start, clock) > 0) return;
+    const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, outboxKey(storageKey, id));
+    if (!queued || compareClocks(queued.order, clock) <= 0) {
+      runs.pop();
       return;
     }
+    const base = await this.decodeBase(storageKey, id, last.base);
+    if (compareTextGenerations(base?.textGeneration, incoming.textGeneration) !== 0) {
+      last.base = await this.codec.encode(storageKey, id, incoming);
+    }
+  }
+
+  private async decodeBase(
+    storageKey: string,
+    id: string,
+    base: AdapterRecord | null
+  ): Promise<StoredRecord | null> {
+    return base && this.codec.decode(storageKey, id, base);
+  }
+
+  private async writeRebased(
+    def: CollectionDefinition,
+    id: string,
+    before: StoredRecord,
+    doc: TextDocument,
+    edited: readonly string[]
+  ): Promise<boolean> {
+    if (edited.length === 0) return false;
     const clock = this.clock.now();
-    const record: StoredRecord = { ...winner, text: doc.encode() };
+    const record: StoredRecord = { ...before, text: doc.encode() };
     this.stamp(def, record, edited, clock);
     await this.putRecord(def, id, record);
-    await this.queueOutbox(def, id, clock, { textBase: () => theirs });
+    await this.queueOutbox(def, id, clock, { before });
+    return true;
+  }
+
+  private async confirmTextBases(cursor: number): Promise<void> {
+    for (const { record } of await this.adapter.getAll(TEXT_BASES)) {
+      if (isSealedRecord(record)) continue;
+      const { key, docId } = record.fields as unknown as TextBases;
+      const found = this.definitionOfKey(key);
+      if (!found || found.keyId !== this.lens.keyId) continue;
+      await this.serialise(found.def.name, docId, async () => {
+        const runs = await this.textRuns(key, docId);
+        const kept = runs.filter((run) => run.seq === undefined || run.seq > cursor);
+        if (kept.length !== runs.length) await this.setTextRuns(key, docId, kept);
+      });
+    }
+  }
+
+  // Earlier builds kept the text before an entry's first write on the entry
+  // itself, in plaintext. It becomes a run whose base reverts those edits;
+  // outside the active lens it cannot be sealed and is dropped.
+  private async upgradeOutbox(): Promise<void> {
+    for (const { id: key, record } of await this.adapter.getAll(OUTBOX)) {
+      if (isSealedRecord(record)) continue;
+      const { textBase, ...entry } = record.fields as OutboxEntry & {
+        textBase?: Record<string, string>;
+      };
+      if (!textBase) continue;
+      const def = this.definitionByName(entry.collection);
+      const storageKey = entry.key ?? def?.key;
+      const stored = storageKey && (await this.adapter.get(storageKey, entry.docId));
+      if (def?.textEngine && storageKey === this.keyOf(def) && stored) {
+        const current = await this.codec.decode(storageKey, entry.docId, stored);
+        const doc = def.textEngine.open(def.textFields, current.text);
+        for (const field of def.textFields) writeText(doc, field, textBase[field] ?? '');
+        const base: StoredRecord = { ...current, text: doc.encode() };
+        doc.destroy();
+        await this.startTextRun(storageKey, entry.docId, entry.order, base);
+      }
+      await this.adapter.put(OUTBOX, key, { ...record, fields: entry });
+    }
   }
 
   private compactIfDue(def: CollectionDefinition, id: string, record: StoredRecord): void {
@@ -1055,8 +1201,8 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     force: boolean
   ): Promise<void> {
     if (!force && !(await this.compactionDue(def, id))) return;
-    // Pulling first folds in every edit already on the server; one pushed
-    // between this pull and the compaction's own push is lost.
+    // Pulling first folds in every edit already on the server. One pushed
+    // after the pull arrives later and is carried over by reconcileTextRuns.
     if (def.synced && this.syncEngine.signedIn) await this.syncEngine.pullDocument(def.name, id);
     await this.serialise(def.name, id, async () => {
       const record = await this.loadRecord(def, id);
@@ -1074,7 +1220,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       this.stamp(def, compacted, def.textFields, clock);
       this.textCache.drop(def.name, id);
       await this.putRecord(def, id, compacted);
-      await this.queueOutbox(def, id, clock, { textBase: this.textBaseOf(def, record) });
+      await this.queueOutbox(def, id, clock, { before: record });
       this.emit(def.name);
     });
   }
@@ -1501,6 +1647,30 @@ function seedOf(values: readonly string[]): number {
 
 function writeText(doc: TextDocument, field: string, value: string): void {
   doc.splice(field, textSplices(doc.toString(field), value));
+}
+
+function rebaseOnto(
+  doc: TextDocument,
+  fields: readonly string[],
+  base: Record<string, string>,
+  next: Record<string, string>
+): string[] {
+  return fields.filter((field) => {
+    const current = doc.toString(field);
+    const merged = rebaseText(base[field] ?? '', current, next[field] ?? '');
+    writeText(doc, field, merged);
+    return merged !== current;
+  });
+}
+
+function mergeStates(def: CollectionDefinition, state: string | undefined, other: string): string {
+  const doc = def.textEngine!.open(def.textFields, state);
+  try {
+    doc.merge(other);
+    return doc.encode();
+  } finally {
+    doc.destroy();
+  }
 }
 
 // Detached documents are opened for one merge and destroyed; cached ones stay

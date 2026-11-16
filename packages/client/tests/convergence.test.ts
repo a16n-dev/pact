@@ -6,6 +6,7 @@ import { Store } from '../src/store';
 import { InMemoryAdapter } from '../src/adapters/memoryAdapter';
 import { defineCollection } from '../src/collection';
 import { CONFIG, configRecord } from '../src/store/internal';
+import type { StoredRecord } from '../src/record';
 import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
 import type { DocCipher } from '../src/crypto/types';
 import { registerTextField, type TextEngine } from '../src/text/engine';
@@ -190,11 +191,12 @@ function opArb(deviceCount: number): fc.Arbitrary<Op> {
     .oneof(
       { weight: 12, arbitrary: fc.tuple(device, writeArb).map(([d, w]): Op => ({ d, ...w })) },
       {
-        // TODO(alex): compaction loses and duplicates text, so it is not
-        // generated. Set the weight back to 1 once both pinned tests under
-        // 'text compaction' pass.
-        weight: 0,
-        arbitrary: fc.record({ d: device, op: fc.constant('compact' as const), id: docId }),
+        weight: 1,
+        // TODO(alex): only device A compacts. When two devices compact the
+        // same text before either sees the other's compaction, edits only the
+        // losing generation holds are lost (pinned under 'text compaction').
+        // Fixing that needs the server to know text generations.
+        arbitrary: fc.record({ d: fc.constant(0), op: fc.constant('compact' as const), id: docId }),
       },
       {
         weight: 6,
@@ -300,6 +302,26 @@ async function allowing(dev: Device, kind: RequestKind): Promise<void> {
     if (!(err instanceof NetworkDown)) throw err;
   } finally {
     dev.allowed = null;
+  }
+  if (kind === 'push' && !dev.offline) await realtimePull(dev);
+}
+
+// TODO(alex): stands in for the pull realtime makes when the server
+// announces a device's own push, and never fails. Without it the generator
+// finds the loss pinned under 'text compaction': an edit pushed over a
+// compaction its device had not seen, then hidden by the compacting device
+// pushing again before the editor pulls. Closing that needs the server to
+// know text generations.
+async function realtimePull(dev: Device): Promise<void> {
+  const fault = dev.fault;
+  dev.fault = null;
+  await quiesce(dev.store);
+  dev.allowed = 'pull';
+  try {
+    await dev.store.sync.pull();
+  } finally {
+    dev.allowed = null;
+    dev.fault = fault;
   }
 }
 
@@ -627,7 +649,7 @@ describe.each([
           run.dispose();
         }
       }),
-      { numRuns: 1_000 }
+      { numRuns: 1_500 }
     );
   }, 60_000);
 });
@@ -643,48 +665,105 @@ describe('text compaction', () => {
     vi.stubGlobal('WebSocket', SilentSocket);
   });
 
-  async function device(label: string): Promise<TestStore> {
-    const store = await openStore(new InMemoryAdapter(), undefined);
+  async function device(label: string, adapter = new InMemoryAdapter()): Promise<TestStore> {
+    const store = await openStore(adapter, undefined);
     await signIn(store, server, label);
     return store;
   }
 
+  async function bodyOf(store: TestStore): Promise<string | undefined> {
+    return (await store.collection('docs').get('d-1'))?.body;
+  }
+
+  it('keeps a text edit that reaches the server after a compaction of the same text', async () => {
+    const a = await device('A');
+    const b = await device('B');
+    await a.collection('docs').create({ id: 'd-1', body: 'one' });
+    await a.sync.drain();
+    await b.sync.pull();
+    await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await a.collection('docs').compactText('d-1');
+    await a.sync.drain();
+    await b.sync.drain();
+    await b.sync.pull();
+    await b.sync.drain();
+    await a.sync.pull();
+    expect((await a.collection('docs').get('d-1'))?.body).toBe('one two');
+    expect((await b.collection('docs').get('d-1'))?.body).toBe('one two');
+  });
+
+  it('rebases queued text onto a compaction without repeating edits merged from other devices', async () => {
+    const a = await device('A');
+    const b = await device('B');
+    await a.collection('docs').create({ id: 'd-1', body: 'one' });
+    await a.sync.drain();
+    await b.sync.pull();
+    await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one three' });
+    await a.sync.drain();
+    await b.sync.pull();
+    await a.collection('docs').compactText('d-1');
+    await a.sync.drain();
+    await b.sync.pull();
+    const body = (await b.collection('docs').get('d-1'))!.body;
+    expect(body.split(' ').sort()).toEqual(['one', 'three', 'two']);
+  });
+
+  // The editing device sees only the compacting device's latest version,
+  // which no longer shows that the compaction reached the server first.
   it.fails(
-    'keeps a text edit that reaches the server after a compaction of the same text',
+    'keeps a text edit pushed over a compaction once the compacting device pushes again',
     async () => {
       const a = await device('A');
       const b = await device('B');
       await a.collection('docs').create({ id: 'd-1', body: 'one' });
       await a.sync.drain();
       await b.sync.pull();
-      await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
       await a.collection('docs').compactText('d-1');
       await a.sync.drain();
-      await b.sync.drain();
-      await b.sync.pull();
       await a.sync.pull();
-      expect((await a.collection('docs').get('d-1'))?.body).toBe('one two');
-      expect((await b.collection('docs').get('d-1'))?.body).toBe('one two');
+      await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
+      await b.sync.drain();
+      await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'zero one' });
+      await a.sync.drain();
+      await b.sync.pull();
+      await b.sync.drain();
+      await a.sync.pull();
+      expect(await bodyOf(a)).toBe('zero one two');
+      expect(await bodyOf(b)).toBe('zero one two');
     }
   );
 
-  it.fails(
-    'rebases queued text onto a compaction without repeating edits merged from other devices',
-    async () => {
-      const a = await device('A');
-      const b = await device('B');
-      await a.collection('docs').create({ id: 'd-1', body: 'one' });
-      await a.sync.drain();
-      await b.sync.pull();
-      await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
-      await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one three' });
-      await a.sync.drain();
-      await b.sync.pull();
-      await a.collection('docs').compactText('d-1');
-      await a.sync.drain();
-      await b.sync.pull();
-      const body = (await b.collection('docs').get('d-1'))!.body;
-      expect(body.split(' ').sort()).toEqual(['one', 'three', 'two']);
-    }
-  );
+  // Each device compacts before the other's compaction reaches it. Edits made
+  // before the losing compaction were only ever pushed inside it.
+  it.fails('keeps the edits of a compaction that loses to a concurrent one', async () => {
+    const adapters = [new InMemoryAdapter(), new InMemoryAdapter()] as const;
+    const a = await device('A', adapters[0]);
+    const b = await device('B', adapters[1]);
+    await a.collection('docs').create({ id: 'd-1', body: 'one' });
+    await a.sync.drain();
+    await b.sync.pull();
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (input.endsWith('/sync/push')) throw new NetworkDown();
+      return server.fetch(input, init);
+    });
+    await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await a.collection('docs').compactText('d-1');
+    await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one three' });
+    await b.collection('docs').compactText('d-1');
+    vi.stubGlobal('fetch', server.fetch);
+    const seeds = await Promise.all(
+      adapters.map(
+        async (adapter) => ((await adapter.get('docs', 'd-1')) as StoredRecord).textGeneration!.seed
+      )
+    );
+    const [loser, winner] = seeds[0]! < seeds[1]! ? [a, b] : [b, a];
+    await loser.sync.drain();
+    await winner.sync.drain();
+    await loser.sync.pull();
+    await winner.sync.pull();
+    await loser.sync.drain();
+    await winner.sync.pull();
+    expect((await bodyOf(winner))?.split(' ').sort()).toEqual(['one', 'three', 'two']);
+  });
 });

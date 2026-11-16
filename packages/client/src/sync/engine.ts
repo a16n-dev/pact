@@ -69,11 +69,20 @@ export type SyncStoreAccess = {
   isSyncedKey(key: string): boolean;
   // Every stored synced key, in any lens.
   storedSyncedKeys(): Promise<string[]>;
-  applyIncoming(def: CollectionDefinition, id: string, record: StoredRecord): Promise<ApplyResult>;
+  // `seq` is the version's place on the server; versions arrive in `seq` order.
+  applyIncoming(
+    def: CollectionDefinition,
+    id: string,
+    record: StoredRecord,
+    seq: number
+  ): Promise<ApplyResult>;
   // Deletes the outbox entry at `key` only if it is still `entry`: a write
   // since the drain read it requeued it, and that newer state still needs
-  // pushing. `pushed` is the state the drain sent, absent for a stale entry.
-  clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord): Promise<void>;
+  // pushing. `pushed` is the state the drain sent and `seq` the push's,
+  // both absent for a stale entry.
+  clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord, seq?: number): Promise<void>;
+  // Every version up to `cursor` has been applied.
+  pulledThrough(cursor: number): Promise<void>;
   heldEntries(): Promise<HeldEntry[]>;
   /** Everything but `_config`, for `resync()`. */
   clearLocalData(): Promise<void>;
@@ -402,6 +411,7 @@ export class SyncEngine {
       const page = await http.pull(cursor);
       await this.applyVersions(page.documents, total);
       await this.setConfig('cursor', { cursor: page.cursor });
+      await this.store.pulledThrough(page.cursor);
       if (!page.hasMore || page.cursor === cursor) break;
       cursor = page.cursor;
     }
@@ -430,7 +440,7 @@ export class SyncEngine {
         total.skipped.sealed += 1;
         continue;
       }
-      const result = await this.store.applyIncoming(def, version.id, record);
+      const result = await this.store.applyIncoming(def, version.id, record, version.seq);
       if (result === 'held') total.held += 1;
       if (result === 'applied') {
         total.applied += 1;
@@ -560,9 +570,9 @@ export class SyncEngine {
     }
     for (const { key, entry } of stale) await this.store.clearQueued(key, entry);
     for (let i = 0; i < documents.length; i += this.maxPushDocuments) {
-      await http.push(documents.slice(i, i + this.maxPushDocuments));
+      const seq = await http.push(documents.slice(i, i + this.maxPushDocuments));
       for (const { key, entry, stored } of pushed.slice(i, i + this.maxPushDocuments)) {
-        await this.store.clearQueued(key, entry, stored);
+        await this.store.clearQueued(key, entry, stored, seq);
       }
     }
     if (stale.length > 0 || pushed.length > 0) this.store.emit(OUTBOX);
