@@ -24,6 +24,7 @@ import {
   compareTextGenerations,
   mergeRecords,
   type AdapterRecord,
+  type TextGeneration,
   type TextMerge,
   type StoredEntry,
   type StoredRecord,
@@ -50,7 +51,7 @@ import type {
   StoreSync,
   StoreTasks,
 } from './namespaces';
-import { SyncEngine, type ApplyResult, type HeldEntry } from '../sync/engine';
+import { SyncEngine, type ApplyResult, type HeldEntry, type PushGeneration } from '../sync/engine';
 import {
   CONFIG,
   HELD,
@@ -172,6 +173,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
         ),
       applyIncoming: (def, id, record, seq) => this.applyIncoming(def, id, record, true, seq),
       clearQueued: (key, entry, pushed, seq) => this.clearQueued(key, entry, pushed, seq),
+      pushGeneration: (key, id, stored) => this.pushGeneration(key, id, stored),
       pulledThrough: (cursor) => this.confirmTextBases(cursor),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
@@ -617,6 +619,65 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     });
   }
 
+  private async pushGeneration(
+    storageKey: string,
+    id: string,
+    stored: AdapterRecord
+  ): Promise<PushGeneration | undefined> {
+    const found = this.definitionOfKey(storageKey);
+    if (!found?.def.textEngine) return undefined;
+    return this.serialise(found.def.name, id, async () => {
+      if (found.keyId !== this.lens.keyId) return undefined;
+      const record = await this.codec.decode(storageKey, id, stored);
+      const compaction = await this.unconfirmedCompaction(storageKey, id, record);
+      return { generation: generationNumber(record.textGeneration), compaction: !!compaction };
+    });
+  }
+
+  // A compaction is unconfirmed while the run it joined is unpushed. That
+  // run's base holds the generation it was built from.
+  private async unconfirmedCompaction(
+    storageKey: string,
+    id: string,
+    record: StoredRecord
+  ): Promise<{ base: StoredRecord | null } | undefined> {
+    const last = (await this.textRuns(storageKey, id)).at(-1);
+    if (!last || last.seq !== undefined) return undefined;
+    const base = await this.decodeBase(storageKey, id, last.base);
+    const from = generationNumber(base?.textGeneration);
+    return from < generationNumber(record.textGeneration) ? { base } : undefined;
+  }
+
+  // A server with generations takes a compaction only if it includes every
+  // other version, so a version past the generation an unconfirmed compaction
+  // was built from means the compaction lost. It goes back to that
+  // generation, keeping the text, so the newer one wins the merge and the run
+  // replays this device's edits onto it. Merging first would put both
+  // compactions' copies of the edits they carried over into the text.
+  private async yieldCompaction(
+    def: CollectionDefinition,
+    id: string,
+    local: StoredRecord,
+    incoming: StoredRecord
+  ): Promise<StoredRecord> {
+    const compaction = await this.unconfirmedCompaction(this.keyOf(def), id, local);
+    if (!compaction || this.mayBeOwn(incoming, [local.textGeneration])) return local;
+    const { base } = compaction;
+    if (generationNumber(incoming.textGeneration) <= generationNumber(base?.textGeneration)) {
+      return local;
+    }
+    const values = this.textValues(def, local.text);
+    const doc = def.textEngine!.open(def.textFields, base?.text);
+    for (const field of def.textFields) writeText(doc, field, values[field] ?? '');
+    const undone: StoredRecord = { ...local, text: doc.encode() };
+    doc.destroy();
+    if (base?.textGeneration) undone.textGeneration = base.textGeneration;
+    else delete undone.textGeneration;
+    this.textCache.drop(def.name, id);
+    await this.putRecord(def, id, undone);
+    return undone;
+  }
+
   private textValues(def: CollectionDefinition, state: string | undefined): Record<string, string> {
     const doc = def.textEngine!.open(def.textFields, state);
     try {
@@ -994,12 +1055,15 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
             ? migrateRecord(this.migrator, def, incoming)
             : { ...incoming };
         if (!this.validateIncoming(def, migrated)) return this.hold(def, id, incoming);
-        const local = await this.loadRecord(def, id);
-        if (!local) {
+        const stored = await this.loadRecord(def, id);
+        if (!stored) {
           if (def.textEngine) migrated.text = this.openText(def, id, migrated.text).encode();
           await this.putRecord(def, id, migrated);
           return 'applied';
         }
+        const local = def.textEngine
+          ? await this.yieldCompaction(def, id, stored, migrated)
+          : stored;
         const mergeText = def.textEngine
           ? textMerge((state) => this.openText(def, id, state))
           : undefined;
@@ -1041,7 +1105,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const runs = stored.filter(
       (run) => seq === undefined || run.seq === undefined || run.seq > seq
     );
-    if (seq !== undefined) await this.landLostPush(storageKey, id, runs, incoming);
+    if (seq !== undefined) await this.landLostPush(storageKey, id, runs, local, incoming);
     if (compareTextGenerations(local.textGeneration, merged.textGeneration) !== 0) {
       // Without a seq there is no telling whether a compaction saw a push,
       // so only unpushed edits are replayed.
@@ -1095,21 +1159,38 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     storageKey: string,
     id: string,
     runs: TextBaseRun[],
+    local: StoredRecord,
     incoming: StoredRecord
   ): Promise<void> {
     const last = runs.at(-1);
     const clock = greatestClock(incoming);
     if (!last || last.seq !== undefined || clock === undefined) return;
-    if (decodeHlc(clock).node !== this.node || compareClocks(last.start, clock) > 0) return;
+    const base = await this.decodeBase(storageKey, id, last.base);
+    if (!this.mayBeOwn(incoming, [base?.textGeneration, local.textGeneration])) return;
+    if (compareClocks(last.start, clock) > 0) return;
     const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, outboxKey(storageKey, id));
     if (!queued || compareClocks(queued.order, clock) <= 0) {
       runs.pop();
       return;
     }
-    const base = await this.decodeBase(storageKey, id, last.base);
     if (compareTextGenerations(base?.textGeneration, incoming.textGeneration) !== 0) {
       last.base = await this.codec.encode(storageKey, id, incoming);
     }
+  }
+
+  // Versions carry no writer, so this device's own is told by its latest
+  // write being this device's, on a generation this device holds. Another
+  // device's version can carry this device's write as its latest after
+  // merging it, but not on a generation this device has never had.
+  private mayBeOwn(
+    incoming: StoredRecord,
+    generations: ReadonlyArray<TextGeneration | undefined>
+  ): boolean {
+    const clock = greatestClock(incoming);
+    if (clock === undefined || decodeHlc(clock).node !== this.node) return false;
+    return generations.some(
+      (generation) => compareTextGenerations(generation, incoming.textGeneration) === 0
+    );
   }
 
   private async decodeBase(
@@ -1633,6 +1714,10 @@ function compactionDue(state: string, textChars: number): boolean {
 
 function textLength(def: CollectionDefinition, doc: TextDocument): number {
   return def.textFields.reduce((sum, field) => sum + doc.toString(field).length, 0);
+}
+
+function generationNumber(generation: TextGeneration | undefined): number {
+  return generation?.number ?? 0;
 }
 
 // FNV-1a over the values, as an unsigned 32-bit Yjs client id.

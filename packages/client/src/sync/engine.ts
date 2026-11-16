@@ -16,8 +16,9 @@ import {
   UnauthorizedError,
   discover,
   exchangeCode,
+  type PushDocument,
+  type PushResponse,
   type TaskClaim,
-  type WireDocument,
   type WireVersion,
 } from './http';
 import { codeChallenge, randomUrlSafe } from './pkce';
@@ -26,6 +27,10 @@ import { RealtimeConnection } from './realtime';
 // Reads fire on every render that touches a hook, so without a floor a busy
 // screen would spray pulls. Realtime and foreground sync cover the gaps.
 const READ_PULL_THROTTLE_MS = 10_000;
+
+// Each refusal means another device's version reached the server first, so
+// a drain retries a few times and then leaves the rest for the next one.
+const MAX_REFUSED_ROUNDS = 3;
 
 type ClientConfig = {
   url: string;
@@ -50,6 +55,10 @@ type PendingSignIn = {
 export type HeldEntry = { collection: string; docId: string; data: AdapterRecord };
 
 export type ApplyResult = 'applied' | 'unchanged' | 'held';
+
+// `compaction` marks a new generation this device made and the server has
+// not yet confirmed.
+export type PushGeneration = { generation: number; compaction: boolean };
 
 // What the engine needs from the store; the store owns records and the
 // active lens, the engine owns the session and cursor. Keys here are storage
@@ -81,6 +90,13 @@ export type SyncStoreAccess = {
   // pushing. `pushed` is the state the drain sent and `seq` the push's,
   // both absent for a stale entry.
   clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord, seq?: number): Promise<void>;
+  // The generation a push of `stored` carries; absent outside the active lens
+  // and for collections without text.
+  pushGeneration(
+    key: string,
+    id: string,
+    stored: AdapterRecord
+  ): Promise<PushGeneration | undefined>;
   // Every version up to `cursor` has been applied.
   pulledThrough(cursor: number): Promise<void>;
   heldEntries(): Promise<HeldEntry[]>;
@@ -418,11 +434,13 @@ export class SyncEngine {
     await this.setConfig('lastSyncedAt', { at: new Date().toISOString() });
   }
 
+  // Returns the seqs of the versions it could not merge.
   private async applyVersions(
     versions: readonly WireVersion[],
     total: PullResult
-  ): Promise<Set<string>> {
+  ): Promise<number[]> {
     const touched = new Set<string>();
+    const unmerged: number[] = [];
     for (const version of versions) {
       const def = this.store.activeDefinition(version.collection);
       if (!def) continue;
@@ -431,6 +449,7 @@ export class SyncEngine {
       } catch (err) {
         if (!(err instanceof ClockDriftError)) throw err;
         total.skipped.drift += 1;
+        unmerged.push(version.seq);
         continue;
       }
       const record = await this.store
@@ -438,17 +457,21 @@ export class SyncEngine {
         .fromWire(version.collection, version.id, version.data);
       if (!record) {
         total.skipped.sealed += 1;
+        unmerged.push(version.seq);
         continue;
       }
       const result = await this.store.applyIncoming(def, version.id, record, version.seq);
-      if (result === 'held') total.held += 1;
+      if (result === 'held') {
+        total.held += 1;
+        unmerged.push(version.seq);
+      }
       if (result === 'applied') {
         total.applied += 1;
         touched.add(def.name);
       }
     }
     for (const name of touched) this.store.emit(name);
-    return touched;
+    return unmerged;
   }
 
   claimTask(taskId: string, rev: string): Promise<TaskClaim> {
@@ -464,14 +487,18 @@ export class SyncEngine {
       const key = this.store.activeKeyOf(collection);
       if (!key) throw new Error(`Unknown collection "${collection}"`);
       await this.guarded(async (http) => {
-        const versions = await http.pullDocument(key, id);
-        await this.applyVersions(versions, {
-          applied: 0,
-          skipped: { drift: 0, sealed: 0 },
-          held: 0,
-        });
+        await this.applyDocument(http, key, id);
       });
     });
+  }
+
+  // Returns the highest seq up to which every version of the document is merged.
+  private async applyDocument(http: SyncHttp, key: string, id: string): Promise<number> {
+    const versions = await http.pullDocument(key, id);
+    const total = { applied: 0, skipped: { drift: 0, sealed: 0 }, held: 0 };
+    const unmerged = await this.applyVersions(versions, total);
+    if (unmerged.length > 0) return Math.min(...unmerged) - 1;
+    return Math.max(0, ...versions.map((version) => version.seq));
   }
 
   async resync(): Promise<PullResult> {
@@ -541,52 +568,116 @@ export class SyncEngine {
     return entries.sort((a, b) => (a.entry.order < b.entry.order ? -1 : 1));
   }
 
-  private wireDocument(key: string, id: string, stored: AdapterRecord): WireDocument {
+  private wireDocument(key: string, id: string, stored: AdapterRecord): PushDocument {
     const hlc = isSealedRecord(stored) ? stored.hlc : (greatestClock(stored) ?? '');
     return { collection: key, id, hlc, data: toWire(stored) };
+  }
+
+  // A document the server refuses stays queued and is pulled again before the
+  // next round. The pull brings the version it was refused over: a newer
+  // generation, onto which this device's edits are replayed, or a version a
+  // compaction missed, which the compaction then takes in.
+  private async drainOnce(http: SyncHttp): Promise<void> {
+    for (let round = 1; ; round++) {
+      const refused = await this.pushQueued(http);
+      if (refused.length === 0 || round === MAX_REFUSED_ROUNDS) return;
+      for (const { collection, id } of refused) {
+        await this.pass(() => this.applyDocument(http, collection, id));
+      }
+    }
+  }
+
+  private async queuedState(
+    entry: OutboxEntry
+  ): Promise<{ storageKey: string; stored: AdapterRecord } | null> {
+    const storageKey = entry.key ?? this.store.plainKeyOf(entry.collection);
+    if (!storageKey || !this.store.isSyncedKey(storageKey)) return null;
+    const stored = await this.store.adapter.get(storageKey, entry.docId);
+    return stored && { storageKey, stored };
+  }
+
+  // A compaction must include every version on the server, so each document
+  // carrying one is pulled first, and the push tells the server how far that
+  // pull merged.
+  private async seenSeqs(http: SyncHttp): Promise<Map<string, number>> {
+    const seen = new Map<string, number>();
+    for (const { key, entry } of await this.outboxEntries()) {
+      const state = await this.queuedState(entry);
+      if (!state) continue;
+      const generation = await this.store.pushGeneration(
+        state.storageKey,
+        entry.docId,
+        state.stored
+      );
+      if (!generation?.compaction) continue;
+      seen.set(key, await this.pass(() => this.applyDocument(http, state.storageKey, entry.docId)));
+    }
+    return seen;
   }
 
   // Pushes each document's current state, coalescing edits made since it was
   // queued. A failed chunk stops the drain with its entries and all later ones
   // still queued.
-  private async drainOnce(http: SyncHttp): Promise<void> {
-    const entries = await this.outboxEntries();
-    if (entries.length === 0) return;
-    const documents: WireDocument[] = [];
+  private async pushQueued(http: SyncHttp): Promise<PushResponse['rejected']> {
+    const seen = await this.seenSeqs(http);
+    const documents: PushDocument[] = [];
     const pushed: Array<{ key: string; entry: OutboxEntry; stored: AdapterRecord }> = [];
     const stale: Array<{ key: string; entry: OutboxEntry }> = [];
-    for (const { key, entry } of entries) {
-      const storageKey = entry.key ?? this.store.plainKeyOf(entry.collection);
-      const stored =
-        storageKey && this.store.isSyncedKey(storageKey)
-          ? await this.store.adapter.get(storageKey, entry.docId)
-          : null;
-      if (!storageKey || !stored) {
+    for (const { key, entry } of await this.outboxEntries()) {
+      const state = await this.queuedState(entry);
+      if (!state) {
         stale.push({ key, entry });
         continue;
       }
-      documents.push(this.wireDocument(storageKey, entry.docId, stored));
+      const { storageKey, stored } = state;
+      const generation = await this.store.pushGeneration(storageKey, entry.docId, stored);
+      const seenSeq = seen.get(key);
+      // A compaction made since the pulls above waits for the next round.
+      if (generation?.compaction && seenSeq === undefined) continue;
+      documents.push({
+        ...this.wireDocument(storageKey, entry.docId, stored),
+        ...(generation && { generation: generation.generation }),
+        ...(generation?.compaction && { seenSeq }),
+      });
       pushed.push({ key, entry, stored });
     }
     for (const { key, entry } of stale) await this.store.clearQueued(key, entry);
+    const refused: PushResponse['rejected'] = [];
     for (let i = 0; i < documents.length; i += this.maxPushDocuments) {
-      const seq = await http.push(documents.slice(i, i + this.maxPushDocuments));
-      for (const { key, entry, stored } of pushed.slice(i, i + this.maxPushDocuments)) {
+      const { seq, rejected } = await http.push(documents.slice(i, i + this.maxPushDocuments));
+      const accepted = pushed
+        .slice(i, i + this.maxPushDocuments)
+        .filter(
+          (_, j) =>
+            !rejected.some(
+              (r) => r.collection === documents[i + j]!.collection && r.id === documents[i + j]!.id
+            )
+        );
+      for (const { key, entry, stored } of accepted) {
         await this.store.clearQueued(key, entry, stored, seq);
       }
+      refused.push(...rejected);
     }
     if (stale.length > 0 || pushed.length > 0) this.store.emit(OUTBOX);
+    return refused;
   }
 
+  // Refusals are left to the drain, which has already run for the queued
+  // documents and owns any compaction still waiting for the server.
   async push(): Promise<void> {
     await this.drain();
     await this.guarded(async (http) => {
-      const documents: WireDocument[] = [];
+      const documents: PushDocument[] = [];
       const live = new Set<string>();
       for (const key of await this.store.storedSyncedKeys()) {
         for (const { id, record } of await this.store.adapter.getAll(key)) {
-          documents.push(this.wireDocument(key, id, record));
           live.add(`${key}/${id}`);
+          const generation = await this.store.pushGeneration(key, id, record);
+          if (generation?.compaction) continue;
+          documents.push({
+            ...this.wireDocument(key, id, record),
+            ...(generation && { generation: generation.generation }),
+          });
         }
       }
       // A held version is re-sent so a key rotation reseals it; one with a live

@@ -185,18 +185,20 @@ const writeArb: fc.Arbitrary<Write> = fc.oneof(
   }
 );
 
-function opArb(deviceCount: number): fc.Arbitrary<Op> {
+function opArb(deviceCount: number, oldServer: boolean): fc.Arbitrary<Op> {
   const device = fc.nat(deviceCount - 1);
   return fc
     .oneof(
       { weight: 12, arbitrary: fc.tuple(device, writeArb).map(([d, w]): Op => ({ d, ...w })) },
       {
         weight: 1,
-        // TODO(alex): only device A compacts. When two devices compact the
-        // same text before either sees the other's compaction, edits only the
-        // losing generation holds are lost (pinned under 'text compaction').
-        // Fixing that needs the server to know text generations.
-        arbitrary: fc.record({ d: fc.constant(0), op: fc.constant('compact' as const), id: docId }),
+        // An old server cannot refuse a compaction that lost to a concurrent
+        // one, so there only device A compacts.
+        arbitrary: fc.record({
+          d: oldServer ? fc.constant(0) : device,
+          op: fc.constant('compact' as const),
+          id: docId,
+        }),
       },
       {
         weight: 6,
@@ -234,12 +236,14 @@ function opArb(deviceCount: number): fc.Arbitrary<Op> {
     .map((o) => Object.assign(o, { [fc.toStringMethod]: () => describeOp(o) }));
 }
 
-const runArb = fc.integer({ min: 2, max: 3 }).chain((devices) =>
-  fc.record({
-    devices: fc.constant(devices),
-    ops: fc.array(opArb(devices), { minLength: 1, maxLength: 40, size: 'max' }),
-  })
-);
+function runArb(oldServer: boolean) {
+  return fc.integer({ min: 2, max: 3 }).chain((devices) =>
+    fc.record({
+      devices: fc.constant(devices),
+      ops: fc.array(opArb(devices, oldServer), { minLength: 1, maxLength: 40, size: 'max' }),
+    })
+  );
+}
 
 function routedFetch(server: FakeServer, devices: Device[]): typeof fetch {
   return async (input, init) => {
@@ -247,9 +251,12 @@ function routedFetch(server: FakeServer, devices: Device[]): typeof fetch {
     const bearer = new Headers(init?.headers).get('authorization')?.replace(/^Bearer /, '');
     const from = devices.find((d) => d.token === bearer);
     if (!from) return server.fetch(url, init);
-    const path = new URL(url).pathname;
+    const { pathname: path, searchParams } = new URL(url);
     const kind = path === '/sync/push' ? 'push' : path === '/sync/pull' ? 'pull' : null;
-    if (kind === null || kind !== from.allowed) throw new Unrequested();
+    // A drain pulls a document before pushing its compaction, and after the
+    // server refuses it.
+    const refetch = kind === 'pull' && searchParams.has('id') && from.allowed === 'push';
+    if (kind === null || (kind !== from.allowed && !refetch)) throw new Unrequested();
     if (from.offline) throw new NetworkDown();
     const hold = from.hold;
     if (hold?.kind === kind) {
@@ -294,7 +301,7 @@ async function quiesce(store: TestStore): Promise<void> {
   await store.sync.drain().catch(() => {});
 }
 
-async function allowing(dev: Device, kind: RequestKind): Promise<void> {
+async function allowing(dev: Device, kind: RequestKind, oldServer: boolean): Promise<void> {
   dev.allowed = kind;
   try {
     await (kind === 'push' ? dev.store.sync.drain() : dev.store.sync.pull());
@@ -303,15 +310,14 @@ async function allowing(dev: Device, kind: RequestKind): Promise<void> {
   } finally {
     dev.allowed = null;
   }
-  if (kind === 'push' && !dev.offline) await realtimePull(dev);
+  if (oldServer && kind === 'push' && !dev.offline) await realtimePull(dev);
 }
 
-// TODO(alex): stands in for the pull realtime makes when the server
-// announces a device's own push, and never fails. Without it the generator
-// finds the loss pinned under 'text compaction': an edit pushed over a
-// compaction its device had not seen, then hidden by the compacting device
-// pushing again before the editor pulls. Closing that needs the server to
-// know text generations.
+// Stands in for the pull realtime makes when the server announces a device's
+// own push, and never fails. An old server accepts an edit pushed over a
+// compaction its device has not seen, and the edit is lost if the compacting
+// device pushes again before the editor pulls, so there the editor pulls
+// right after each push.
 async function realtimePull(dev: Device): Promise<void> {
   const fault = dev.fault;
   dev.fault = null;
@@ -347,6 +353,7 @@ class Run {
   private readonly server = new FakeServer();
   private readonly devices: Device[] = [];
   private readonly cipher: DocCipher | undefined;
+  private readonly oldServer: boolean;
   // Last value written to each field in op order, which is HLC order: every
   // op runs at its own wall time and the clocks share the faked Date.
   private readonly fields = new Map<string, unknown>();
@@ -354,8 +361,10 @@ class Run {
   private readonly deleted = new Map<string, Set<string>>();
   private nextChar = 0;
 
-  constructor(cipher: DocCipher | undefined) {
+  constructor(cipher: DocCipher | undefined, oldServer: boolean) {
     this.cipher = cipher;
+    this.oldServer = oldServer;
+    this.server.ignoresGenerations = oldServer;
   }
 
   async start(deviceCount: number): Promise<void> {
@@ -411,15 +420,15 @@ class Run {
         return;
       }
       case 'sync':
-        await allowing(dev, 'push');
+        await allowing(dev, 'push', this.oldServer);
         await quiesce(dev.store);
-        await allowing(dev, 'pull');
+        await allowing(dev, 'pull', this.oldServer);
         return;
       case 'drain':
-        await allowing(dev, 'push');
+        await allowing(dev, 'push', this.oldServer);
         return;
       case 'pull':
-        await allowing(dev, 'pull');
+        await allowing(dev, 'pull', this.oldServer);
         return;
       case 'during':
         await this.during(dev, o.sync, o.write, step);
@@ -455,7 +464,7 @@ class Run {
     const inFlight = new Promise<void>((entered) => {
       dev.hold = { kind, entered, released };
     });
-    const done = allowing(dev, kind);
+    const done = allowing(dev, kind, this.oldServer);
     await Promise.race([inFlight, done]);
     try {
       await this.write(dev.store, w, step);
@@ -633,14 +642,31 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// A's compaction takes in B's version, so its latest write is B's, and B must
+// not take it for its own push whose reply was lost.
+const TAKEN_FOR_OWN: { devices: number; ops: Op[] } = {
+  devices: 2,
+  ops: [
+    { d: 0, op: 'createDoc', id: 'd-2', length: 1 },
+    { d: 1, op: 'createDoc', id: 'd-2', length: 1 },
+    { d: 1, op: 'fault', fault: 'pushLost' },
+    { d: 0, op: 'compact', id: 'd-2' },
+    { d: 1, op: 'remove', id: 'd-2', via: 'handle', at: 0, length: 1 },
+    { d: 1, op: 'drain' },
+    { d: 1, op: 'insert', id: 'd-2', via: 'handle', at: 0, length: 1 },
+    { d: 0, op: 'upsertNote', id: 'nt-1' },
+  ],
+};
+
 describe.each([
-  { name: 'unencrypted', encrypted: false },
-  { name: 'with a shared key', encrypted: true },
-])('convergence ($name)', ({ encrypted }) => {
+  { name: 'unencrypted', encrypted: false, oldServer: false, numRuns: 1_500 },
+  { name: 'with a shared key', encrypted: true, oldServer: false, numRuns: 1_500 },
+  { name: 'against a server without generations', encrypted: false, oldServer: true, numRuns: 500 },
+])('convergence ($name)', ({ encrypted, oldServer, numRuns }) => {
   it('converges after random operations and network faults', async () => {
     await fc.assert(
-      fc.asyncProperty(runArb, async ({ devices, ops }) => {
-        const run = new Run(encrypted ? sharedCipher : undefined);
+      fc.asyncProperty(runArb(oldServer), async ({ devices, ops }) => {
+        const run = new Run(encrypted ? sharedCipher : undefined, oldServer);
         try {
           await run.start(devices);
           for (const [step, op] of ops.entries()) await run.apply(op, step);
@@ -649,7 +675,10 @@ describe.each([
           run.dispose();
         }
       }),
-      { numRuns: 1_500 }
+      {
+        numRuns,
+        examples: oldServer ? [] : [[TAKEN_FOR_OWN]],
+      }
     );
   }, 60_000);
 });
@@ -709,34 +738,31 @@ describe('text compaction', () => {
     expect(body.split(' ').sort()).toEqual(['one', 'three', 'two']);
   });
 
-  // The editing device sees only the compacting device's latest version,
-  // which no longer shows that the compaction reached the server first.
-  it.fails(
-    'keeps a text edit pushed over a compaction once the compacting device pushes again',
-    async () => {
-      const a = await device('A');
-      const b = await device('B');
-      await a.collection('docs').create({ id: 'd-1', body: 'one' });
-      await a.sync.drain();
-      await b.sync.pull();
-      await a.collection('docs').compactText('d-1');
-      await a.sync.drain();
-      await a.sync.pull();
-      await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
-      await b.sync.drain();
-      await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'zero one' });
-      await a.sync.drain();
-      await b.sync.pull();
-      await b.sync.drain();
-      await a.sync.pull();
-      expect(await bodyOf(a)).toBe('zero one two');
-      expect(await bodyOf(b)).toBe('zero one two');
-    }
-  );
+  // The server refuses the edit for being behind the compaction, so it is
+  // replayed before the compacting device's next push can hide that order.
+  it('keeps a text edit pushed over a compaction once the compacting device pushes again', async () => {
+    const a = await device('A');
+    const b = await device('B');
+    await a.collection('docs').create({ id: 'd-1', body: 'one' });
+    await a.sync.drain();
+    await b.sync.pull();
+    await a.collection('docs').compactText('d-1');
+    await a.sync.drain();
+    await a.sync.pull();
+    await b.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await b.sync.drain();
+    await a.collection('docs').updateText('d-1', 'body', { base: 'one', next: 'zero one' });
+    await a.sync.drain();
+    await b.sync.pull();
+    await b.sync.drain();
+    await a.sync.pull();
+    expect(await bodyOf(a)).toBe('zero one two');
+    expect(await bodyOf(b)).toBe('zero one two');
+  });
 
-  // Each device compacts before the other's compaction reaches it. Edits made
-  // before the losing compaction were only ever pushed inside it.
-  it.fails('keeps the edits of a compaction that loses to a concurrent one', async () => {
+  // Each device compacts before the other's compaction reaches it. The later
+  // one gives way to the first and keeps its edits.
+  it('keeps the edits of a compaction that loses to a concurrent one', async () => {
     const adapters = [new InMemoryAdapter(), new InMemoryAdapter()] as const;
     const a = await device('A', adapters[0]);
     const b = await device('B', adapters[1]);

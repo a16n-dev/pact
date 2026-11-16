@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 const TIMEOUT_MS = 15_000;
 
 /** The token is gone for good: clear it and send the user through sign-in again. */
@@ -101,7 +103,17 @@ export async function exchangeCode(exchange: TokenExchange): Promise<ExchangeRes
 
 export type WireDocument = { collection: string; id: string; hlc: string; data: string };
 
+export type PushDocument = WireDocument & { generation?: number; seenSeq?: number };
+
 export type WireVersion = WireDocument & { writer_id: string; seq: number };
+
+// A server from before generations returns no `rejected`, having written every document.
+const pushResponseSchema = z.object({
+  seq: z.number(),
+  rejected: z.array(z.object({ collection: z.string(), id: z.string() })).default([]),
+});
+
+export type PushResponse = z.infer<typeof pushResponseSchema>;
 
 export type PullPage = { documents: WireVersion[]; cursor: number; hasMore: boolean };
 
@@ -151,13 +163,13 @@ export class SyncHttp {
     await this.request('/auth/signout', { method: 'POST' });
   }
 
-  async push(documents: readonly WireDocument[]): Promise<number> {
+  async push(documents: readonly PushDocument[]): Promise<PushResponse> {
     const res = await this.request('/sync/push', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ documents }),
     });
-    return ((await res.json()) as { seq: number }).seq;
+    return pushResponseSchema.parse(await res.json());
   }
 
   async pull(cursor: number, collection?: string): Promise<PullPage> {

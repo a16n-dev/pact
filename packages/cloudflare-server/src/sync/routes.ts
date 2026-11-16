@@ -21,10 +21,17 @@ syncRoutes.post('/push', requireWrite, async (c) => {
   const body = await c.req.json().catch(() => null);
   const versions = parsePushBody(body, maxPushDocuments(c.env));
   const token = c.get('token');
-  if (versions.length === 0) return c.json({ seq: await currentSeq(c.env.DB, token.app_id) });
-  const seq = await pushDocumentVersions(c.env.DB, token.app_id, token.id, versions);
-  c.executionCtx.waitUntil(notifyRealtime(c.env, token.app_id, (rt) => rt.broadcast(seq)));
-  return c.json({ seq });
+  if (versions.length === 0) {
+    return c.json({ seq: await currentSeq(c.env.DB, token.app_id), rejected: [] });
+  }
+  const { seq, rejected } = await pushDocumentVersions(c.env.DB, token.app_id, token.id, versions);
+  if (rejected.length < versions.length) {
+    c.executionCtx.waitUntil(notifyRealtime(c.env, token.app_id, (rt) => rt.broadcast(seq)));
+  }
+  return c.json({
+    seq,
+    rejected: rejected.map((version) => ({ ...version, code: 'generation_behind' })),
+  });
 });
 
 // Without `id`: every version after `cursor`. With `id` and one `collection`: every version of

@@ -115,6 +115,127 @@ describe('documents', () => {
   });
 });
 
+describe('document generations', () => {
+  type PushBody = { seq: number; rejected: { collection: string; id: string; code: string }[] };
+  type Generation = { generation?: number; seenSeq?: number };
+
+  let a: Awaited<ReturnType<typeof seedApp>>;
+  let other: Awaited<ReturnType<typeof seedApp>>;
+  beforeEach(async () => {
+    a = await seedApp('app-a');
+    other = await seedApp('app-a');
+  });
+
+  function at(id: string, data: string, generation: Generation) {
+    return { ...doc(id, data), ...generation };
+  }
+
+  async function pushed(token: string, documents: unknown[]): Promise<PushBody> {
+    const res = await push(token, documents);
+    expect(res.status).toBe(200);
+    return (await res.json()) as PushBody;
+  }
+
+  async function dataOf(id: string): Promise<string[]> {
+    return (await pull(a.token, `collection=notes&id=${id}`)).documents.map((d) => d.data);
+  }
+
+  it('rejects a version behind another writer and still writes the rest of the push', async () => {
+    await pushed(other.token, [at('n1', 'compacted', { generation: 1 })]);
+    const before = (await pull(a.token, 'cursor=0')).cursor;
+    const body = await pushed(a.token, [
+      at('n0', 'fresh', { generation: 0 }),
+      at('n1', 'stale', { generation: 0 }),
+      doc('n2', 'x'),
+    ]);
+    expect(body.rejected).toEqual([{ collection: 'notes', id: 'n1', code: 'generation_behind' }]);
+    const page = await pull(a.token, `cursor=${before}`);
+    expect(page.documents.map((d) => [d.id, d.seq])).toEqual([
+      ['n0', before + 1],
+      ['n2', before + 2],
+    ]);
+    expect(body.seq).toBe(before + 2);
+    expect(await dataOf('n1')).toEqual(['compacted']);
+  });
+
+  it('accepts a version at or above every other writer', async () => {
+    await pushed(other.token, [at('n1', 'g1', { generation: 1 })]);
+    expect((await pushed(a.token, [at('n1', 'same', { generation: 1 })])).rejected).toEqual([]);
+    expect((await pushed(a.token, [at('n1', 'newer', { generation: 2 })])).rejected).toEqual([]);
+    expect(await dataOf('n1')).toEqual(['g1', 'newer']);
+  });
+
+  it('rejects a compaction when another writer pushed after the versions it saw', async () => {
+    const { seq } = await pushed(other.token, [at('n1', 'edit', { generation: 0 })]);
+    const blind = await pushed(a.token, [at('n1', 'missed', { generation: 1, seenSeq: seq - 1 })]);
+    expect(blind.rejected).toHaveLength(1);
+    const seen = await pushed(a.token, [at('n1', 'saw it', { generation: 1, seenSeq: seq })]);
+    expect(seen.rejected).toEqual([]);
+    expect(await dataOf('n1')).toEqual(['edit', 'saw it']);
+  });
+
+  it('rejects the later of two compactions built from the same versions', async () => {
+    const { seq } = await pushed(other.token, [at('n1', 'base', { generation: 0 })]);
+    await pushed(other.token, [at('n1', 'theirs', { generation: 1, seenSeq: seq })]);
+    const mine = await pushed(a.token, [at('n1', 'mine', { generation: 1, seenSeq: seq })]);
+    expect(mine.rejected).toHaveLength(1);
+    expect(await dataOf('n1')).toEqual(['theirs']);
+  });
+
+  it("ignores the writer's own versions, so a retried push is accepted", async () => {
+    const compaction = { generation: 1, seenSeq: 0 };
+    await pushed(a.token, [at('n1', 'compaction', compaction)]);
+    expect((await pushed(a.token, [at('n1', 'compaction', compaction)])).rejected).toEqual([]);
+    expect((await pushed(a.token, [at('n1', 'back', { generation: 0 })])).rejected).toEqual([]);
+  });
+
+  it('checks nothing for versions pushed without a generation', async () => {
+    await pushed(other.token, [at('n1', 'g5', { generation: 5 })]);
+    expect((await pushed(a.token, [doc('n1', 'old client')])).rejected).toEqual([]);
+    expect((await pushed(other.token, [at('n1', 'g0', { generation: 0 })])).rejected).toEqual([]);
+    expect(await dataOf('n1')).toEqual(['old client', 'g0']);
+  });
+
+  it('only checks the seq of versions stored before generations were recorded', async () => {
+    const { seq } = await pushed(other.token, [doc('n1', 'legacy')]);
+    await env.DB.prepare('UPDATE documents SET generation = NULL').run();
+    expect((await pushed(a.token, [at('n1', 'new', { generation: 0 })])).rejected).toEqual([]);
+    const blind = { generation: 1, seenSeq: seq - 1 };
+    expect((await pushed(a.token, [at('n1', 'blind', blind)])).rejected).toHaveLength(1);
+    const seen = { generation: 1, seenSeq: seq };
+    expect((await pushed(a.token, [at('n1', 'compaction', seen)])).rejected).toEqual([]);
+  });
+
+  it('returns the current seq and writes nothing when every version is rejected', async () => {
+    const { seq } = await pushed(other.token, [at('n1', 'g1', { generation: 1 })]);
+    const body = await pushed(a.token, [at('n1', 'stale', { generation: 0 })]);
+    expect(body.seq).toBe(seq);
+    expect((await pushed(a.token, [doc('n2', 'x')])).seq).toBe(seq + 1);
+  });
+
+  it('accepts exactly one of two concurrent compactions', async () => {
+    const { seq } = await pushed(other.token, [at('n1', 'base', { generation: 0 })]);
+    const compaction = { generation: 1, seenSeq: seq };
+    const [first, second] = await Promise.all([
+      pushed(a.token, [at('n1', 'mine', compaction)]),
+      pushed(other.token, [at('n1', 'theirs', compaction)]),
+    ]);
+    expect(first.rejected.length + second.rejected.length).toBe(1);
+  });
+
+  it('validates generations', async () => {
+    for (const bad of [{ generation: -1 }, { generation: 1.5 }, { seenSeq: 0 }]) {
+      expect((await push(a.token, [at('n1', 'x', bad)])).status).toBe(400);
+    }
+  });
+
+  it('still refuses a read-only token before looking at generations', async () => {
+    await env.DB.prepare('UPDATE tokens SET read_only = 1 WHERE id = ?1').bind(a.tokenId).run();
+    const res = await push(a.token, [at('n1', 'x', { generation: 0 })]);
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('blobs', () => {
   it('stores, lists and serves blobs by content hash per app', async () => {
     const a = await seedApp('app-a');
@@ -235,6 +356,6 @@ describe('empty push', () => {
     const { seq } = (await (await push(a.token, [doc('n1', 'x')])).json()) as { seq: number };
     const empty = await push(a.token, []);
     expect(empty.status).toBe(200);
-    expect(await empty.json()).toEqual({ seq });
+    expect(await empty.json()).toEqual({ seq, rejected: [] });
   });
 });

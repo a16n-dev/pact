@@ -5,17 +5,22 @@ import { LIMITS } from '../lib/limits';
 // row ID), and a client merges a document's versions into the value it shows. Pull endpoints
 // therefore return versions, and "pulling a document" means pulling all of its versions.
 
-// A version as a client pushes it: its own latest state of one document.
-export type PushedDocumentVersion = {
+type DocumentVersion = {
   collection: string;
   id: string;
   hlc: string;
   data: string;
 };
 
+// A version as a client pushes it: its own latest state of one document.
+export type PushedDocumentVersion = DocumentVersion & {
+  generation?: number;
+  seenSeq?: number;
+};
+
 // A stored version: one writer's latest state of one document, stamped with the app-wide
 // sequence number assigned when it was written.
-export type DocumentVersionRow = PushedDocumentVersion & {
+export type DocumentVersionRow = DocumentVersion & {
   writer_id: string;
   seq: number;
 };
@@ -28,24 +33,39 @@ export async function currentSeq(db: D1Database, appId: string): Promise<number>
   return row?.seq ?? 0;
 }
 
-// Each pushed version takes the next value of the app's counter. The counter is bumped by the
-// batch size up front and each insert computes its own `seq` from the final value, so the batch
-// is a single D1 transaction of N + 2 statements rather than 2N.
+type PushResult = {
+  seq: number;
+  rejected: Array<{ collection: string; id: string }>;
+};
+
+// The batch is one D1 transaction, so each version's check and its write see no other push in
+// between. A version is skipped when another writer's version of the document has a generation
+// above its `generation`, or a seq above its `seenSeq`. Each written version takes one past the
+// highest seq so far, counting the versions this batch already wrote, so skipped versions leave
+// no gaps; the app's counter catches up at the end.
 export async function pushDocumentVersions(
   db: D1Database,
   appId: string,
   writerId: string,
   versions: PushedDocumentVersion[]
-): Promise<number> {
+): Promise<PushResult> {
   const statements = [
-    db.prepare('UPDATE apps SET seq = seq + ?2 WHERE id = ?1').bind(appId, versions.length),
-    ...versions.map((version, i) =>
+    ...versions.map((version) =>
       db
         .prepare(
-          `INSERT INTO documents (app_id, collection, id, writer_id, hlc, data, seq)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT seq FROM apps WHERE id = ?1) - ?7)
+          `INSERT INTO documents (app_id, collection, id, writer_id, hlc, data, generation, seq)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, MAX(
+             (SELECT seq FROM apps WHERE id = ?1),
+             COALESCE((SELECT MAX(seq) FROM documents WHERE app_id = ?1), 0)
+           ) + 1
+           WHERE NOT EXISTS (
+             SELECT 1 FROM documents
+             WHERE app_id = ?1 AND collection = ?2 AND id = ?3 AND writer_id != ?4
+               AND (generation > ?7 OR seq > ?8)
+           )
            ON CONFLICT (app_id, collection, id, writer_id) DO UPDATE
-             SET hlc = excluded.hlc, data = excluded.data, seq = excluded.seq`
+             SET hlc = excluded.hlc, data = excluded.data, generation = excluded.generation,
+               seq = excluded.seq`
         )
         .bind(
           appId,
@@ -54,13 +74,22 @@ export async function pushDocumentVersions(
           writerId,
           version.hlc,
           version.data,
-          versions.length - 1 - i
+          version.generation ?? null,
+          version.seenSeq ?? null
         )
     ),
-    db.prepare('SELECT seq FROM apps WHERE id = ?1').bind(appId),
+    db
+      .prepare(
+        `UPDATE apps SET seq = MAX(seq, COALESCE((SELECT MAX(seq) FROM documents WHERE app_id = ?1), 0))
+         WHERE id = ?1 RETURNING seq`
+      )
+      .bind(appId),
   ];
   const results = await db.batch<{ seq: number }>(statements);
-  return results.at(-1)!.results[0]!.seq;
+  const rejected = versions
+    .filter((_, i) => results[i]!.meta.changes === 0)
+    .map(({ collection, id }) => ({ collection, id }));
+  return { seq: results.at(-1)!.results[0]!.seq, rejected };
 }
 
 // Every version written after `cursor`, oldest first, optionally limited to some collections.

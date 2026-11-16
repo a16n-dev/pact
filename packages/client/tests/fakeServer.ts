@@ -14,6 +14,15 @@ type Version = {
   data: string;
 };
 
+type PushedDocument = {
+  collection: string;
+  id: string;
+  hlc: string;
+  data: string;
+  generation?: number;
+  seenSeq?: number;
+};
+
 type Token = {
   token: string;
   appId: string;
@@ -25,6 +34,7 @@ type Token = {
 type App = {
   seq: number;
   versions: Map<string, Version>;
+  generations: Map<string, number | undefined>;
   blobs: Map<string, { bytes: Uint8Array; contentType: string }>;
   claims: Map<string, Claim>;
   redirectUris: Set<string>;
@@ -82,6 +92,10 @@ export class FakeServer {
   private readonly sockets = new Map<string, Set<FakeSocket>>();
   /** When set, every request fails as if the network were down. */
   offline = false;
+  /** When set, push behaves like a server from before generations: it writes every document and reports no rejections. */
+  ignoresGenerations = false;
+  /** Pushed documents rejected over the server's life. */
+  refusals = 0;
   mintToken = (): string => `pact_${randomId(20)}`;
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -165,6 +179,7 @@ export class FakeServer {
     this.apps.set(appId, {
       seq: 1_000,
       versions: new Map(),
+      generations: new Map(),
       blobs: new Map(),
       claims: new Map(),
       redirectUris: new Set(redirectUris),
@@ -255,7 +270,7 @@ export class FakeServer {
     documents: Array<{ collection: string; id: string; hlc: string; data: string }>
   ): number {
     const auth = this.tokens.get(token)!;
-    return this.write(this.app(auth.appId), auth, documents);
+    return this.write(this.app(auth.appId), auth, documents).seq;
   }
 
   /** The server's view of who may run a task. */
@@ -325,28 +340,52 @@ export class FakeServer {
   }
 
   private push(app: App, auth: Token, body: BodyInit | null | undefined): Response {
-    const { documents } = JSON.parse(String(body)) as {
-      documents: Array<{ collection: string; id: string; hlc: string; data: string }>;
-    };
+    const { documents } = JSON.parse(String(body)) as { documents: PushedDocument[] };
     if (!Array.isArray(documents)) return error(400, 'bad_request');
     if (documents.length > this.maxPushDocuments) return error(413, 'too_many_documents');
     for (const doc of documents) {
       if (new TextEncoder().encode(doc.data).length > 1_000_000)
         return error(413, 'document_too_large');
       if (doc.hlc.length < 1 || doc.hlc.length > 64) return error(400, 'bad_request');
+      if (doc.seenSeq !== undefined && doc.generation === undefined) {
+        return error(400, 'bad_request');
+      }
     }
-    const seq = this.write(app, auth, documents);
-    return json(200, { seq });
+    if (this.ignoresGenerations) {
+      const legacy = documents.map(({ collection, id, hlc, data }) => ({
+        collection,
+        id,
+        hlc,
+        data,
+      }));
+      return json(200, { seq: this.write(app, auth, legacy).seq });
+    }
+    const { seq, rejected } = this.write(app, auth, documents);
+    this.refusals += rejected.length;
+    return json(200, {
+      seq,
+      rejected: rejected.map(({ collection, id }) => ({
+        collection,
+        id,
+        code: 'generation_behind',
+      })),
+    });
   }
 
   private write(
     app: App,
     auth: Token,
-    documents: Array<{ collection: string; id: string; hlc: string; data: string }>
-  ): number {
+    documents: PushedDocument[]
+  ): { seq: number; rejected: PushedDocument[] } {
+    const rejected: PushedDocument[] = [];
     for (const doc of documents) {
+      if (this.behind(app, auth, doc)) {
+        rejected.push(doc);
+        continue;
+      }
       app.seq += 1;
-      app.versions.set(`${doc.collection}\u0000${doc.id}\u0000${auth.writerId}`, {
+      const key = `${doc.collection}\u0000${doc.id}\u0000${auth.writerId}`;
+      app.versions.set(key, {
         collection: doc.collection,
         id: doc.id,
         writer_id: auth.writerId,
@@ -354,13 +393,28 @@ export class FakeServer {
         seq: app.seq,
         data: doc.data,
       });
+      app.generations.set(key, doc.generation);
     }
-    if (documents.length > 0) {
+    if (rejected.length < documents.length) {
       for (const socket of this.sockets.get(auth.appId) ?? []) {
         socket.serverMessage(JSON.stringify({ type: 'changed', seq: app.seq }));
       }
     }
-    return app.seq;
+    return { seq: app.seq, rejected };
+  }
+
+  private behind(app: App, auth: Token, doc: PushedDocument): boolean {
+    for (const version of app.versions.values()) {
+      if (version.collection !== doc.collection || version.id !== doc.id) continue;
+      if (version.writer_id === auth.writerId) continue;
+      const generation = app.generations.get(
+        `${version.collection}\u0000${version.id}\u0000${version.writer_id}`
+      );
+      if (doc.generation !== undefined && generation !== undefined && generation > doc.generation)
+        return true;
+      if (doc.seenSeq !== undefined && version.seq > doc.seenSeq) return true;
+    }
+    return false;
   }
 
   private pull(app: App, params: URLSearchParams): Response {
