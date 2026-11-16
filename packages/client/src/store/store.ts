@@ -84,6 +84,7 @@ const encoder = new TextEncoder();
 export class Store<Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[]> {
   private readonly adapter: DatabaseAdapter;
   private lens: Lens;
+  private lensVersion = 0;
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
   private readonly definitionsByKey: ReadonlyMap<string, CollectionDefinition>;
   private readonly migrator: Migrator;
@@ -241,9 +242,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       prune: () => this.pruneBlobs(),
       notifyChanged: () => this.notifyBlobsChanged(),
     };
+    const lensVersion = () => this.lensVersion;
     this.encryption = {
       setKey: (cipher) => this.setKey(cipher),
       moveToKey: (cipher) => this.moveToKey(cipher),
+      get lensVersion() {
+        return lensVersion();
+      },
     };
     const serverDeps = {
       credentials: () => this.syncEngine.credentials(),
@@ -1259,6 +1264,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.rememberBlobHashes();
     await this.syncEngine.leaveLens(this.syncedDefinitions().map((def) => this.keyOf(def)));
     this.lens = lens;
+    this.lensVersion += 1;
     this.textCache.clear();
     this.textHandedOut.clear();
     await this.retryHeld(false);

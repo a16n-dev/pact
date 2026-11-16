@@ -175,6 +175,12 @@ export type DecisionRequest<Q extends Record<string, unknown> = Record<string, u
 
 export type StoreEncryption = {
   /**
+   * Goes up each time the store switches lens, synchronously with the
+   * switch. A read that started under an earlier value may hold documents
+   * from another lens.
+   */
+  readonly lensVersion: number;
+  /**
    * Switches the lens: the store shows the documents sealed under `cipher`,
    * or the plain ones when null. Documents in other lenses stay stored and
    * keep syncing but never interact with this one, so the same id can hold

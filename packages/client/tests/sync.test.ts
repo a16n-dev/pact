@@ -827,6 +827,16 @@ describe('syncNow and connection', () => {
     await vi.waitFor(() => expect(otherChanges).toContain('_session'));
   });
 
+  it('reports the session on a sign-out when the server closes the socket', async () => {
+    const { store } = await signedInStore('Laptop');
+    const changes: string[] = [];
+    store.on('change', (name) => changes.push(name));
+    await store.sync.signOut();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(changes).toContain('_session');
+    expect(await store.sync.connection()).toBeNull();
+  });
+
   it('does not open realtime when sign-in finishes after dispose', async () => {
     const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
     const begun = await store.sync.beginSignIn({
