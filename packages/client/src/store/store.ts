@@ -166,6 +166,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
           (key) => this.definitionOfKey(key)?.def.synced
         ),
       applyIncoming: (def, id, record) => this.applyIncoming(def, id, record),
+      clearQueued: (key, entry, pushed) => this.clearQueued(key, entry, pushed),
       heldEntries: () => this.heldEntries(),
       clearLocalData: () => this.clearLocalData(),
       emit: (collection) => this.emit(collection),
@@ -555,6 +556,35 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     this.syncEngine.requestDrain(
       debounceMs === undefined ? undefined : { key, delayMs: debounceMs }
     );
+  }
+
+  // Writes queue their entry under the document lock, so taking it here means
+  // none can land between the check and the delete.
+  private clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord): Promise<void> {
+    return this.serialise(entry.collection, entry.docId, async () => {
+      const queued = await this.getConfigFrom<OutboxEntry>(OUTBOX, key);
+      if (!queued) return;
+      if (queued.order === entry.order) {
+        await this.adapter.delete(OUTBOX, key);
+        return;
+      }
+      if (!pushed || !queued.textBase) return;
+      // The pushed edits are on the server now, so the rebase base moves past
+      // them. A push from another lens cannot be decoded here; its entry
+      // loses the base, and a rebase then takes the winner as it is.
+      const def = this.definitions.get(entry.collection);
+      let textBase: Record<string, string> | undefined;
+      if (def?.textEngine && (queued.key ?? def.key) === this.keyOf(def)) {
+        const record = await this.codec.decode(this.keyOf(def), entry.docId, pushed);
+        textBase = this.textValues(def, record.text);
+      }
+      const { textBase: _replaced, ...rest } = queued;
+      await this.adapter.put(
+        OUTBOX,
+        key,
+        configRecord(key, textBase ? { ...rest, textBase } : rest)
+      );
+    });
   }
 
   private textValues(def: CollectionDefinition, state: string | undefined): Record<string, string> {
