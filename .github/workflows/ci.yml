@@ -42,3 +42,6 @@ jobs:
       # Catch tsup/bundling breakage before it surfaces in the publish workflow.
       - name: Build client
         run: pnpm --filter @a16n/pact-client build
+
+      - name: Build React bindings
+        run: pnpm --filter @a16n/pact-react build

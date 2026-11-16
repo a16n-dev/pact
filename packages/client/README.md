@@ -110,6 +110,8 @@ store.on('signedOut', () => showSignIn());
 
 `normaliseServerUrl(input)` turns what a user typed into a server URL for `beginSignIn`, taking a bare host such as `sync.example.com` to mean `https://`.
 
+In React with TanStack Query, [`@a16n/pact-react`](../react) wraps sign-in and sync in hooks.
+
 ## Collaborative text
 
 Declare a text field with `yText()` from the `@a16n/pact-client/yjs` subpath. Reads see a `string`; writes may pass a `string`, which lands as the minimal edit from the current text so concurrent writes merge; and `collection.text(id, field)` hands out the live `Y.Text` for an editor to bind to:
