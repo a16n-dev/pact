@@ -3,12 +3,15 @@ import diff from 'fast-diff';
 /** Deletes `deleteCount` characters at `index`, then inserts `insert` there. */
 export type TextSplice = { index: number; deleteCount: number; insert: string };
 
-// Last first, so each splice's index still holds after the ones before it apply.
+// Last first, so each splice's index still holds after the ones before it
+// apply. The diff is minimal, without semantic cleanup, which can delete a
+// kept character and insert it again: in a CRDT that replaces the character,
+// and two devices replacing the same one concurrently end up with it twice.
 export function textSplices(from: string, to: string): TextSplice[] {
   const splices: TextSplice[] = [];
   let index = 0;
   let pending: TextSplice | null = null;
-  for (const [op, chunk] of diff(from, to, undefined, true)) {
+  for (const [op, chunk] of diff(from, to)) {
     if (op === diff.EQUAL) {
       if (pending) splices.push(pending);
       pending = null;
@@ -27,11 +30,13 @@ export function textSplices(from: string, to: string): TextSplice[] {
 
 // Describes `edited` relative to `base`: which base characters it keeps, and
 // the text it inserts in each gap (gap `i` sits before base character `i`).
+// The diff is minimal for the same reason as in textSplices: a kept character
+// deleted and inserted again would bring back one the other side deleted.
 function layout(base: string, edited: string): { kept: boolean[]; inserts: string[] } {
   const kept = new Array<boolean>(base.length).fill(true);
   const inserts = new Array<string>(base.length + 1).fill('');
   let at = 0;
-  for (const [op, chunk] of diff(base, edited, undefined, true)) {
+  for (const [op, chunk] of diff(base, edited)) {
     if (op === diff.INSERT) inserts[at] += chunk;
     else {
       if (op === diff.DELETE) kept.fill(false, at, at + chunk.length);
