@@ -1,6 +1,6 @@
 import { act, screen, waitFor } from '@testing-library/react';
 import { type ReactNode, Suspense, useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createStore,
   renderWithPact,
@@ -72,6 +72,10 @@ function Toggle({ children }: { children: ReactNode }) {
 }
 
 describe('live reads', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('suspends, then updates on a local write', async () => {
     const store = await createStore();
     renderWithPact(<NoteTitles />, { open: async () => store });
@@ -113,6 +117,26 @@ describe('live reads', () => {
     expect(await screen.findByText('note: none')).toBeTruthy();
     await store.collection('notes').create({ id: 'nt-missing', title: 'now here' });
     expect(await screen.findByText('note: now here')).toBeTruthy();
+  });
+
+  it('keeps app keys apart from the keys of the built-in reads', async () => {
+    const store = await createStore();
+    await store.collection('notes').create({ id: 'nt-1', title: 'stored' });
+    function Both() {
+      const custom = useLiveQuery({
+        key: ['pact', 'document', 'notes', 'nt-1'],
+        collections: ['notes'],
+        read: async () => 'custom',
+      });
+      const note = useDocument('notes', 'nt-1');
+      return (
+        <p>
+          {custom} {note?.title}
+        </p>
+      );
+    }
+    renderWithPact(<Both />, { open: async () => store });
+    expect(await screen.findByText('custom stored')).toBeTruthy();
   });
 
   it('shares one read between components using the same key', async () => {
@@ -166,7 +190,7 @@ describe('live reads', () => {
     expect(counter.reads).toBe(2);
   });
 
-  it('reads again after a read that a change arrived during, never landing stale', async () => {
+  it('shows a result a change overtook, then reads exactly once more', async () => {
     const store = await createStore();
     const { counter, NoteCount } = countedRead();
     renderWithPact(<NoteCount />, { open: async () => store });
@@ -182,7 +206,7 @@ describe('live reads', () => {
     expect(await screen.findByText('count: 2')).toBeTruthy();
     await sleep(100);
     expect(counter.reads).toBe(3);
-    expect(counter.rendered).toEqual([0, 2]);
+    expect(counter.rendered).toEqual([0, 1, 2]);
   });
 
   it('stops reading when nothing uses it', async () => {

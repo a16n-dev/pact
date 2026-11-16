@@ -185,6 +185,83 @@ describe('lens switch', () => {
   });
 });
 
+describe('lens switch with a first load in flight', () => {
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+  });
+
+  afterEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+
+  it('never shows the old lens, staying suspended until a read in the new lens lands', async () => {
+    const store = await createStore();
+    await store.collection('notes').create({ id: 'nt-1', title: 'plain' });
+    const held = deferred();
+    let holding = true;
+    let listedBeforeSwitch = false;
+    let switched = false;
+    const shownAfterSwitch: string[] = [];
+    function Titles() {
+      const titles = useLiveQuery({
+        key: ['first-load-titles'],
+        collections: ['notes'],
+        read: async (s) => {
+          const listed = (await s.collection('notes').list()).map((note) => note.title);
+          if (holding) {
+            listedBeforeSwitch = true;
+            await held.promise;
+          }
+          // Leaves React time to render each result before the next lands.
+          await sleep(100);
+          return listed.join(',') || 'empty';
+        },
+      });
+      if (switched) shownAfterSwitch.push(titles);
+      return <p>titles {titles}</p>;
+    }
+    renderWithPact(<Titles />, { open: async () => store });
+    await waitFor(() => expect(listedBeforeSwitch).toBe(true));
+    const cipher = createWebCryptoCipher(await deriveEncryptionKey('pw', 'salt', 1_000));
+    await store.encryption.setKey(cipher);
+    switched = true;
+    holding = false;
+    held.resolve();
+    await waitFor(() => expect(screen.getByText('titles empty')).toBeTruthy());
+    await sleep(200);
+    expect(shownAfterSwitch.every((titles) => titles === 'empty')).toBe(true);
+  });
+});
+
+describe('sustained changes', () => {
+  it('keeps showing new results while changes arrive faster than a read', async () => {
+    const store = await createStore();
+    await store.collection('notes').create({ id: 'nt-1', title: 't0' });
+    const rendered: string[] = [];
+    function Title() {
+      const title = useLiveQuery({
+        key: ['slow-title'],
+        collections: ['notes'],
+        read: async (s) => {
+          const note = await s.collection('notes').get('nt-1');
+          await sleep(120);
+          return note?.title ?? '';
+        },
+      });
+      if (rendered.at(-1) !== title) rendered.push(title);
+      return <p>title {title}</p>;
+    }
+    renderWithPact(<Title />, { open: async () => store });
+    await screen.findByText('title t0');
+    for (let i = 1; i <= 25; i++) {
+      await store.collection('notes').update('nt-1', { title: `t${i}` });
+      await sleep(60);
+    }
+    expect(rendered.length).toBeGreaterThan(5);
+    expect(await screen.findByText('title t25')).toBeTruthy();
+  });
+});
+
 describe('LiveCache', () => {
   it('brings back a dropped entry when something subscribes to it, reading once', async () => {
     const store = await createStore();
@@ -209,6 +286,29 @@ describe('LiveCache', () => {
 
     await store.collection('notes').create({ title: 'b' });
     await waitFor(() => expect(entry.getSnapshot()).toEqual({ status: 'ok', value: 2 }));
+    cache.dispose();
+  });
+});
+
+describe('LiveCache reads', () => {
+  it('reads once more for a change during a read, not again at the batch', async () => {
+    const store = await createStore();
+    const cache = new LiveCache(store);
+    let reads = 0;
+    const entry = cache.entry('k', ['notes'], async () => {
+      reads += 1;
+      await sleep(40);
+      return (await store.collection('notes').list()).length;
+    });
+    entry.subscribe(() => {});
+    await entry.loaded;
+    reads = 0;
+    await store.collection('notes').create({ title: 'a' });
+    await sleep(60);
+    await store.collection('notes').create({ title: 'b' });
+    await sleep(300);
+    expect(reads).toBe(2);
+    expect(entry.getSnapshot()).toEqual({ status: 'ok', value: 2 });
     cache.dispose();
   });
 });

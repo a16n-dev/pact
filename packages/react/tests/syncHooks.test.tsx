@@ -76,6 +76,17 @@ describe('useSyncConnection with the store called directly', () => {
   });
 });
 
+describe('useSyncConnection when the server closes the socket on sign-out', () => {
+  it('ends signed out after a sign-out made on the store', async () => {
+    const store = await signedInStore('Laptop');
+    renderWithPact(<Connection />, { open: async () => store });
+    await screen.findByText('connected: Laptop');
+    await act(() => store.sync.signOut());
+    expect(await screen.findByText('signed out')).toBeTruthy();
+    expect(await store.sync.connection()).toBeNull();
+  });
+});
+
 describe('usePactSync', () => {
   it('keeps the same functions across renders', async () => {
     const store = await createStore();

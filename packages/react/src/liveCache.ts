@@ -19,11 +19,11 @@ class LiveEntry<T> {
   readonly collections: ReadonlySet<string>;
   // Resolves once the first read settles, after which `snapshot` is set.
   readonly loaded: Promise<void>;
-  snapshot: LiveSnapshot<T> | undefined;
+  // Set by the first read, before `loaded` resolves.
+  snapshot!: LiveSnapshot<T>;
   dropped = false;
   running = false;
-  // Changed while a read ran: another read follows, and the earlier result is
-  // shown only when nothing has been shown yet.
+  // Changed while a read ran: one more read follows it.
   stale = false;
   private readonly read: () => Promise<T>;
   private readonly cache: LiveCache;
@@ -81,7 +81,7 @@ class LiveEntry<T> {
     };
   };
 
-  readonly getSnapshot = (): LiveSnapshot<T> | undefined => this.snapshot;
+  readonly getSnapshot = (): LiveSnapshot<T> => this.snapshot;
 
   changed(): void {
     if (this.listeners.size > 0 || this.running) {
@@ -92,6 +92,8 @@ class LiveEntry<T> {
   }
 
   // Reads run one at a time, so a slower earlier read never lands after a newer one.
+  // A result overtaken by a change is still shown, one step behind, while the
+  // next read runs.
   refresh(): void {
     this.outdated = false;
     if (this.running) {
@@ -111,13 +113,18 @@ class LiveEntry<T> {
   private async readUntilFresh(): Promise<void> {
     do {
       this.stale = false;
+      const lensVersion = this.cache.lensVersion();
       let next: LiveSnapshot<T>;
       try {
         next = { status: 'ok', value: await this.read() };
       } catch (error) {
         next = { status: 'error', error };
       }
-      if (this.stale && this.snapshot) continue;
+      // Read under another lens: never shown, not even as a first result.
+      if (this.cache.lensVersion() !== lensVersion) {
+        this.stale = true;
+        continue;
+      }
       this.snapshot = next;
       this.markLoaded();
       for (const listener of this.listeners) listener();
@@ -143,12 +150,16 @@ export class LiveCache {
   // Every entry still followed, including one revived after another took its key.
   private readonly live = new Set<LiveEntry<unknown>>();
   private readonly changes = new Set<string>();
+  // Entries a change caught mid-read, which already read again after it.
+  private readonly rereading = new Set<LiveEntry<unknown>>();
   private flushTimeout: ReturnType<typeof setTimeout> | undefined;
   private readonly unsubscribe: () => void;
   private disposed = false;
+  readonly lensVersion: () => number;
 
   constructor(store: Store<any>) {
     this.unsubscribe = store.on('change', (collection) => this.notify(collection));
+    this.lensVersion = () => store.encryption.lensVersion;
   }
 
   entry<T>(key: string, collections: readonly string[], read: () => Promise<T>): LiveEntry<T> {
@@ -160,9 +171,10 @@ export class LiveCache {
     return created;
   }
 
-  // Called once a render has thrown an entry's error: the render that retries
-  // in the same task still sees it, and a later one, such as an error
-  // boundary's reset, reads again.
+  // Called once a render has thrown an entry's error. Dropping it after that
+  // render has finished, rather than replacing it when next asked for, spares
+  // the render React retries in the same task an extra read; a later render,
+  // such as an error boundary's reset, reads again.
   retireAfterThrow(entry: LiveEntry<any>): void {
     setTimeout(() => {
       if (entry.failed && entry.idle) this.drop(entry);
@@ -197,10 +209,13 @@ export class LiveCache {
   }
 
   private notify(collection: string): void {
-    // A read already running may have read before this change, so its result
-    // must not be shown; marking it now, not at the batch, covers that.
+    // A read already running may have read before this change; marking it now,
+    // not at the batch, makes it read again as soon as it lands.
     for (const entry of this.live) {
-      if (entry.running && entry.collections.has(collection)) entry.stale = true;
+      if (entry.running && entry.collections.has(collection)) {
+        entry.stale = true;
+        this.rereading.add(entry);
+      }
     }
     this.changes.add(collection);
     this.flushTimeout ??= setTimeout(() => this.flush(), CHANGE_BATCH_DELAY_MS);
@@ -209,8 +224,11 @@ export class LiveCache {
   private flush(): void {
     this.flushTimeout = undefined;
     const changes = [...this.changes];
+    const rereading = [...this.rereading];
     this.changes.clear();
+    this.rereading.clear();
     for (const entry of this.live) {
+      if (rereading.includes(entry)) continue;
       if (changes.some((collection) => entry.collections.has(collection))) entry.changed();
     }
   }
