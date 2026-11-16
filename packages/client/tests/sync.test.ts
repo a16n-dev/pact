@@ -27,6 +27,13 @@ const docs = defineCollection({
   schema: (base) => base.extend({ body: yText() }),
 });
 
+const pages = defineCollection({
+  name: 'pages',
+  idPrefix: 'pg',
+  merge: 'field',
+  schema: (base) => base.extend({ title: yText(), body: yText() }),
+});
+
 const local = defineCollection({
   name: 'prefs',
   idPrefix: 'p',
@@ -403,6 +410,7 @@ describe('push and pull', () => {
     await store.collection('notes').createMany([{ title: 'a' }, { title: 'b' }, { title: 'c' }]);
     await store.collection('docs').createMany([{ body: 'x' }, { body: 'y' }]);
     expect(await store.sync.pending()).toBe(5);
+    await store.sync.drain().catch(() => {});
     server.offline = false;
     const before = server.requests.filter((r) => r.path === '/sync/push').length;
     await store.sync.drain();
@@ -687,6 +695,103 @@ describe.each([
     expect(await bodyOf(a.store)).toBe('one two');
   });
 
+  it('replays an edit the server refused for being behind a compaction before pushing it again', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await b.store.sync.drain();
+    expect(server.refusals).toBe(1);
+    expect(await b.store.sync.pending()).toBe(0);
+
+    await a.docs.updateText('d-1', 'body', { base: 'one', next: 'zero one' });
+    await a.store.sync.drain();
+    await a.store.sync.pull();
+    await b.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('zero one two');
+    expect(await bodyOf(b.store)).toBe('zero one two');
+  });
+
+  it('keeps every text field of a compaction that lost to a concurrent one', async () => {
+    const collections = [notes, docs, local, pages];
+    const a = await device('A', { collections });
+    const b = await device('B', { collections });
+    const pagesOf = (store: Store<any>) => store.collection('pages');
+    await pagesOf(a.store).create({ id: 'pg-1', title: 'title', body: 'body' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await pagesOf(a.store).updateText('pg-1', 'title', { base: 'title', next: 'title one' });
+    await pagesOf(a.store).compactText('pg-1');
+    await pagesOf(b.store).updateText('pg-1', 'body', { base: 'body', next: 'body two' });
+    await pagesOf(b.store).compactText('pg-1');
+    await a.store.sync.drain();
+    await b.store.sync.drain();
+
+    await a.store.sync.pull();
+    for (const store of [a.store, b.store]) {
+      expect(await pagesOf(store).get('pg-1')).toMatchObject({
+        title: 'title one',
+        body: 'body two',
+      });
+    }
+  });
+
+  it('takes in an edit that reaches the server between the pull and push of a compaction', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await a.docs.compactText('d-1');
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    const aToken = (await a.store.sync.credentials())!.token;
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (input.endsWith('/sync/push') && auth === `Bearer ${aToken}`) {
+        vi.stubGlobal('fetch', server.fetch);
+        await b.store.sync.drain();
+      }
+      return server.fetch(input, init);
+    });
+    await a.store.sync.drain();
+    expect(server.refusals).toBe(1);
+
+    await b.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('one two');
+    expect(await bodyOf(b.store)).toBe('one two');
+    const key = cipher ? `docs@${await cipher.keyId()}` : 'docs';
+    expect(server.versionsOf('app', key, 'd-1')).toHaveLength(2);
+  });
+
+  it('holds back a compaction until it can merge every version on the server', async () => {
+    const a = await device('A');
+    const b = await device('B', { textPushDelayMs: 60_000 });
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    // B's clock runs ahead of A's drift bound, so A skips B's version.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    vi.setSystemTime(now + 600_000);
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await b.store.sync.drain();
+    vi.setSystemTime(now);
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    expect(server.refusals).toBeGreaterThan(0);
+    expect(await a.store.sync.pending()).toBe(1);
+
+    vi.setSystemTime(now + 600_000);
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    expect(await bodyOf(a.store)).toBe('one two');
+    expect(await bodyOf(b.store)).toBe('one two');
+  });
+
   it('turns the plaintext text base an older build queued into a sealed one', async () => {
     const a = await device('A');
     const b = await device('B', { textPushDelayMs: 60_000 });
@@ -720,6 +825,108 @@ describe.each([
     await a.store.sync.drain();
     await reopened.sync.pull();
     expect(await bodyOf(reopened)).toBe('zqx_ one two');
+  });
+});
+
+describe('a server without generations', () => {
+  async function device(name: string) {
+    const signedIn = await signedInStore(name, { textPushDelayMs: 60_000 });
+    signedIn.store.dispose();
+    return { ...signedIn, docs: signedIn.store.collection('docs') };
+  }
+
+  it('takes every push, so a client syncs as it did before generations', async () => {
+    server.ignoresGenerations = true;
+    const sent: unknown[] = [];
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (input.endsWith('/sync/push')) sent.push(...JSON.parse(String(init?.body)).documents);
+      return server.fetch(input, init);
+    });
+    const a = await device('A');
+    const b = await device('B');
+    await a.docs.create({ id: 'd-1', body: 'one' });
+    await a.store.sync.drain();
+    await b.store.sync.pull();
+    await a.docs.compactText('d-1');
+    await a.store.sync.drain();
+    await b.docs.updateText('d-1', 'body', { base: 'one', next: 'one two' });
+    await b.store.sync.drain();
+    expect(await b.store.sync.pending()).toBe(0);
+    expect(sent).toContainEqual(expect.objectContaining({ generation: 0 }));
+
+    await b.store.sync.pull();
+    await b.store.sync.drain();
+    await a.store.sync.pull();
+    expect((await a.docs.get('d-1'))?.body).toBe('one two');
+  });
+});
+
+describe('fake server generations', () => {
+  type Generation = { generation?: number; seenSeq?: number };
+
+  async function pushAs(token: string, documents: unknown[]) {
+    const res = await server.fetch(`${server.origin}/sync/push`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ documents }),
+    });
+    return {
+      status: res.status,
+      body: (await res.json()) as { seq: number; rejected?: Array<{ id: string; code: string }> },
+    };
+  }
+
+  function at(id: string, data: string, generation: Generation = {}) {
+    return { collection: 'notes', id, hlc: '1', data, ...generation };
+  }
+
+  function writers() {
+    return { a: server.apiToken('app'), other: server.apiToken('app') };
+  }
+
+  it('rejects a version behind another writer and still writes the rest of the push', async () => {
+    const { a, other } = writers();
+    const { body: first } = await pushAs(other, [at('n1', 'compacted', { generation: 1 })]);
+    const { body } = await pushAs(a, [
+      at('n0', 'fresh', { generation: 0 }),
+      at('n1', 'stale', { generation: 0 }),
+      at('n2', 'x'),
+    ]);
+    expect(body.rejected).toEqual([{ collection: 'notes', id: 'n1', code: 'generation_behind' }]);
+    expect(body.seq).toBe(first.seq + 2);
+    expect(server.versionsOf('app', 'notes', 'n2')[0]!.seq).toBe(first.seq + 2);
+    expect((await pushAs(a, [at('n1', 'same', { generation: 1 })])).body.rejected).toEqual([]);
+    const { body: all } = await pushAs(a, [
+      at('n0', 'stale', { generation: 0 }),
+      at('n1', 'y', {}),
+    ]);
+    expect(all.rejected).toEqual([]);
+    const { body: refused } = await pushAs(a, [at('n1', 'stale', { generation: 0 })]);
+    expect(refused.rejected).toHaveLength(1);
+    expect(refused.seq).toBe(all.seq);
+  });
+
+  it('rejects a compaction unless it saw every other version', async () => {
+    const { a, other } = writers();
+    const { body: edit } = await pushAs(other, [at('n1', 'edit')]);
+    const blind = { generation: 1, seenSeq: edit.seq - 1 };
+    expect((await pushAs(a, [at('n1', 'blind', blind)])).body.rejected).toHaveLength(1);
+    const seen = { generation: 1, seenSeq: edit.seq };
+    expect((await pushAs(a, [at('n1', 'seen', seen)])).body.rejected).toEqual([]);
+    expect((await pushAs(a, [at('n1', 'retried', seen)])).body.rejected).toEqual([]);
+    expect((await pushAs(other, [at('n1', 'theirs', seen)])).body.rejected).toHaveLength(1);
+  });
+
+  it('validates generations', async () => {
+    expect((await pushAs(writers().a, [at('n1', 'x', { seenSeq: 0 })])).status).toBe(400);
+  });
+
+  it('reports no rejections when it ignores generations', async () => {
+    server.ignoresGenerations = true;
+    const other = server.apiToken('app');
+    await pushAs(other, [at('n1', 'compacted', { generation: 1 })]);
+    const { body } = await pushAs(server.apiToken('app'), [at('n1', 'stale', { generation: 0 })]);
+    expect(body).not.toHaveProperty('rejected');
   });
 });
 
@@ -860,6 +1067,23 @@ describe('key lenses on the wire', () => {
     vi.stubGlobal('fetch', server.fetch);
     await a.store.sync.drain();
     expect(server.versionsOf('app', `n@${keyId}`, 'nt-1')).toHaveLength(1);
+  });
+
+  it('pushes text queued in a lens after switching away from it', async () => {
+    const a = await signedInStore('A', { cipher: await cipherFor('one') });
+    const keyId = await (await cipherFor('one')).keyId();
+    a.store.dispose();
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')));
+    await a.store.collection('docs').create({ id: 'd-1', body: 'queued' });
+    await a.store
+      .collection('docs')
+      .compactText('d-1')
+      .catch(() => {});
+    await a.store.encryption.setKey(null);
+    vi.stubGlobal('fetch', server.fetch);
+    await a.store.sync.drain();
+    expect(server.versionsOf('app', `docs@${keyId}`, 'd-1')).toHaveLength(1);
+    expect(await a.store.sync.pending()).toBe(0);
   });
 });
 

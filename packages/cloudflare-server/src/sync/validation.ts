@@ -8,6 +8,8 @@ const pushedVersionSchema = z.object({
   id: z.string().min(1).max(256),
   hlc: z.string().min(1).max(64),
   data: z.string().min(1),
+  generation: z.number().int().nonnegative().optional(),
+  seenSeq: z.number().int().nonnegative().optional(),
 });
 const pushBodySchema = z.object({ documents: z.array(pushedVersionSchema) });
 
@@ -23,6 +25,9 @@ export function parsePushBody(body: unknown, maxDocuments: number): PushedDocume
   const parsed = pushBodySchema.safeParse(body);
   if (!parsed.success) throw badRequest(z.prettifyError(parsed.error));
   for (const version of parsed.data.documents) {
+    if (version.seenSeq !== undefined && version.generation === undefined) {
+      throw badRequest('seenSeq needs a generation');
+    }
     if (new TextEncoder().encode(version.data).byteLength > LIMITS.dataBytes) {
       throw new ApiError(413, 'document_too_large', 'A document may hold at most 1 MB of data');
     }

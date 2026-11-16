@@ -11,6 +11,7 @@ The HTTP and WebSocket surface a client builds against. Everything a client need
 - **Document.** Identified by `(collection, id)`. The server doesn't store a document as a whole. It stores one **version** per writer: that writer's latest state of the document. A client reads all the versions of a document and merges them itself.
 - **`seq`.** A per-app counter. Every version written gets the next value, so a client can ask for "everything after the last `seq` I saw".
 - **`hlc` and `data`.** Opaque strings. The server never parses them. `hlc` is for the client's own ordering (a hybrid logical clock by convention); `data` is the document body in whatever encoding the client chooses.
+- **Generation.** An optional counter a client attaches to a version, for data where a newer generation replaces older ones outright instead of merging with them, such as a text whose history was compacted. The server uses it only to refuse versions that would bring back an older generation, or start a new one that leaves out another writer's versions; see [Generations](#generations).
 - **Blob.** Immutable bytes addressed by their SHA-256 hash, per app.
 
 ## Conventions
@@ -107,21 +108,43 @@ Requires auth.
 }
 ```
 
-| Field        | Limit                        |
-| ------------ | ---------------------------- |
-| `collection` | 1–256 chars                  |
-| `id`         | 1–256 chars                  |
-| `hlc`        | 1–64 chars                   |
-| `data`       | 1 byte to 1 MB (UTF-8 bytes) |
-| array length | at most `max_push_documents` |
+| Field        | Limit                                              |
+| ------------ | -------------------------------------------------- |
+| `collection` | 1–256 chars                                        |
+| `id`         | 1–256 chars                                        |
+| `hlc`        | 1–64 chars                                         |
+| `data`       | 1 byte to 1 MB (UTF-8 bytes)                       |
+| `generation` | optional, non-negative integer                     |
+| `seenSeq`    | optional, non-negative integer; needs `generation` |
+| array length | at most `max_push_documents`                       |
 
-Each entry replaces the caller's version of that document. Each version gets the next `seq`. The whole request is one atomic write: either every entry lands or none does.
+Each entry replaces the caller's version of that document, unless the server rejects it (see [Generations](#generations)). Each version written gets the next `seq`. The whole request is one atomic write: every entry is checked and written, or rejected, together.
 
-Response: `{ "seq": <highest seq assigned> }`. An empty `documents` array is allowed and returns the app's current `seq` without writing.
+Response:
 
-After the write commits, every realtime socket on the app receives a `changed` message.
+```json
+{
+  "seq": 1760590000123,
+  "rejected": [{ "collection": "notes", "id": "n1", "code": "generation_behind" }]
+}
+```
+
+`seq` is the highest seq assigned, or the app's current `seq` when nothing was written. `rejected` lists the entries that were not written, each with the reason in `code`; the others were written as usual. `generation_behind` is the only code: another writer holds a newer generation of the document, or a version a new generation left out. An empty `documents` array is allowed and returns the app's current `seq` and no rejections without writing.
+
+After a write commits, every realtime socket on the app receives a `changed` message. A push whose every entry was rejected sends none.
 
 To push more than `max_push_documents` documents, split them into chunks and push the chunks one after another. Each chunk is atomic; the sequence as a whole is not, so a failed chunk is retried on its own. Re-pushing a version the server already has is harmless: it gets a new `seq` and the same content.
+
+### Generations
+
+An entry with a `generation` is written only if no other writer's version of the same document has a higher generation, and, when `seenSeq` is given, none has a `seq` above `seenSeq`. The caller's own version never causes a rejection, so retrying a push whose reply was lost is safe.
+
+- A plain entry sends `generation` alone, and is rejected once another writer has moved the document to a newer generation. The client then pulls the document, replays its change onto the newer generation and pushes again.
+- An entry that starts a new generation also sends `seenSeq`: the client pulls the document just before pushing, and `seenSeq` is the highest `seq` up to which it merged every version. It is rejected if another writer wrote a version after that, including a new generation of its own. The client then pulls the document and tries again: it takes in the versions it missed, or gives up its own generation for the other writer's and pushes its changes on that.
+
+Together these keep an invariant for each document: a new generation includes every version written before it, and every version written after it is on that generation or a later one. So no change is left on a generation that has been replaced.
+
+Versions pushed without a `generation`, including every version written before the server supported generations, have no generation. They never cause a rejection through `generation`, only through `seenSeq`, which counts every version, and an entry without a `generation` is never rejected. A client that sends generations to a server without support for them gets a response with no `rejected` field, meaning every entry was written.
 
 ### Pull changes
 
@@ -312,7 +335,7 @@ A 401 means the token is gone for good: clear it and send the user through sign-
 
 So the client knows what's on its side of the line:
 
-- Merge versions, resolve conflicts, or interpret `hlc` and `data`.
+- Merge versions, resolve conflicts, or interpret `hlc` and `data`. Generations are compared as numbers and nothing more.
 - Prune old versions. One version per writer is kept indefinitely, so a document pulled by `(collection, id)` always returns every writer that ever touched it.
 - Delete blobs, or know which documents reference them.
 - Expire tokens or refresh them.

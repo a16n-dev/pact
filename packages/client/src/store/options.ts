@@ -37,7 +37,9 @@ export type StoreOptions<
    * The key the store opens with; `encryption.setKey` changes it later. Each
    * key is a lens: the store shows only the documents sealed under it, at
    * rest and on the sync wire, and the adapter and server see only `hlc`,
-   * `collection`, `id` and the envelope. Without a key the store shows the
+   * `collection`, `id` and the envelope. Pushes of collections with text
+   * fields also tell the server how many times the text was compacted, and
+   * when a push is a compaction. Without a key the store shows the
    * plain documents. Blob bytes and the internal `_*` collections other than
    * `_tasks` are not encrypted, but any document content they keep is sealed.
    */
