@@ -174,30 +174,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       },
     });
 
-    this.sync = {
-      beginSignIn: (start) => this.syncEngine.beginSignIn(start),
-      completeSignIn: async (input) => {
-        const result = await this.syncEngine.completeSignIn(input);
-        if (result.ok) this.taskRunner.wake();
-        return result;
-      },
-      signOut: () => this.syncEngine.signOut(),
-      session: () => this.syncEngine.session(),
-      registration: () => this.syncEngine.registration(),
-      credentials: () => this.syncEngine.credentials(),
-      pull: () => this.syncEngine.pull(),
-      pullDocument: (collection, id) => this.syncEngine.pullDocument(collection, id),
-      drain: () => this.syncEngine.drain(),
-      push: () => this.syncEngine.push(),
-      pending: () => this.syncEngine.pending(),
-      resync: () => this.syncEngine.resync(),
-      lastSyncedAt: () => this.syncEngine.lastSyncedAt(),
-    };
-
-    this.backup = {
-      create: (opts) => this.createBackup(opts),
-      restore: (archive, opts) => this.restoreBackup(archive, opts),
-    };
     const blobSync = this.blobAdapter
       ? new BlobSync({
           adapter: this.blobAdapter,
@@ -209,6 +185,40 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const requireBlobs = (): BlobSync => {
       if (!blobSync) throw new Error('This store was created without a BlobAdapter');
       return blobSync;
+    };
+
+    this.sync = {
+      beginSignIn: (start) => this.syncEngine.beginSignIn(start),
+      completeSignIn: async (input) => {
+        const result = await this.syncEngine.completeSignIn(input);
+        if (result.ok) this.taskRunner.wake();
+        return result;
+      },
+      signOut: () => this.syncEngine.signOut(),
+      session: () => this.syncEngine.session(),
+      registration: () => this.syncEngine.registration(),
+      connection: () => this.syncEngine.connection(),
+      credentials: () => this.syncEngine.credentials(),
+      pull: () => this.syncEngine.pull(),
+      pullDocument: (collection, id) => this.syncEngine.pullDocument(collection, id),
+      drain: () => this.syncEngine.drain(),
+      push: () => this.syncEngine.push(),
+      syncNow: async () => {
+        if (!this.syncEngine.signedIn) return;
+        await this.syncEngine.drain();
+        await this.syncEngine.pull();
+        if (!blobSync) return;
+        await blobSync.push();
+        await blobSync.pull(await this.referencedBlobHashes());
+      },
+      pending: () => this.syncEngine.pending(),
+      resync: () => this.syncEngine.resync(),
+      lastSyncedAt: () => this.syncEngine.lastSyncedAt(),
+    };
+
+    this.backup = {
+      create: (opts) => this.createBackup(opts),
+      restore: (archive, opts) => this.restoreBackup(archive, opts),
     };
     this.blobs = {
       adapter: this.blobAdapter,

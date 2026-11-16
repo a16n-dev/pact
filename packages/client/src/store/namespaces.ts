@@ -212,6 +212,8 @@ export type SignInResult =
 
 export type Registration = { url: string; appId: string; deviceId: string; deviceName: string };
 
+export type SyncConnection = { url: string; deviceName: string };
+
 export type Session = {
   appId: string;
   user: string | null;
@@ -245,6 +247,11 @@ export type StoreSync = {
   /** The persisted registration, no network; null before the first sign-in. */
   registration(): Promise<Registration | null>;
   /**
+   * The server and device name this device is signed in as, no network;
+   * null when signed out. A signed-out device keeps its registration.
+   */
+  connection(): Promise<SyncConnection | null>;
+  /**
    * Origin and token for direct HTTP calls, such as pointing an
    * OpenAI-compatible SDK at `<url>/ai`. Null when not signed in.
    */
@@ -264,6 +271,12 @@ export type StoreSync = {
    * Cost scales with the database; routine sync paths should use `drain()`.
    */
   push(): Promise<void>;
+  /**
+   * Routine sync for app launch, foreground and pull-to-refresh: drains the
+   * outbox, pulls, then pushes blobs and pulls the referenced ones when the
+   * store has a blob adapter. A no-op when signed out.
+   */
+  syncNow(): Promise<void>;
   /** Documents written locally but not yet accepted by the server. */
   pending(): Promise<number>;
   /**

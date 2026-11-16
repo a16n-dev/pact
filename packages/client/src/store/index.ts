@@ -20,6 +20,7 @@ export type {
   SignInStart,
   SignInResult,
   Registration,
+  SyncConnection,
   Session,
   PullResult,
 } from './namespaces';

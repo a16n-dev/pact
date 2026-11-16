@@ -10,6 +10,7 @@ import type {
   Session,
   SignInResult,
   SignInStart,
+  SyncConnection,
 } from '../store/namespaces';
 import {
   SyncHttp,
@@ -234,6 +235,11 @@ export class SyncEngine {
     if (!client) return null;
     const { url, appId, deviceId, deviceName } = client;
     return { url, appId, deviceId, deviceName };
+  }
+
+  async connection(): Promise<SyncConnection | null> {
+    const client = await this.getConfig<ClientConfig>('client');
+    return client?.token ? { url: client.url, deviceName: client.deviceName } : null;
   }
 
   async credentials(): Promise<{ url: string; token: string } | null> {

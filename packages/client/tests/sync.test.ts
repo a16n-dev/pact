@@ -7,6 +7,8 @@ import { encodeHlc } from '../src/clock';
 import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
 import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
+import { blobFields } from '../src/blobs/blobFields';
+import { normaliseServerUrl } from '../src/sync/serverUrl';
 import { FakeServer } from './fakeServer';
 import type { StoredRecord } from '../src/record';
 
@@ -53,6 +55,7 @@ type Options = {
   cipher?: DocCipher;
   collections?: any[];
   textPushDelayMs?: number;
+  blobs?: ReturnType<typeof makeBlobs>;
 };
 
 async function signedInStore(deviceName: string, opts: Options = {}) {
@@ -62,6 +65,8 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
     collections: opts.collections ?? [notes, docs, local],
     encryption: opts.cipher ? { cipher: opts.cipher } : undefined,
     textPushDelayMs: opts.textPushDelayMs,
+    blobs: opts.blobs,
+    blobHashes: opts.blobs ? blobFields({ notes: ['title'] }) : undefined,
   });
   const begun = await store.sync.beginSignIn({
     url: server.origin,
@@ -670,21 +675,21 @@ describe('key lenses on the wire', () => {
   });
 });
 
+function makeBlobs() {
+  const data = new Map<string, { bytes: Uint8Array; mime: string }>();
+  return {
+    has: async (h: string) => data.has(h),
+    read: async (h: string) => data.get(h)?.bytes ?? null,
+    mimeType: async (h: string) => data.get(h)?.mime ?? null,
+    write: async (h: string, bytes: Uint8Array, mime: string) => void data.set(h, { bytes, mime }),
+    delete: async (h: string) => void data.delete(h),
+    list: async () => Array.from(data.keys()),
+    uriFor: (h: string) => (data.has(h) ? `mem://${h}` : null),
+  };
+}
+
 describe('blobs', () => {
   it('pushes and pulls blobs through the server', async () => {
-    const makeBlobs = () => {
-      const data = new Map<string, { bytes: Uint8Array; mime: string }>();
-      return {
-        has: async (h: string) => data.has(h),
-        read: async (h: string) => data.get(h)?.bytes ?? null,
-        mimeType: async (h: string) => data.get(h)?.mime ?? null,
-        write: async (h: string, bytes: Uint8Array, mime: string) =>
-          void data.set(h, { bytes, mime }),
-        delete: async (h: string) => void data.delete(h),
-        list: async () => Array.from(data.keys()),
-        uriFor: (h: string) => (data.has(h) ? `mem://${h}` : null),
-      };
-    };
     const adapterA = new InMemoryAdapter();
     const a = await Store.create({ adapter: adapterA, collections: [notes], blobs: makeBlobs() });
     const begun = await a.sync.beginSignIn({
@@ -717,5 +722,66 @@ describe('blobs', () => {
     expect(await b.blobs.has(hash)).toBe(true);
     expect(new TextDecoder().decode((await b.blobs.adapter!.read(hash))!)).toBe('hello');
     await expect(b.blobs.write(new Uint8Array(50 * 1024 * 1024 + 1), 'x')).rejects.toThrow(/50 MB/);
+  });
+});
+
+describe('syncNow and connection', () => {
+  it('reports the connection only while signed in', async () => {
+    const { store } = await signedInStore('Laptop');
+    expect(await store.sync.connection()).toEqual({ url: server.origin, deviceName: 'Laptop' });
+    await store.sync.signOut();
+    expect(await store.sync.connection()).toBeNull();
+    expect(await store.sync.registration()).not.toBeNull();
+    const fresh = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    expect(await fresh.sync.connection()).toBeNull();
+  });
+
+  it('does nothing when signed out', async () => {
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    await store.collection('notes').create({ id: 'nt-1', title: 'a' });
+    await store.sync.syncNow();
+    expect(server.requests).toEqual([]);
+    expect(await store.sync.pending()).toBe(1);
+  });
+
+  it('drains the outbox, then pulls', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'from a' });
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    server.offline = false;
+    await b.store.sync.drain();
+    server.requests.length = 0;
+    await a.store.sync.syncNow();
+    expect(await a.store.sync.pending()).toBe(0);
+    expect((await a.store.collection('notes').get('nt-2'))?.title).toBe('from b');
+    const paths = server.requests.map((r) => r.path.split('?')[0]);
+    expect(paths.indexOf('/sync/push')).toBeGreaterThanOrEqual(0);
+    expect(paths.lastIndexOf('/sync/pull')).toBeGreaterThan(paths.indexOf('/sync/push'));
+  });
+
+  it('pushes blobs and pulls the referenced ones when the store has a blob adapter', async () => {
+    const a = await signedInStore('A', { collections: [notes], blobs: makeBlobs() });
+    const b = await signedInStore('B', { collections: [notes], blobs: makeBlobs() });
+    server.offline = true;
+    const hash = await a.store.blobs.write(new TextEncoder().encode('photo'), 'image/jpeg');
+    await a.store.collection('notes').create({ id: 'nt-1', title: hash });
+    server.offline = false;
+    await a.store.sync.syncNow();
+    await b.store.sync.syncNow();
+    expect(await b.store.blobs.has(hash)).toBe(true);
+  });
+});
+
+describe('normaliseServerUrl', () => {
+  it('assumes https for a bare host', () => {
+    expect(normaliseServerUrl('sync.example.com')).toBe('https://sync.example.com');
+    expect(normaliseServerUrl('  sync.example.com/ ')).toBe('https://sync.example.com/');
+  });
+
+  it('keeps a scheme that is given', () => {
+    expect(normaliseServerUrl('https://sync.example.com')).toBe('https://sync.example.com');
+    expect(normaliseServerUrl('http://localhost:8787')).toBe('http://localhost:8787');
   });
 });
