@@ -1,0 +1,23 @@
+{
+  "collection": "n",
+  "id": "nt-wire",
+  "wire": "{\"schemaVersion\":3,\"fields\":{\"id\":\"nt-wire\",\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"deletedAt\":null,\"title\":\"On the wire\",\"tags\":[\"plain\",\"üñî\"]},\"clocks\":{\"title\":\"1767225600000-0000-fixtureNode1\",\"tags\":\"1767225601000-0003-fixtureNode1\",\"deletedAt\":\"1767225600000-0000-fixtureNode1\"}}",
+  "record": {
+    "schemaVersion": 3,
+    "fields": {
+      "id": "nt-wire",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "deletedAt": null,
+      "title": "On the wire",
+      "tags": [
+        "plain",
+        "üñî"
+      ]
+    },
+    "clocks": {
+      "title": "1767225600000-0000-fixtureNode1",
+      "tags": "1767225601000-0003-fixtureNode1",
+      "deletedAt": "1767225600000-0000-fixtureNode1"
+    }
+  }
+}

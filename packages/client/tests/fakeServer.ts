@@ -82,6 +82,7 @@ export class FakeServer {
   private readonly sockets = new Map<string, Set<FakeSocket>>();
   /** When set, every request fails as if the network were down. */
   offline = false;
+  mintToken = (): string => `pact_${randomId(20)}`;
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(
@@ -176,7 +177,7 @@ export class FakeServer {
 
   /** An admin-minted API token with its own writer id. */
   apiToken(appId: string): string {
-    const token = `pact_${randomId(20)}`;
+    const token = this.mintToken();
     this.tokens.set(token, {
       token,
       appId,
@@ -312,7 +313,7 @@ export class FakeServer {
     for (const [token, auth] of this.tokens) {
       if (auth.writerId === writerId) this.tokens.delete(token);
     }
-    const token = `pact_${randomId(20)}`;
+    const token = this.mintToken();
     this.tokens.set(token, {
       token,
       appId: code.appId,
