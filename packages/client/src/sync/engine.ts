@@ -94,6 +94,8 @@ export class SyncEngine {
   private drainTask: Promise<void> | null = null;
   private drainPending = false;
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Set by stop(); a start() still validating its token must not open realtime after it.
+  private stopped = false;
 
   constructor(store: SyncStoreAccess) {
     this.store = store;
@@ -117,10 +119,12 @@ export class SyncEngine {
       // Offline at boot: realtime's reconnect loop takes over.
       return;
     }
+    if (this.stopped) return;
     this.openRealtime({ ...client, token });
   }
 
   stop(): void {
+    this.stopped = true;
     this.realtime?.stop();
     this.realtime = null;
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);

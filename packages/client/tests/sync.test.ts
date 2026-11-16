@@ -172,6 +172,15 @@ describe('sign-in', () => {
     expect(server.openSockets('app')).toBe(0);
   });
 
+  it('does not open realtime when disposed while validating the stored token', async () => {
+    const { store, adapter } = await signedInStore('Laptop');
+    store.dispose();
+    const again = await Store.create({ adapter, collections: [notes, docs, local] });
+    again.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.openSockets('app')).toBe(0);
+  });
+
   it('signs out when a stored token is rejected at startup', async () => {
     const { store, adapter } = await signedInStore('Laptop');
     const token = (await store.sync.credentials())!.token;
@@ -759,6 +768,13 @@ describe('syncNow and connection', () => {
     const paths = server.requests.map((r) => r.path.split('?')[0]);
     expect(paths.indexOf('/sync/push')).toBeGreaterThanOrEqual(0);
     expect(paths.lastIndexOf('/sync/pull')).toBeGreaterThan(paths.indexOf('/sync/push'));
+  });
+
+  it('skips the blob step without a blob adapter', async () => {
+    const { store } = await signedInStore('A');
+    server.requests.length = 0;
+    await store.sync.syncNow();
+    expect(server.requests.some((r) => r.path.startsWith('/sync/blobs'))).toBe(false);
   });
 
   it('pushes blobs and pulls the referenced ones when the store has a blob adapter', async () => {
