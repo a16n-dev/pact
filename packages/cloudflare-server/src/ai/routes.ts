@@ -1,6 +1,6 @@
 import { type Context, Hono } from 'hono';
 import type { StatusCode } from 'hono/utils/http-status';
-import { type AuthedEnv, requireAuth } from '../auth/bearer';
+import { type AuthedEnv, requireAuth, requireWrite } from '../auth/bearer';
 import type { Env } from '../lib/env';
 import { ApiError, badRequest } from '../lib/errors';
 import { getApp } from '../db/apps';
@@ -8,7 +8,7 @@ import { readCapped } from '../lib/body';
 
 export const aiRoutes = new Hono<AuthedEnv>();
 
-aiRoutes.use('*', requireAuth);
+aiRoutes.use('*', requireAuth, requireWrite);
 
 aiRoutes.use('*', async (c, next) => {
   const app = await getApp(c.env.DB, c.get('token').app_id);

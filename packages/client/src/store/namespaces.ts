@@ -212,7 +212,16 @@ export type SignInResult =
 
 export type Registration = { url: string; appId: string; deviceId: string; deviceName: string };
 
-export type Session = { appId: string; user: string | null; deviceName: string };
+export type Session = {
+  appId: string;
+  user: string | null;
+  deviceName: string;
+  /**
+   * Set by the server admin. A read-only session's pushes, blob uploads, task
+   * claims, AI and API calls are refused.
+   */
+  access: 'read' | 'write';
+};
 
 export type PullResult = {
   applied: number;

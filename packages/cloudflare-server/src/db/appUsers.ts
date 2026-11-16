@@ -1,10 +1,10 @@
-// The allow list consulted at sign-in while an app is restricted.
-export type AppUser = { id: string; username: string };
+// The allow list consulted at sign-in while an app is restricted, and each user's access then.
+export type AppUser = { id: string; username: string; read_only: number };
 
 export async function listAppUsers(db: D1Database, appId: string): Promise<AppUser[]> {
   const { results } = await db
     .prepare(
-      `SELECT u.id, u.username FROM app_users au JOIN users u ON u.id = au.user_id
+      `SELECT u.id, u.username, au.read_only FROM app_users au JOIN users u ON u.id = au.user_id
        WHERE au.app_id = ?1 ORDER BY u.username`
     )
     .bind(appId)
@@ -24,10 +24,27 @@ export async function hasAppAccess(
   return row !== null;
 }
 
-export async function addAppUser(db: D1Database, appId: string, userId: string): Promise<void> {
+export async function addAppUser(
+  db: D1Database,
+  appId: string,
+  userId: string,
+  readOnly = false
+): Promise<void> {
   await db
-    .prepare('INSERT OR IGNORE INTO app_users (app_id, user_id) VALUES (?1, ?2)')
-    .bind(appId, userId)
+    .prepare('INSERT OR IGNORE INTO app_users (app_id, user_id, read_only) VALUES (?1, ?2, ?3)')
+    .bind(appId, userId, readOnly ? 1 : 0)
+    .run();
+}
+
+export async function setAppUserReadOnly(
+  db: D1Database,
+  appId: string,
+  userId: string,
+  readOnly: boolean
+): Promise<void> {
+  await db
+    .prepare('UPDATE app_users SET read_only = ?3 WHERE app_id = ?1 AND user_id = ?2')
+    .bind(appId, userId, readOnly ? 1 : 0)
     .run();
 }
 

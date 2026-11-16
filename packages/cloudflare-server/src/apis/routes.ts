@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { type AuthedEnv, requireAuth } from '../auth/bearer';
+import { type AuthedEnv, requireAuth, requireWrite } from '../auth/bearer';
 import { ApiError, badRequest } from '../lib/errors';
 import { getApp } from '../db/apps';
 import { deleteApiCredentials, getApiCredentials, putApiCredentials } from '../db/apiCredentials';
@@ -9,7 +9,7 @@ import { seal, unseal } from './vault';
 
 export const apiRoutes = new Hono<AuthedEnv>();
 
-apiRoutes.use('*', requireAuth);
+apiRoutes.use('*', requireAuth, requireWrite);
 
 apiRoutes.use('*', async (c, next) => {
   const app = await getApp(c.env.DB, c.get('token').app_id);

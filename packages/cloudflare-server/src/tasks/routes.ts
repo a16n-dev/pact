@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { type AuthedEnv, requireAuth } from '../auth/bearer';
+import { type AuthedEnv, requireAuth, requireWrite } from '../auth/bearer';
 import { badRequest } from '../lib/errors';
 import { claimTask, releaseTask } from '../db/taskClaims';
 
@@ -17,7 +17,7 @@ async function parseClaimBody(req: Request): Promise<z.infer<typeof claimBodySch
 
 export const taskRoutes = new Hono<AuthedEnv>();
 
-taskRoutes.use('*', requireAuth);
+taskRoutes.use('*', requireAuth, requireWrite);
 
 taskRoutes.post('/claim', async (c) => {
   const { taskId, rev } = await parseClaimBody(c.req.raw);

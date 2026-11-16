@@ -223,7 +223,8 @@ a:focus-visible {
   color: var(--hz-muted);
 }
 .field input,
-.field select {
+.field select,
+select.compact {
   height: 36px;
   padding: 0 12px;
   border: 1px solid var(--hz-dim3);
@@ -237,7 +238,8 @@ a:focus-visible {
   font-family: var(--font-mono);
 }
 .field input:focus,
-.field select:focus {
+.field select:focus,
+select.compact:focus {
   outline: 2px solid var(--hz-green);
   outline-offset: 1px;
 }
@@ -744,6 +746,11 @@ ul.uris li.empty {
 }
 ul.uris.inactive li:not(.empty) {
   opacity: 0.5;
+}
+select.compact {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
 }
 ul.uris .uri {
   flex: 1;

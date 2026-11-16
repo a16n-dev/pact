@@ -6,6 +6,7 @@ The HTTP and WebSocket surface a client builds against. Everything a client need
 
 - **App.** A registered application identified by an `app_id`. All of an app's data is shared by everyone signed in to it. Apps are created in the admin panel, not through this API.
 - **Token.** An opaque bearer string (`pact_…`) scoped to one app. A _device token_ comes from sign-in and belongs to a user and a device. An _API token_ is minted by an admin and belongs to nobody. Tokens don't expire; they stop working when revoked or signed out.
+- **Access.** A token can read and write, or only read. An API token's access is chosen when it's minted. A device token takes its user's access, which the admin sets per user while the app is restricted; otherwise every user can write. A read-only token gets `403 read_only` from push, blob upload, task claims, AI and third-party APIs.
 - **Writer.** Every token has a stable `writer_id`. Signing in again on the same device rotates the token but keeps the writer ID.
 - **Document.** Identified by `(collection, id)`. The server doesn't store a document as a whole. It stores one **version** per writer: that writer's latest state of the document. A client reads all the versions of a document and merges them itself.
 - **`seq`.** A per-app counter. Every version written gets the next value, so a client can ask for "everything after the last `seq` I saw".
@@ -88,7 +89,7 @@ Errors are status 400 with `{ "error": "invalid_request" | "invalid_grant" | "un
 
 Both require auth.
 
-**`GET /auth/check`** → `{ "app_id": "…", "user": "<username> | null", "device_name": "…" }`. `user` is null for API tokens. Use it to validate a stored token on startup.
+**`GET /auth/check`** → `{ "app_id": "…", "user": "<username> | null", "device_name": "…", "access": "read" | "write" }`. `user` is null for API tokens. Use it to validate a stored token on startup. `access` can change while the token is in use, when the admin changes it.
 
 **`POST /auth/signout`** → 204. Deletes the token and closes its realtime sockets. The writer's versions stay on the server, so other clients keep merging with them.
 
@@ -211,7 +212,7 @@ Preflights succeed for any origin. On `/oauth/token`, `/auth/*`, `/sync/*` and `
 
 ## AI
 
-`/ai/*`. Requires auth; any token works, including API tokens. An admin can turn the AI proxy off for an app in its settings, after which every request here is `403 ai_disabled`.
+`/ai/*`. Requires auth; any token that can write works, including API tokens. An admin can turn the AI proxy off for an app in its settings, after which every request here is `403 ai_disabled`.
 
 Everything else under `/ai` is forwarded to the server's [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/), so `<origin>/ai/<provider>` is a drop-in base URL for that provider's own SDK with the Pact token as the API key. The gateway supplies the provider credentials, so send none of your own. The method, path, query string, body and response all pass through unchanged, streaming included. Some examples:
 
@@ -238,7 +239,7 @@ An upstream failure or 5xx is `502 ai_upstream_error`. Upstream 4xx responses pa
 
 ## Third-party APIs
 
-`/apis/:name/*`. Requires auth; any token works, including API tokens. `:name` is 1–64 letters, digits, `_`, `.` or `-`. An admin can turn the API proxy off for an app in its settings, after which every request here is `403 api_disabled`. A server without a `VAULT_KEY` secret answers `503 api_not_configured`.
+`/apis/:name/*`. Requires auth; any token that can write works, including API tokens. `:name` is 1–64 letters, digits, `_`, `.` or `-`. An admin can turn the API proxy off for an app in its settings, after which every request here is `403 api_disabled`. A server without a `VAULT_KEY` secret answers `503 api_not_configured`.
 
 Each app keeps one set of credentials per API name, shared by everyone signed in to it. The server encrypts them at rest and never returns them; it adds them to the requests it forwards.
 
@@ -274,6 +275,7 @@ JSON endpoints return `{ "error": "<human-readable message>", "code": "<code>" }
 | 400    | `hash_mismatch`        | the blob body doesn't hash to `:hash`                                       |
 | 401    | `unauthorized`         | missing, unknown, signed-out or revoked token                               |
 | 403    | `origin_not_allowed`   | the request's `Origin` isn't allowed for the app                            |
+| 403    | `read_only`            | a read-only token called a route that needs write access                    |
 | 404    | `not_found`            | unknown blob or route, or an API with no credentials                        |
 | 413    | `too_many_documents`   | push exceeds `max_push_documents`                                           |
 | 413    | `document_too_large`   | a document's `data` exceeds 1 MB                                            |

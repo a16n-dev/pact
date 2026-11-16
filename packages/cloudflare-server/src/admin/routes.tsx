@@ -19,7 +19,13 @@ import {
   type AppRow,
 } from '../db/apps';
 import { createUser, deleteUser, listUsers, resetPassword } from '../db/users';
-import { addAppUser, listAppUsers, removeAppUser, setRestricted } from '../db/appUsers';
+import {
+  addAppUser,
+  listAppUsers,
+  removeAppUser,
+  setAppUserReadOnly,
+  setRestricted,
+} from '../db/appUsers';
 import { deleteToken, listAppTokens, mintApiToken } from '../db/tokens';
 import { blobStats, listBlobPage, wipeBlobsStatement } from '../db/blobs';
 import { wipeTaskClaimsStatement } from '../db/taskClaims';
@@ -202,7 +208,7 @@ async function accessPage(
   c: Context<AdminEnv>,
   extra: {
     addUser?: { error: string };
-    mint?: { open: boolean; label?: string; error?: string };
+    mint?: { open: boolean; label?: string; readOnly?: boolean; error?: string };
     minted?: { label: string; token: string };
   } = {}
 ) {
@@ -227,7 +233,9 @@ adminRoutes.post('/apps/:id/access/restrict', async (c) => {
 
 adminRoutes.post('/apps/:id/access/users', async (c) => {
   const app = c.get('app');
-  const userId = field(await c.req.parseBody(), 'user_id');
+  const body = await c.req.parseBody();
+  const userId = field(body, 'user_id');
+  const readOnly = field(body, 'access') === 'read';
   const users = await listUsers(c.env.DB);
   if (!users.some((user) => user.id === userId)) {
     return c.html(
@@ -235,7 +243,19 @@ adminRoutes.post('/apps/:id/access/users', async (c) => {
       400
     );
   }
-  await addAppUser(c.env.DB, app.id, userId);
+  await addAppUser(c.env.DB, app.id, userId, readOnly);
+  return c.redirect(`/admin/apps/${app.id}/access`, 303);
+});
+
+adminRoutes.post('/apps/:id/access/users/access', async (c) => {
+  const app = c.get('app');
+  const body = await c.req.parseBody();
+  await setAppUserReadOnly(
+    c.env.DB,
+    app.id,
+    field(body, 'user_id'),
+    field(body, 'access') === 'read'
+  );
   return c.redirect(`/admin/apps/${app.id}/access`, 303);
 });
 
@@ -249,16 +269,23 @@ adminRoutes.post('/apps/:id/access/users/remove', async (c) => {
 });
 
 adminRoutes.post('/apps/:id/access/tokens', async (c) => {
-  const label = field(await c.req.parseBody(), 'label');
+  const body = await c.req.parseBody();
+  const label = field(body, 'label');
+  const readOnly = field(body, 'access') === 'read';
   if (!isValidLabel(label)) {
     return c.html(
       await accessPage(c, {
-        mint: { open: true, label, error: 'Give the token a label of up to 100 characters.' },
+        mint: {
+          open: true,
+          label,
+          readOnly,
+          error: 'Give the token a label of up to 100 characters.',
+        },
       }),
       400
     );
   }
-  const { token } = await mintApiToken(c.env.DB, c.get('app').id, label);
+  const { token } = await mintApiToken(c.env.DB, c.get('app').id, label, readOnly);
   return c.html(await accessPage(c, { minted: { label, token } }));
 });
 

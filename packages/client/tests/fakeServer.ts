@@ -110,7 +110,12 @@ export class FakeServer {
     const app = this.app(auth.appId);
 
     if (path === '/auth/check') {
-      return json(200, { app_id: auth.appId, user: auth.user, device_name: auth.deviceName });
+      return json(200, {
+        app_id: auth.appId,
+        user: auth.user,
+        device_name: auth.deviceName,
+        access: 'write',
+      });
     }
     if (path === '/auth/signout' && method === 'POST') {
       this.revoke(auth.token);
