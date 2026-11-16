@@ -70,9 +70,10 @@ export type SyncStoreAccess = {
   // Every stored synced key, in any lens.
   storedSyncedKeys(): Promise<string[]>;
   applyIncoming(def: CollectionDefinition, id: string, record: StoredRecord): Promise<ApplyResult>;
-  // Deletes the outbox entry at `key` only if it is still `pushed`: a write
-  // during the push requeues it, and that newer state still needs pushing.
-  clearPushed(key: string, pushed: OutboxEntry): Promise<void>;
+  // Deletes the outbox entry at `key` only if it is still `entry`: a write
+  // since the drain read it requeued it, and that newer state still needs
+  // pushing. `pushed` is the state the drain sent, absent for a stale entry.
+  clearQueued(key: string, entry: OutboxEntry, pushed?: AdapterRecord): Promise<void>;
   heldEntries(): Promise<HeldEntry[]>;
   /** Everything but `_config`, for `resync()`. */
   clearLocalData(): Promise<void>;
@@ -542,8 +543,8 @@ export class SyncEngine {
     const entries = await this.outboxEntries();
     if (entries.length === 0) return;
     const documents: WireDocument[] = [];
-    const pushed: Array<{ key: string; entry: OutboxEntry }> = [];
-    const stale: string[] = [];
+    const pushed: Array<{ key: string; entry: OutboxEntry; stored: AdapterRecord }> = [];
+    const stale: Array<{ key: string; entry: OutboxEntry }> = [];
     for (const { key, entry } of entries) {
       const storageKey = entry.key ?? this.store.plainKeyOf(entry.collection);
       const stored =
@@ -551,17 +552,17 @@ export class SyncEngine {
           ? await this.store.adapter.get(storageKey, entry.docId)
           : null;
       if (!storageKey || !stored) {
-        stale.push(key);
+        stale.push({ key, entry });
         continue;
       }
       documents.push(this.wireDocument(storageKey, entry.docId, stored));
-      pushed.push({ key, entry });
+      pushed.push({ key, entry, stored });
     }
-    for (const key of stale) await this.store.adapter.delete(OUTBOX, key);
+    for (const { key, entry } of stale) await this.store.clearQueued(key, entry);
     for (let i = 0; i < documents.length; i += this.maxPushDocuments) {
       await http.push(documents.slice(i, i + this.maxPushDocuments));
-      for (const { key, entry } of pushed.slice(i, i + this.maxPushDocuments)) {
-        await this.store.clearPushed(key, entry);
+      for (const { key, entry, stored } of pushed.slice(i, i + this.maxPushDocuments)) {
+        await this.store.clearQueued(key, entry, stored);
       }
     }
     if (stale.length > 0 || pushed.length > 0) this.store.emit(OUTBOX);

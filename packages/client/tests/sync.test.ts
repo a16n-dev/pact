@@ -88,6 +88,23 @@ function heldNetwork() {
   return { release };
 }
 
+// Holds the first push until released, resolving `started` once it is in flight.
+function heldPush() {
+  let release!: () => void;
+  let started!: () => void;
+  const open = new Promise<void>((resolve) => (release = resolve));
+  const entered = new Promise<void>((resolve) => (started = resolve));
+  vi.stubGlobal('fetch', async (...args: Parameters<typeof fetch>) => {
+    if (String(args[0] instanceof Request ? args[0].url : args[0]).endsWith('/sync/push')) {
+      started();
+      await open;
+      vi.stubGlobal('fetch', server.fetch);
+    }
+    return server.fetch(...args);
+  });
+  return { started: entered, release };
+}
+
 async function settled(store: Store<any>) {
   await store.sync.drain();
   await store.sync.pull();
@@ -327,18 +344,34 @@ describe('push and pull', () => {
   it('keeps a write made while its document is being pushed queued', async () => {
     const { store } = await signedInStore('A');
     store.dispose();
-    const network = heldNetwork();
+    const push = heldPush();
     await store.collection('notes').create({ id: 'nt-1', title: 'first' });
-    const drained = store.sync.drain();
-    // Lets the drain read the first version and block on its push.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await push.started;
     await store.collection('notes').update('nt-1', { title: 'second' });
-    network.release();
-    await drained;
-    vi.unstubAllGlobals();
+    push.release();
     await vi.waitFor(async () => expect(await store.sync.pending()).toBe(0));
     const versions = server.versionsOf('app', 'n', 'nt-1');
     expect(versions.map((v) => JSON.parse(v.data).fields.title)).toContain('second');
+  });
+
+  it('moves the text base of a kept entry past the edits just pushed', async () => {
+    const { store, adapter } = await signedInStore('A', { textPushDelayMs: 60_000 });
+    store.dispose();
+    // Realtime's open-time drain may push the second write too, so the base
+    // is checked as it is written rather than read back afterwards.
+    const bases: unknown[] = [];
+    const put = adapter.put.bind(adapter);
+    vi.spyOn(adapter, 'put').mockImplementation(async (collection, id, record) => {
+      if (collection === '_outbox') bases.push((record as StoredRecord).fields.textBase);
+      return put(collection, id, record);
+    });
+    const push = heldPush();
+    await store.collection('docs').create({ id: 'd-1', body: 'abc' });
+    await push.started;
+    await store.collection('docs').updateText('d-1', 'body', { base: 'abc', next: 'abcd' });
+    push.release();
+    await vi.waitFor(() => expect(bases).toContainEqual({ body: 'abc' }));
+    expect(bases.slice(0, 2)).toEqual([{ body: '' }, { body: '' }]);
   });
 
   it('debounces text pushes per document', async () => {
