@@ -55,7 +55,7 @@ const authorizeUrl = await beginSignIn.mutateAsync('sync.example.com');
 // open authorizeUrl; the server sends the browser back to redirectUri
 ```
 
-On the page or screen at `redirectUri`, `useSignInCallback` finishes sign-in once per code, even under StrictMode, then pushes everything local and pulls everything remote, blobs included:
+On the page or screen at `redirectUri`, `useSignInCallback` finishes sign-in once per code, even under StrictMode, then pushes everything local and pulls everything remote, blobs included. It reports success once the device is signed in, even if that first sync fails; later syncs catch up:
 
 ```tsx
 const result = useSignInCallback({ code, state }); // idle | pending | success | error

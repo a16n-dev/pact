@@ -1,5 +1,5 @@
 import { act, screen, waitFor } from '@testing-library/react';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   SignInError,
@@ -100,6 +100,18 @@ describe('sync hooks', () => {
     expect(invalidate).toHaveBeenCalledWith();
     expect(await screen.findByText('connected: Laptop')).toBeTruthy();
     other.dispose();
+  });
+
+  it('useCompleteSignIn resolves when sign-in succeeds but the first sync fails', async () => {
+    const store = await createStore();
+    vi.spyOn(store.sync, 'pull').mockRejectedValue(new Error('offline'));
+    const { result, queryClient } = await withHook(store, useCompleteSignIn);
+    const redirect = await authorize(store, 'Laptop');
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(() => result.current.mutateAsync(redirect));
+    await waitFor(() => expect(result.current.status).toBe('success'));
+    expect(invalidate).toHaveBeenCalledWith();
+    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
   });
 
   it('useCompleteSignIn rejects with the reason the server gave', async () => {
@@ -213,7 +225,15 @@ describe('useSignInCallback', () => {
       latest = useSignInCallback(params);
       return <p>status: {latest.status}</p>;
     }
-    renderWithPact(<Probe />, { open: async () => store, strict: true });
+    renderWithPact(
+      <>
+        <Probe />
+        <Suspense fallback={null}>
+          <Connection />
+        </Suspense>
+      </>,
+      { open: async () => store, strict: true }
+    );
     return () => latest!;
   }
 
@@ -225,6 +245,14 @@ describe('useSignInCallback', () => {
     expect(await screen.findByText('status: success')).toBeTruthy();
     expect(completeSignIn).toHaveBeenCalledTimes(1);
     expect(await store.sync.connection()).toEqual({ url: server.origin, deviceName: 'Laptop' });
+  });
+
+  it('reports success when sign-in succeeds but the first sync fails', async () => {
+    const store = await createStore();
+    vi.spyOn(store.sync, 'push').mockRejectedValue(new Error('offline'));
+    renderCallback(store, await authorize(store, 'Laptop'));
+    expect(await screen.findByText('status: success')).toBeTruthy();
+    expect(await screen.findByText('connected: Laptop')).toBeTruthy();
   });
 
   it('reports the failure reason', async () => {

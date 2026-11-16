@@ -51,7 +51,8 @@ export function useBeginSignIn() {
 /**
  * Finishes sign-in from the redirect's `code` and `state`, then pushes
  * everything local and pulls everything remote, blobs included. Rejects with
- * a `SignInError` when the server refuses the code.
+ * a `SignInError` when the server refuses the code; resolves once sign-in
+ * succeeds, even if that first sync fails.
  */
 export function useCompleteSignIn() {
   const { store } = usePact();
@@ -60,14 +61,17 @@ export function useCompleteSignIn() {
     mutationFn: async (callback: { code: string; state: string }) => {
       const result = await store.sync.completeSignIn(callback);
       if (!result.ok) throw new SignInError(result.reason);
-      await store.sync.push();
-      await store.sync.pull();
-      if (store.blobs.adapter) {
-        await store.blobs.push();
-        await store.blobs.pullReferenced();
+      try {
+        await store.sync.push();
+        await store.sync.pull();
+        if (store.blobs.adapter) {
+          await store.blobs.push();
+          await store.blobs.pullReferenced();
+        }
+      } catch {
+        // The device is signed in by now; writes stay in the outbox for the next sync.
       }
     },
-    // The first sync can fail after the device has signed in.
     onSettled: () => queryClient.invalidateQueries(),
   });
 }
