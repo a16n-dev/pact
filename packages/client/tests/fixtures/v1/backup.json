@@ -1,0 +1,161 @@
+{
+  "archive": "UEJLMvMFAAB7ImZvcm1hdFZlcnNpb24iOjIsImNyZWF0ZWRBdCI6IjIwMjYtMDEtMDFUMDA6MDA6MDYuMDAwWiIsImNvbGxlY3Rpb25zIjp7Im5vdGVzIjpbeyJpZCI6Im50LWJhY2t1cCIsInJlY29yZCI6eyJzY2hlbWFWZXJzaW9uIjozLCJmaWVsZHMiOnsiaWQiOiJudC1iYWNrdXAiLCJjcmVhdGVkQXQiOiIyMDI2LTAxLTAxVDAwOjAwOjAxLjAwMFoiLCJkZWxldGVkQXQiOm51bGwsInRpdGxlIjoiQmFja2VkIHVwIiwidGFncyI6WyJ4Il19LCJjbG9ja3MiOnsiZGVsZXRlZEF0IjoiMTc2NzIyNTYwMTAwMC0wMDAwLWZpeHR1cmVOb2RlMSIsInRpdGxlIjoiMTc2NzIyNTYwMTAwMC0wMDAwLWZpeHR1cmVOb2RlMSIsInRhZ3MiOiIxNzY3MjI1NjAxMDAwLTAwMDAtZml4dHVyZU5vZGUxIn19fSx7ImlkIjoibnQtZGVsZXRlZCIsInJlY29yZCI6eyJzY2hlbWFWZXJzaW9uIjozLCJmaWVsZHMiOnsiaWQiOiJudC1kZWxldGVkIiwiY3JlYXRlZEF0IjoiMjAyNi0wMS0wMVQwMDowMDowMi4wMDBaIiwiZGVsZXRlZEF0IjoiMjAyNi0wMS0wMVQwMDowMDowMy4wMDBaIiwidGl0bGUiOiJEZWxldGVkIiwidGFncyI6W119LCJjbG9ja3MiOnsiZGVsZXRlZEF0IjoiMTc2NzIyNTYwMzAwMC0wMDAwLWZpeHR1cmVOb2RlMSIsInRpdGxlIjoiMTc2NzIyNTYwMjAwMC0wMDAwLWZpeHR1cmVOb2RlMSIsInRhZ3MiOiIxNzY3MjI1NjAyMDAwLTAwMDAtZml4dHVyZU5vZGUxIn19fV0sImRvY3MiOlt7ImlkIjoiZC1iYWNrdXAiLCJyZWNvcmQiOnsic2NoZW1hVmVyc2lvbiI6MSwiZmllbGRzIjp7ImlkIjoiZC1iYWNrdXAiLCJjcmVhdGVkQXQiOiIyMDI2LTAxLTAxVDAwOjAwOjA0LjAwMFoiLCJkZWxldGVkQXQiOm51bGwsInRpdGxlIjoiRG9jIn0sInRleHQiOiJBUUgxNDZlbEFRQUVBUVJpYjJSNURVRnlZMmhwZG1Wa0lIUmxlSFFBIiwiY2xvY2tzIjp7ImRlbGV0ZWRBdCI6IjE3NjcyMjU2MDQwMDAtMDAwMC1maXh0dXJlTm9kZTEiLCJ0aXRsZSI6IjE3NjcyMjU2MDQwMDAtMDAwMC1maXh0dXJlTm9kZTEiLCJib2R5IjoiMTc2NzIyNTYwNDAwMC0wMDAwLWZpeHR1cmVOb2RlMSJ9fX1dLCJzZXR0aW5ncyI6W3siaWQiOiJzdC1tYWluIiwicmVjb3JkIjp7InNjaGVtYVZlcnNpb24iOjEsImZpZWxkcyI6eyJpZCI6InN0LW1haW4iLCJjcmVhdGVkQXQiOiIyMDI2LTAxLTAxVDAwOjAwOjA1LjAwMFoiLCJkZWxldGVkQXQiOm51bGwsInRoZW1lIjoiZGFyayIsImZvbnRTaXplUHgiOjE0fSwiY2xvY2siOiIxNzY3MjI1NjA1MDAwLTAwMDAtZml4dHVyZU5vZGUxIn19XSwicHJlZnMiOlt7ImlkIjoicC1sb2NhbCIsInJlY29yZCI6eyJzY2hlbWFWZXJzaW9uIjoxLCJmaWVsZHMiOnsiaWQiOiJwLWxvY2FsIiwiY3JlYXRlZEF0IjoiMjAyNi0wMS0wMVQwMDowMDowNi4wMDBaIiwiZGVsZXRlZEF0IjpudWxsLCJ0aGVtZSI6ImxpZ2h0In0sImNsb2NrcyI6eyJkZWxldGVkQXQiOiIxNzY3MjI1NjA2MDAwLTAwMDAtZml4dHVyZU5vZGUxIiwidGhlbWUiOiIxNzY3MjI1NjA2MDAwLTAwMDAtZml4dHVyZU5vZGUxIn19fV19fQEAAABAAAAAY2QwZjMzN2FiM2U2ZjdiNGY5YTQwYjgyNzg2NzBkMTAyYzgxMDEwNzVmMDY0ZTk5NjBkZDI5NzI5NzAyNzEyZQkAAABpbWFnZS9wbmcAAQAAAAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tng5+71/AMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc4+rx+P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY3+bt9PsCCRAXHiUsMzpBSE9WXWRrcnmAh46VnKOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ197l7PP6AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+Q==",
+  "manifest": {
+    "formatVersion": 2,
+    "createdAt": "2026-01-01T00:00:06.000Z",
+    "collections": {
+      "notes": [
+        {
+          "id": "nt-backup",
+          "record": {
+            "schemaVersion": 3,
+            "fields": {
+              "id": "nt-backup",
+              "createdAt": "2026-01-01T00:00:01.000Z",
+              "deletedAt": null,
+              "title": "Backed up",
+              "tags": [
+                "x"
+              ]
+            },
+            "clocks": {
+              "deletedAt": "1767225601000-0000-fixtureNode1",
+              "title": "1767225601000-0000-fixtureNode1",
+              "tags": "1767225601000-0000-fixtureNode1"
+            }
+          }
+        },
+        {
+          "id": "nt-deleted",
+          "record": {
+            "schemaVersion": 3,
+            "fields": {
+              "id": "nt-deleted",
+              "createdAt": "2026-01-01T00:00:02.000Z",
+              "deletedAt": "2026-01-01T00:00:03.000Z",
+              "title": "Deleted",
+              "tags": []
+            },
+            "clocks": {
+              "deletedAt": "1767225603000-0000-fixtureNode1",
+              "title": "1767225602000-0000-fixtureNode1",
+              "tags": "1767225602000-0000-fixtureNode1"
+            }
+          }
+        }
+      ],
+      "docs": [
+        {
+          "id": "d-backup",
+          "record": {
+            "schemaVersion": 1,
+            "fields": {
+              "id": "d-backup",
+              "createdAt": "2026-01-01T00:00:04.000Z",
+              "deletedAt": null,
+              "title": "Doc"
+            },
+            "text": "AQH146elAQAEAQRib2R5DUFyY2hpdmVkIHRleHQA",
+            "clocks": {
+              "deletedAt": "1767225604000-0000-fixtureNode1",
+              "title": "1767225604000-0000-fixtureNode1",
+              "body": "1767225604000-0000-fixtureNode1"
+            }
+          }
+        }
+      ],
+      "settings": [
+        {
+          "id": "st-main",
+          "record": {
+            "schemaVersion": 1,
+            "fields": {
+              "id": "st-main",
+              "createdAt": "2026-01-01T00:00:05.000Z",
+              "deletedAt": null,
+              "theme": "dark",
+              "fontSizePx": 14
+            },
+            "clock": "1767225605000-0000-fixtureNode1"
+          }
+        }
+      ],
+      "prefs": [
+        {
+          "id": "p-local",
+          "record": {
+            "schemaVersion": 1,
+            "fields": {
+              "id": "p-local",
+              "createdAt": "2026-01-01T00:00:06.000Z",
+              "deletedAt": null,
+              "theme": "light"
+            },
+            "clocks": {
+              "deletedAt": "1767225606000-0000-fixtureNode1",
+              "theme": "1767225606000-0000-fixtureNode1"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "blobs": [
+    {
+      "hash": "cd0f337ab3e6f7b4f9a40b8278670d102c8101075f064e9960dd29729702712e",
+      "mimeType": "image/png",
+      "bytes": "AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tng5+71/AMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc4+rx+P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY3+bt9PsCCRAXHiUsMzpBSE9WXWRrcnmAh46VnKOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ197l7PP6AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+Q=="
+    }
+  ],
+  "documents": {
+    "notes": [
+      {
+        "id": "nt-backup",
+        "createdAt": "2026-01-01T00:00:01.000Z",
+        "updatedAt": "2026-01-01T00:00:01.000Z",
+        "deletedAt": null,
+        "title": "Backed up",
+        "tags": [
+          "x"
+        ]
+      },
+      {
+        "id": "nt-deleted",
+        "createdAt": "2026-01-01T00:00:02.000Z",
+        "updatedAt": "2026-01-01T00:00:03.000Z",
+        "deletedAt": "2026-01-01T00:00:03.000Z",
+        "title": "Deleted",
+        "tags": []
+      }
+    ],
+    "docs": [
+      {
+        "id": "d-backup",
+        "createdAt": "2026-01-01T00:00:04.000Z",
+        "updatedAt": "2026-01-01T00:00:04.000Z",
+        "deletedAt": null,
+        "title": "Doc",
+        "body": "Archived text"
+      }
+    ],
+    "settings": [
+      {
+        "id": "st-main",
+        "createdAt": "2026-01-01T00:00:05.000Z",
+        "updatedAt": "2026-01-01T00:00:05.000Z",
+        "deletedAt": null,
+        "theme": "dark",
+        "fontSizePx": 14
+      }
+    ],
+    "prefs": [
+      {
+        "id": "p-local",
+        "createdAt": "2026-01-01T00:00:06.000Z",
+        "updatedAt": "2026-01-01T00:00:06.000Z",
+        "deletedAt": null,
+        "theme": "light"
+      }
+    ]
+  }
+}

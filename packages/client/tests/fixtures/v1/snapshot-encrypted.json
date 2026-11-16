@@ -1,0 +1,244 @@
+{
+  "adapter": {
+    "_config": {
+      "node": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "node",
+          "createdAt": "",
+          "node": "fixtureNode1"
+        }
+      },
+      "client": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "client",
+          "createdAt": "",
+          "url": "https://sync.test",
+          "appId": "app",
+          "deviceId": "fixtureNode1",
+          "deviceName": "Fixture device",
+          "token": "pact_fixtureToken",
+          "maxPushDocuments": 50
+        }
+      },
+      "pulledCollections": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "pulledCollections",
+          "createdAt": "",
+          "keys": [
+            "n@ac17d4801639c52e",
+            "docs@ac17d4801639c52e",
+            "settings@ac17d4801639c52e",
+            "_tasks@ac17d4801639c52e"
+          ]
+        }
+      },
+      "cursor": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "cursor",
+          "createdAt": "",
+          "cursor": 1006
+        }
+      },
+      "lastSyncedAt": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "lastSyncedAt",
+          "createdAt": "",
+          "at": "2026-01-01T00:00:31.000Z"
+        }
+      }
+    },
+    "n@ac17d4801639c52e": {
+      "nt-kept": {
+        "enc": "pactenc$1$4dU7NnzNNzNcihj7$G6EEs2R2NtuXSbEaSKK6kvdFzHqpwe4JsaAS22ZvEQoID27YBBAAMOurm3DtZ6psgI7mraTE4o3xIC9+SG0mnmIIWxMuedt759Do/QxMemgdmnOc81BZ+D7rOoS9cFz7x+1bCKSoUeT3phXJod5J3VwP04UKrcUnuyR98gMdTO4c05aXX6ZnBIIGdOs6jgcdIkfrDlc+fsbsOQ3j3lWhdMlsdEhlUHcOrRCLQ4N5RQ5VNbVtfywN9BtynOUIhOg9XnxButZ39WpUD2PoXVSEOo32/kQkRf0Qr07WqvplEAGEVMkh7v07S+ZqagVTa6ZmZz1a+nPSkEVi4e9swa+C/Phqzn0fHu13WX889DulLZMvZGPPavqGs3EG5jnEzkV8sNDuQT7pzbWZrZlcKL9OTMrj",
+        "hlc": "1767225632000-0000-fixtureNode1"
+      },
+      "nt-gone": {
+        "enc": "pactenc$1$0ryuQmTblo1vexE5$LpzdVHMrJv2ee3y09vBnhabn/0g1zHLfZFKgbhhptwp49VeeTv7xo857u81xGCgzKTuXVq6iWhBCb/i6Boe8GYvwicCnL9cuOkoRe5biCbRKnGx7Q1X243pGIAVTpPRNu3cHDuKf+0QVBe7p09FmOxrtBr+7MdipD1XQzDZTTQgwypUC06X05WD/0VBZIxihr9fS3cBIAmPZjHHbNdnYm5a50L3ukOXSt7c1nMDMuYRdKOdPXayvZrNC05rx5anCaL51H5SGU51jiROYiIGJeAvjV5W7u/JYEP1zvqP4V5Q+rZFUpyasQOhHkFa2vq7fy4YXM4rmr/Gp6+8sBblJSgZ3eC6lMEF4+JA95YIabI79Rft8ispQ+CW0xJiStoinbHZStJ336yq0c1q4+DsOMA==",
+        "hlc": "1767225627000-0000-fixtureNode1"
+      },
+      "nt-offline": {
+        "enc": "pactenc$1$86d6iuRinsdpNYlF$201/UjUzRmt9CMFzbZaKNEEpIztECAd0/ej/30fjjEP1VBunzd1rg/TAEr9VrRfxfeZZjiv1SB+Hh39yZuZmNQBKBsAEcGvA5K7bTwy0tTdqf5Q1YCUX7bCIXxmuyQO1/TdwjuSwdorHheqlISRBmGveFYvWrPqwgJeIhjSlIlE3o6E0Dyh9FibXCcG0b+/2DqQqnXUoDE36n0j3MDV3w86uSBW94Nx2A9y2/R31CHlCjSZdypTGOYhCIl0Q0fqOSYWLnqPCbBWlmUr1nNgCRvYHtAzW3ZmpUT+fmUZnhDlVc+kTi9oVif5cOTvVGEObZBlbAs0zJ6Qcn0x0FftzTjR7wcp5y4Hg7wyl1tffofKbq0C+sY8dY9mYewobDnyvHzPVSQJDXTY=",
+        "hlc": "1767225633000-0000-fixtureNode1"
+      }
+    },
+    "_outbox": {
+      "n@ac17d4801639c52e/nt-kept": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "n@ac17d4801639c52e/nt-kept",
+          "createdAt": "",
+          "collection": "notes",
+          "key": "n@ac17d4801639c52e",
+          "docId": "nt-kept",
+          "order": "1767225632000-0000-fixtureNode1"
+        }
+      },
+      "n@ac17d4801639c52e/nt-offline": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "n@ac17d4801639c52e/nt-offline",
+          "createdAt": "",
+          "collection": "notes",
+          "key": "n@ac17d4801639c52e",
+          "docId": "nt-offline",
+          "order": "1767225633000-0000-fixtureNode1"
+        }
+      },
+      "docs@ac17d4801639c52e/d-letter": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "docs@ac17d4801639c52e/d-letter",
+          "createdAt": "",
+          "collection": "docs",
+          "key": "docs@ac17d4801639c52e",
+          "docId": "d-letter",
+          "order": "1767225634000-0000-fixtureNode1",
+          "textBase": {
+            "body": "Dear diary, hello"
+          }
+        }
+      },
+      "settings@ac17d4801639c52e/st-main": {
+        "schemaVersion": 1,
+        "fields": {
+          "id": "settings@ac17d4801639c52e/st-main",
+          "createdAt": "",
+          "collection": "settings",
+          "key": "settings@ac17d4801639c52e",
+          "docId": "st-main",
+          "order": "1767225635000-0000-fixtureNode1"
+        }
+      }
+    },
+    "docs@ac17d4801639c52e": {
+      "d-letter": {
+        "enc": "pactenc$1$X08zJgP1vkhWSD3H$3sP+UxHKbjw9CSpfWt9DxjJxLwcDNFqUHOR7tOucXLnOj66rO8AaDx6tKPGQzdbFM0pNK2edL+niqQ6twIHT2GLzArTs9/ouHNWrMyKKiZXeu/ppbLtwHPQUpdNSF4yny7ES2zQZlbGOKM6VKzhhUTraSwW/Y4hPO9eetse/GmZ4qPM/ckIw2Xf5Cr76Idrb00+I6GZ75G1OAgCk1d6RHGhiHNcj3HzAnxxH0/B+gn50Mc5FbsliSV02zJg2omGIw0DkxNsJnGzFbRUTL4QoIJ1gUNc7p5/KepbSbdXFWlOLKdNtVG/4i1O3lzZ9wuqr4Ef8eo/eLSGmyk1oaf2LQkuppkpMvPH0M98ZkLZUBzwBD4y1bM8xcJ8LyFQsCq6d2+FOeyNChgBgJ9h3CjURat6+k3hVcqpp4G6wmAqgFOLii9jlP88BoVbiLEIZZDdj2ohcYSE=",
+        "hlc": "1767225634000-0000-fixtureNode1"
+      }
+    },
+    "settings@ac17d4801639c52e": {
+      "st-main": {
+        "enc": "pactenc$1$9ReXBS4iDk1A8DsG$dCv3wmXiV+gONMLMKtpyJVFJkbUDzlEBedKag9XYjXlVI+zgO8lVcXzXQVgint2HfRP9HFqpz12ZlGtLfOkh4szFTtJA8Y9K9cNVWb9lLmz/SPyCl9pnEcRiC+AX5+3C0agqCyvzQUIpJ+fZsphIqW8wKCUJXpyx3DaIm7feDzsFih3BV4O/ZVA4fHgSKnoL6BuT/cyJS6pxoDV96eTQ7wzJ+1mWZPTWDOCQEVFqyTj7eknA8V+TowS6qfl/rg==",
+        "hlc": "1767225635000-0000-fixtureNode1"
+      }
+    },
+    "prefs@ac17d4801639c52e": {
+      "p-local": {
+        "enc": "pactenc$1$NUHi0bd5E5gxp+CU$74y7pBl7KjhMDJvIlthLIQyRwV+jbPj1jHQ8tacM/IB3aYT54pKFJ14EKm0uVm0Kt+Fz3rBGNNhnAWzo88T+ETLfYR9KI6klIAgBcrPiiewpeH14oAUSJ8E4RZUNOSKUuzDySabyArvHoX+GIaTJv9z341T6auioX3L/6n7TGT3SQIqN8ikYbryyg9N0oRZHnOHIM+Tfn4+3fnaVePNAmVe6d2ugfKPCFWk21+L2a5IPzFyufvMqdSgTN2UXOayGLL7RWGQ7gyA0/wyXLR5sMBsActgwh+WxBJxRMa6X47koTy6IxpO6+Q==",
+        "hlc": "1767225631000-0000-fixtureNode1"
+      }
+    }
+  },
+  "registration": {
+    "url": "https://sync.test",
+    "appId": "app",
+    "deviceId": "fixtureNode1",
+    "deviceName": "Fixture device"
+  },
+  "credentials": {
+    "url": "https://sync.test",
+    "token": "pact_fixtureToken"
+  },
+  "lastSyncedAt": "2026-01-01T00:00:31.000Z",
+  "cursor": 1006,
+  "views": [
+    {
+      "key": {
+        "password": "fixture password",
+        "salt": "fixture salt",
+        "iterations": 1000
+      },
+      "documents": {
+        "notes": [
+          {
+            "id": "nt-gone",
+            "createdAt": "2026-01-01T00:00:26.000Z",
+            "updatedAt": "2026-01-01T00:00:27.000Z",
+            "deletedAt": "2026-01-01T00:00:27.000Z",
+            "title": "Gone",
+            "tags": []
+          },
+          {
+            "id": "nt-kept",
+            "createdAt": "2026-01-01T00:00:25.000Z",
+            "updatedAt": "2026-01-01T00:00:32.000Z",
+            "deletedAt": null,
+            "title": "Kept, renamed offline",
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          {
+            "id": "nt-offline",
+            "createdAt": "2026-01-01T00:00:33.000Z",
+            "updatedAt": "2026-01-01T00:00:33.000Z",
+            "deletedAt": null,
+            "title": "Written offline",
+            "tags": []
+          }
+        ],
+        "docs": [
+          {
+            "id": "d-letter",
+            "createdAt": "2026-01-01T00:00:28.000Z",
+            "updatedAt": "2026-01-01T00:00:34.000Z",
+            "deletedAt": null,
+            "title": "Letter",
+            "body": "Dear diary, hello again"
+          }
+        ],
+        "settings": [
+          {
+            "id": "st-main",
+            "createdAt": "2026-01-01T00:00:30.000Z",
+            "updatedAt": "2026-01-01T00:00:35.000Z",
+            "deletedAt": null,
+            "theme": "dark",
+            "fontSizePx": 16
+          }
+        ],
+        "prefs": [
+          {
+            "id": "p-local",
+            "createdAt": "2026-01-01T00:00:31.000Z",
+            "updatedAt": "2026-01-01T00:00:31.000Z",
+            "deletedAt": null,
+            "theme": "light"
+          }
+        ]
+      }
+    }
+  ],
+  "pending": [
+    {
+      "collection": "n@ac17d4801639c52e",
+      "id": "nt-kept",
+      "hlc": "1767225632000-0000-fixtureNode1",
+      "data": "pactenc$1$4dU7NnzNNzNcihj7$G6EEs2R2NtuXSbEaSKK6kvdFzHqpwe4JsaAS22ZvEQoID27YBBAAMOurm3DtZ6psgI7mraTE4o3xIC9+SG0mnmIIWxMuedt759Do/QxMemgdmnOc81BZ+D7rOoS9cFz7x+1bCKSoUeT3phXJod5J3VwP04UKrcUnuyR98gMdTO4c05aXX6ZnBIIGdOs6jgcdIkfrDlc+fsbsOQ3j3lWhdMlsdEhlUHcOrRCLQ4N5RQ5VNbVtfywN9BtynOUIhOg9XnxButZ39WpUD2PoXVSEOo32/kQkRf0Qr07WqvplEAGEVMkh7v07S+ZqagVTa6ZmZz1a+nPSkEVi4e9swa+C/Phqzn0fHu13WX889DulLZMvZGPPavqGs3EG5jnEzkV8sNDuQT7pzbWZrZlcKL9OTMrj"
+    },
+    {
+      "collection": "n@ac17d4801639c52e",
+      "id": "nt-offline",
+      "hlc": "1767225633000-0000-fixtureNode1",
+      "data": "pactenc$1$86d6iuRinsdpNYlF$201/UjUzRmt9CMFzbZaKNEEpIztECAd0/ej/30fjjEP1VBunzd1rg/TAEr9VrRfxfeZZjiv1SB+Hh39yZuZmNQBKBsAEcGvA5K7bTwy0tTdqf5Q1YCUX7bCIXxmuyQO1/TdwjuSwdorHheqlISRBmGveFYvWrPqwgJeIhjSlIlE3o6E0Dyh9FibXCcG0b+/2DqQqnXUoDE36n0j3MDV3w86uSBW94Nx2A9y2/R31CHlCjSZdypTGOYhCIl0Q0fqOSYWLnqPCbBWlmUr1nNgCRvYHtAzW3ZmpUT+fmUZnhDlVc+kTi9oVif5cOTvVGEObZBlbAs0zJ6Qcn0x0FftzTjR7wcp5y4Hg7wyl1tffofKbq0C+sY8dY9mYewobDnyvHzPVSQJDXTY="
+    },
+    {
+      "collection": "docs@ac17d4801639c52e",
+      "id": "d-letter",
+      "hlc": "1767225634000-0000-fixtureNode1",
+      "data": "pactenc$1$X08zJgP1vkhWSD3H$3sP+UxHKbjw9CSpfWt9DxjJxLwcDNFqUHOR7tOucXLnOj66rO8AaDx6tKPGQzdbFM0pNK2edL+niqQ6twIHT2GLzArTs9/ouHNWrMyKKiZXeu/ppbLtwHPQUpdNSF4yny7ES2zQZlbGOKM6VKzhhUTraSwW/Y4hPO9eetse/GmZ4qPM/ckIw2Xf5Cr76Idrb00+I6GZ75G1OAgCk1d6RHGhiHNcj3HzAnxxH0/B+gn50Mc5FbsliSV02zJg2omGIw0DkxNsJnGzFbRUTL4QoIJ1gUNc7p5/KepbSbdXFWlOLKdNtVG/4i1O3lzZ9wuqr4Ef8eo/eLSGmyk1oaf2LQkuppkpMvPH0M98ZkLZUBzwBD4y1bM8xcJ8LyFQsCq6d2+FOeyNChgBgJ9h3CjURat6+k3hVcqpp4G6wmAqgFOLii9jlP88BoVbiLEIZZDdj2ohcYSE="
+    },
+    {
+      "collection": "settings@ac17d4801639c52e",
+      "id": "st-main",
+      "hlc": "1767225635000-0000-fixtureNode1",
+      "data": "pactenc$1$9ReXBS4iDk1A8DsG$dCv3wmXiV+gONMLMKtpyJVFJkbUDzlEBedKag9XYjXlVI+zgO8lVcXzXQVgint2HfRP9HFqpz12ZlGtLfOkh4szFTtJA8Y9K9cNVWb9lLmz/SPyCl9pnEcRiC+AX5+3C0agqCyvzQUIpJ+fZsphIqW8wKCUJXpyx3DaIm7feDzsFih3BV4O/ZVA4fHgSKnoL6BuT/cyJS6pxoDV96eTQ7wzJ+1mWZPTWDOCQEVFqyTj7eknA8V+TowS6qfl/rg=="
+    }
+  ]
+}

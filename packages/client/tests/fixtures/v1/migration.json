@@ -1,0 +1,34 @@
+{
+  "collection": "notes",
+  "storageKey": "n",
+  "id": "nt-old",
+  "record": {
+    "schemaVersion": 1,
+    "fields": {
+      "id": "nt-old",
+      "createdAt": "2025-06-01T00:00:00.000Z",
+      "deletedAt": null,
+      "name": "Written by v1"
+    },
+    "clocks": {
+      "name": "1748736000000-0000-oldNode",
+      "deletedAt": "1748736000000-0000-oldNode"
+    }
+  },
+  "currentVersion": 3,
+  "migratedFields": {
+    "id": "nt-old",
+    "createdAt": "2025-06-01T00:00:00.000Z",
+    "deletedAt": null,
+    "title": "Written by v1",
+    "tags": []
+  },
+  "document": {
+    "id": "nt-old",
+    "createdAt": "2025-06-01T00:00:00.000Z",
+    "updatedAt": "2025-06-01T00:00:00.000Z",
+    "deletedAt": null,
+    "title": "Written by v1",
+    "tags": []
+  }
+}

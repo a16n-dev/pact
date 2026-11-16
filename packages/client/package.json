@@ -43,7 +43,8 @@
     "test:watch": "vitest",
     "tc": "tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p recipes",
     "check": "eslint . && prettier --check .",
-    "format": "eslint --fix . && prettier --write ."
+    "format": "eslint --fix . && prettier --write .",
+    "fixtures:generate": "vite-node scripts/generateFixtures.ts --"
   },
   "dependencies": {
     "fast-diff": "catalog:",
@@ -52,8 +53,10 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
+    "vite-node": "catalog:",
     "vitest": "catalog:"
   }
 }
