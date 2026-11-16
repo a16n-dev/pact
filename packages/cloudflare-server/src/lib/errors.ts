@@ -6,6 +6,7 @@ type ErrorCode =
   | 'hash_mismatch'
   | 'unauthorized'
   | 'origin_not_allowed'
+  | 'read_only'
   | 'not_found'
   | 'too_many_documents'
   | 'document_too_large'

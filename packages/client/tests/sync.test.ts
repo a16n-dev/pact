@@ -105,6 +105,7 @@ describe('sign-in', () => {
       appId: 'app',
       user: 'alice',
       deviceName: 'Laptop',
+      access: 'write',
     });
     const creds = await store.sync.credentials();
     expect(creds?.url).toBe(server.origin);

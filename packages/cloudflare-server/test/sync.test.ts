@@ -208,7 +208,12 @@ describe('auth endpoints', () => {
   it('describes the token and signs out', async () => {
     const a = await seedApp('app-a');
     const check = (await (await api('/auth/check', a.token)).json()) as Record<string, unknown>;
-    expect(check).toEqual({ app_id: 'app-a', user: null, device_name: 'test script' });
+    expect(check).toEqual({
+      app_id: 'app-a',
+      user: null,
+      device_name: 'test script',
+      access: 'write',
+    });
     expect((await api('/auth/signout', a.token, { method: 'POST' })).status).toBe(204);
     expect((await api('/auth/check', a.token)).status).toBe(401);
   });

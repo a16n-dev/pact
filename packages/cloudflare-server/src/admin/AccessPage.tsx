@@ -16,9 +16,32 @@ export type AccessPageProps = {
   api: ApiTokenSummary[];
   devices: DeviceTokenSummary[];
   addUser?: { error: string };
-  mint?: { open: boolean; label?: string; error?: string };
+  mint?: { open: boolean; label?: string; readOnly?: boolean; error?: string };
   minted?: { label: string; token: string };
 };
+
+function AccessSelect({
+  id,
+  readOnly,
+  label,
+  compact,
+}: {
+  id?: string;
+  readOnly: boolean;
+  label?: string;
+  compact?: boolean;
+}) {
+  return (
+    <select id={id} name='access' class={compact ? 'compact' : undefined} aria-label={label}>
+      <option value='write' selected={!readOnly}>
+        Read and write
+      </option>
+      <option value='read' selected={readOnly}>
+        Read only
+      </option>
+    </select>
+  );
+}
 
 export function AccessPage({
   app,
@@ -56,8 +79,8 @@ export function AccessPage({
           <div>
             <div class='title'>Restrict access</div>
             <div class='muted small'>
-              Only the users listed here can sign in. Anyone already signed in is added to the list
-              when you turn this on.
+              Only the users listed here can sign in, with the access you give each of them. Anyone
+              already signed in is added to the list when you turn this on.
             </div>
           </div>
           <form method='post' action={`${base}/restrict`} data-autosubmit>
@@ -83,6 +106,14 @@ export function AccessPage({
           {allowed.map((user) => (
             <li>
               <span class='uri'>{user.username}</span>
+              <form method='post' action={`${base}/users/access`} data-autosubmit>
+                <input type='hidden' name='user_id' value={user.id} />
+                <AccessSelect
+                  readOnly={user.read_only === 1}
+                  label={`Access for ${user.username}`}
+                  compact
+                />
+              </form>
               <form method='post' action={`${base}/users/remove`}>
                 <input type='hidden' name='user_id' value={user.id} />
                 <button
@@ -159,6 +190,7 @@ export function AccessPage({
               <tr>
                 <th>Label</th>
                 <th>Token</th>
+                <th>Access</th>
                 <th>Created</th>
                 <th>Last used</th>
                 <th>
@@ -169,13 +201,14 @@ export function AccessPage({
             <tbody>
               {api.length === 0 ? (
                 <tr class='empty'>
-                  <td colspan={5}>Mint a token to let a script or integration use this app.</td>
+                  <td colspan={6}>Mint a token to let a script or integration use this app.</td>
                 </tr>
               ) : null}
               {api.map((token) => (
                 <tr>
                   <td class='strong'>{token.label}</td>
                   <td class='mono muted'>{token.token_prefix}…</td>
+                  <td>{token.read_only === 1 ? 'Read only' : 'Read and write'}</td>
                   <td class='muted'>{formatDate(token.created_at)}</td>
                   <td>{formatRelative(token.last_seen_at)}</td>
                   <td class='actions'>
@@ -211,11 +244,15 @@ export function AccessPage({
             </span>
           ) : null}
         </div>
+        <div class='field'>
+          <label for='add-user-access'>Access</label>
+          <AccessSelect id='add-user-access' readOnly={false} />
+        </div>
       </Dialog>
       <Dialog
         id='mint'
         title='Mint API token'
-        description={`Gives a script or integration full read and write access to ${app.name}.`}
+        description={`Lets a script or integration use ${app.name} without a user account.`}
         action={`${base}/tokens`}
         submitLabel='Mint API token'
         open={mint?.open}
@@ -227,6 +264,13 @@ export function AccessPage({
           error={mint?.error}
           help="Pick something you'll recognise later, like the script's name."
         />
+        <div class='field'>
+          <label for='mint-access'>Access</label>
+          <AccessSelect id='mint-access' readOnly={mint?.readOnly ?? false} />
+          <span class='help'>
+            A read-only token can sync down but can't change anything or use AI and APIs.
+          </span>
+        </div>
       </Dialog>
 
       {minted ? (

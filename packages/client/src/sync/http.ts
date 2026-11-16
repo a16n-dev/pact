@@ -107,7 +107,12 @@ export type PullPage = { documents: WireVersion[]; cursor: number; hasMore: bool
 
 export type TaskClaim = { claimed: boolean; expiresAt: number };
 
-export type SessionInfo = { appId: string; user: string | null; deviceName: string };
+export type SessionInfo = {
+  appId: string;
+  user: string | null;
+  deviceName: string;
+  access: 'read' | 'write';
+};
 
 export class SyncHttp {
   private readonly url: string;
@@ -132,8 +137,14 @@ export class SyncHttp {
       app_id: string;
       user: string | null;
       device_name: string;
+      access: 'read' | 'write';
     };
-    return { appId: body.app_id, user: body.user, deviceName: body.device_name };
+    return {
+      appId: body.app_id,
+      user: body.user,
+      deviceName: body.device_name,
+      access: body.access,
+    };
   }
 
   async signOut(): Promise<void> {

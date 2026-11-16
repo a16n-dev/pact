@@ -9,7 +9,12 @@ authRoutes.use('*', requireAuth);
 
 authRoutes.get('/check', (c) => {
   const token = c.get('token');
-  return c.json({ app_id: token.app_id, user: token.username, device_name: token.label });
+  return c.json({
+    app_id: token.app_id,
+    user: token.username,
+    device_name: token.label,
+    access: token.read_only === 1 ? 'read' : 'write',
+  });
 });
 
 authRoutes.post('/signout', async (c) => {

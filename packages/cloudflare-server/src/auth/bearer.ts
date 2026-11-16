@@ -35,3 +35,11 @@ export const requireAuth: MiddlewareHandler<AuthedEnv> = async (c, next) => {
   c.set('token', row);
   await next();
 };
+
+// Mounted after requireAuth on routes a read-only token may not use.
+export const requireWrite: MiddlewareHandler<AuthedEnv> = async (c, next) => {
+  if (c.get('token').read_only === 1) {
+    return errorResponse(c, new ApiError(403, 'read_only', 'This token can only read'));
+  }
+  await next();
+};

@@ -187,6 +187,30 @@ describe('inside an app', () => {
     expect(list).not.toContain(token);
   });
 
+  it('mints a read-only API token that can pull but not write or use the proxies', async () => {
+    const res = await admin('/apps/app-a/access/tokens', {
+      method: 'POST',
+      form: { label: 'Dashboard', access: 'read' },
+    });
+    const token = (await res.text()).match(/value="(pact_[A-Za-z0-9_-]+)"/)![1]!;
+    expect(await (await api('/auth/check', token)).json()).toMatchObject({ access: 'read' });
+    expect((await api('/sync/pull?cursor=0', token)).status).toBe(200);
+    const pushed = await push(token, [doc('n1', 'x')]);
+    expect(pushed.status).toBe(403);
+    expect(await pushed.json()).toMatchObject({ code: 'read_only' });
+    const claim = await api('/tasks/claim', token, {
+      method: 'POST',
+      json: { taskId: 't1', rev: '1' },
+    });
+    expect(claim.status).toBe(403);
+    const ai = await api('/ai/compat/chat/completions', token, { method: 'POST', json: {} });
+    expect(await ai.json()).toMatchObject({ code: 'read_only' });
+    const apiCall = await api('/apis/example/call', token, { method: 'POST', json: {} });
+    expect(await apiCall.json()).toMatchObject({ code: 'read_only' });
+    expect((await push(a.token, [doc('n1', 'x')])).status).toBe(200);
+    expect(await (await admin('/apps/app-a/access')).text()).toContain('Read only');
+  });
+
   it('revokes tokens', async () => {
     expect(
       (await admin(`/apps/app-a/access/tokens/${a.tokenId}/revoke`, { method: 'POST', form: {} }))
@@ -243,6 +267,33 @@ describe('inside an app', () => {
       303
     );
     expect((await getApp(env.DB, 'app-a'))!.restricted).toBe(0);
+  });
+
+  it('makes a listed user read-only while the app is restricted', async () => {
+    await seedUser('alex');
+    const alex = await env.DB.prepare("SELECT id FROM users WHERE username = 'alex'").first<{
+      id: string;
+    }>();
+    const alexToken = await issueDeviceToken(env.DB, 'app-a', alex!.id, 'device-1', 'Phone');
+    await admin('/apps/app-a/access/users', {
+      method: 'POST',
+      form: { user_id: alex!.id, access: 'read' },
+    });
+    expect((await push(alexToken, [doc('n1', 'x')])).status).toBe(200);
+
+    await admin('/apps/app-a/access/restrict', { method: 'POST', form: { enabled: 'on' } });
+    expect(await (await api('/auth/check', alexToken)).json()).toMatchObject({ access: 'read' });
+    expect((await push(alexToken, [doc('n1', 'y')])).status).toBe(403);
+
+    expect(
+      (
+        await admin('/apps/app-a/access/users/access', {
+          method: 'POST',
+          form: { user_id: alex!.id, access: 'write' },
+        })
+      ).status
+    ).toBe(303);
+    expect((await push(alexToken, [doc('n1', 'y')])).status).toBe(200);
   });
 
   it('manages redirect URIs and renames', async () => {

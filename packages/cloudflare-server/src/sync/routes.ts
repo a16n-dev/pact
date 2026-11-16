@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { type AuthedEnv, requireAuth } from '../auth/bearer';
+import { type AuthedEnv, requireAuth, requireWrite } from '../auth/bearer';
 import { maxPushDocuments } from '../lib/env';
 import { badRequest } from '../lib/errors';
 import {
@@ -17,7 +17,7 @@ export const syncRoutes = new Hono<AuthedEnv>();
 
 syncRoutes.use('*', requireAuth);
 
-syncRoutes.post('/push', async (c) => {
+syncRoutes.post('/push', requireWrite, async (c) => {
   const body = await c.req.json().catch(() => null);
   const versions = parsePushBody(body, maxPushDocuments(c.env));
   const token = c.get('token');
@@ -50,7 +50,7 @@ syncRoutes.get('/blobs', async (c) => {
   return c.json({ hashes: await listBlobHashes(c.env.DB, c.get('token').app_id) });
 });
 
-syncRoutes.put('/blobs/:hash', async (c) => {
+syncRoutes.put('/blobs/:hash', requireWrite, async (c) => {
   await storeBlob(c.env, c.get('token'), parseHash(c.req.param('hash')), c.req.raw);
   return c.body(null, 204);
 });

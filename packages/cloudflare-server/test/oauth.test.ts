@@ -141,7 +141,12 @@ describe('sign-in', () => {
       string,
       unknown
     >;
-    expect(check).toEqual({ app_id: 'app-a', user: 'alex', device_name: "Alex's iPhone" });
+    expect(check).toEqual({
+      app_id: 'app-a',
+      user: 'alex',
+      device_name: "Alex's iPhone",
+      access: 'write',
+    });
     const firstRow = await env.DB.prepare('SELECT id FROM tokens WHERE user_id IS NOT NULL').first<{
       id: string;
     }>();
