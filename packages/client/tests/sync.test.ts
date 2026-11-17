@@ -7,6 +7,9 @@ import { encodeHlc } from '../src/clock';
 import { createWebCryptoCipher, deriveEncryptionKey } from '../src/crypto/webCrypto';
 import type { DocCipher } from '../src/crypto/types';
 import { yText } from '../src/yjs';
+import { blobFields } from '../src/blobs/blobFields';
+import { normaliseServerUrl } from '../src/sync/serverUrl';
+import { UnauthorizedError } from '../src/sync/http';
 import { FakeServer } from './fakeServer';
 import type { StoredRecord } from '../src/record';
 
@@ -53,6 +56,7 @@ type Options = {
   cipher?: DocCipher;
   collections?: any[];
   textPushDelayMs?: number;
+  blobs?: ReturnType<typeof makeBlobs>;
 };
 
 async function signedInStore(deviceName: string, opts: Options = {}) {
@@ -62,6 +66,8 @@ async function signedInStore(deviceName: string, opts: Options = {}) {
     collections: opts.collections ?? [notes, docs, local],
     encryption: opts.cipher ? { cipher: opts.cipher } : undefined,
     textPushDelayMs: opts.textPushDelayMs,
+    blobs: opts.blobs,
+    blobHashes: opts.blobs ? blobFields({ notes: ['title'] }) : undefined,
   });
   const begun = await store.sync.beginSignIn({
     url: server.origin,
@@ -164,6 +170,15 @@ describe('sign-in', () => {
     await vi.waitFor(() => expect(signedOut).toHaveBeenCalledTimes(1));
     expect(await again.sync.credentials()).toBeNull();
     expect(await again.sync.registration()).not.toBeNull();
+    expect(server.openSockets('app')).toBe(0);
+  });
+
+  it('does not open realtime when disposed while validating the stored token', async () => {
+    const { store, adapter } = await signedInStore('Laptop');
+    store.dispose();
+    const again = await Store.create({ adapter, collections: [notes, docs, local] });
+    again.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(server.openSockets('app')).toBe(0);
   });
 
@@ -670,21 +685,21 @@ describe('key lenses on the wire', () => {
   });
 });
 
+function makeBlobs() {
+  const data = new Map<string, { bytes: Uint8Array; mime: string }>();
+  return {
+    has: async (h: string) => data.has(h),
+    read: async (h: string) => data.get(h)?.bytes ?? null,
+    mimeType: async (h: string) => data.get(h)?.mime ?? null,
+    write: async (h: string, bytes: Uint8Array, mime: string) => void data.set(h, { bytes, mime }),
+    delete: async (h: string) => void data.delete(h),
+    list: async () => Array.from(data.keys()),
+    uriFor: (h: string) => (data.has(h) ? `mem://${h}` : null),
+  };
+}
+
 describe('blobs', () => {
   it('pushes and pulls blobs through the server', async () => {
-    const makeBlobs = () => {
-      const data = new Map<string, { bytes: Uint8Array; mime: string }>();
-      return {
-        has: async (h: string) => data.has(h),
-        read: async (h: string) => data.get(h)?.bytes ?? null,
-        mimeType: async (h: string) => data.get(h)?.mime ?? null,
-        write: async (h: string, bytes: Uint8Array, mime: string) =>
-          void data.set(h, { bytes, mime }),
-        delete: async (h: string) => void data.delete(h),
-        list: async () => Array.from(data.keys()),
-        uriFor: (h: string) => (data.has(h) ? `mem://${h}` : null),
-      };
-    };
     const adapterA = new InMemoryAdapter();
     const a = await Store.create({ adapter: adapterA, collections: [notes], blobs: makeBlobs() });
     const begun = await a.sync.beginSignIn({
@@ -717,5 +732,155 @@ describe('blobs', () => {
     expect(await b.blobs.has(hash)).toBe(true);
     expect(new TextDecoder().decode((await b.blobs.adapter!.read(hash))!)).toBe('hello');
     await expect(b.blobs.write(new Uint8Array(50 * 1024 * 1024 + 1), 'x')).rejects.toThrow(/50 MB/);
+  });
+});
+
+describe('syncNow and connection', () => {
+  it('reports the connection only while signed in', async () => {
+    const { store } = await signedInStore('Laptop');
+    expect(await store.sync.connection()).toEqual({ url: server.origin, deviceName: 'Laptop' });
+    await store.sync.signOut();
+    expect(await store.sync.connection()).toBeNull();
+    expect(await store.sync.registration()).not.toBeNull();
+    const fresh = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    expect(await fresh.sync.connection()).toBeNull();
+  });
+
+  it('does nothing when signed out', async () => {
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    await store.collection('notes').create({ id: 'nt-1', title: 'a' });
+    await store.sync.syncNow();
+    expect(server.requests).toEqual([]);
+    expect(await store.sync.pending()).toBe(1);
+  });
+
+  it('drains the outbox, then pulls', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'from a' });
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    server.offline = false;
+    await b.store.sync.drain();
+    server.requests.length = 0;
+    await a.store.sync.syncNow();
+    expect(await a.store.sync.pending()).toBe(0);
+    expect((await a.store.collection('notes').get('nt-2'))?.title).toBe('from b');
+    const paths = server.requests.map((r) => r.path.split('?')[0]);
+    expect(paths.indexOf('/sync/push')).toBeGreaterThanOrEqual(0);
+    expect(paths.lastIndexOf('/sync/pull')).toBeGreaterThan(paths.indexOf('/sync/push'));
+  });
+
+  it('still pulls when the server refuses the outbox, then throws the drain error', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    a.store.dispose();
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'refused' });
+    server.offline = false;
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    await b.store.sync.drain();
+    server.refusePushes = true;
+    await expect(a.store.sync.syncNow()).rejects.toMatchObject({ status: 400 });
+    expect((await a.store.collection('notes').get('nt-2'))?.title).toBe('from b');
+    expect(await a.store.sync.pending()).toBe(1);
+  });
+
+  it('does not pull when the drain finds the device signed out', async () => {
+    const a = await signedInStore('A');
+    const b = await signedInStore('B');
+    a.store.dispose();
+    server.offline = true;
+    await a.store.collection('notes').create({ id: 'nt-1', title: 'mine' });
+    server.offline = false;
+    await b.store.collection('notes').create({ id: 'nt-2', title: 'from b' });
+    await b.store.sync.drain();
+    server.revoke((await a.store.sync.credentials())!.token);
+    server.requests.length = 0;
+    await expect(a.store.sync.syncNow()).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(server.requests.some((r) => r.path.startsWith('/sync/pull'))).toBe(false);
+    expect(await a.store.collection('notes').get('nt-2')).toBeNull();
+  });
+
+  it('reports the session on sign-in, sign-out and a revoked token', async () => {
+    server.closeSocketsOnSignOut = false;
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    const changes: string[] = [];
+    store.on('change', (name) => changes.push(name));
+    const begun = await store.sync.beginSignIn({
+      url: server.origin,
+      appId: 'app',
+      deviceName: 'Laptop',
+      redirectUri: 'https://app.test/callback',
+    });
+    const redirect = server.authorize(begun.authorizeUrl, { username: 'alice', password: 'pw' });
+    if ('error' in redirect) throw new Error(redirect.error);
+    await store.sync.completeSignIn(redirect);
+    expect(changes).toEqual(['_session']);
+    await store.sync.signOut();
+    expect(changes).toEqual(['_session', '_session']);
+
+    const { store: other } = await signedInStore('Phone');
+    const otherChanges: string[] = [];
+    other.on('change', (name) => otherChanges.push(name));
+    server.revoke((await other.sync.credentials())!.token);
+    await vi.waitFor(() => expect(otherChanges).toContain('_session'));
+  });
+
+  it('reports the session on a sign-out when the server closes the socket', async () => {
+    const { store } = await signedInStore('Laptop');
+    const changes: string[] = [];
+    store.on('change', (name) => changes.push(name));
+    await store.sync.signOut();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(changes).toContain('_session');
+    expect(await store.sync.connection()).toBeNull();
+  });
+
+  it('does not open realtime when sign-in finishes after dispose', async () => {
+    const store = await Store.create({ adapter: new InMemoryAdapter(), collections: [notes] });
+    const begun = await store.sync.beginSignIn({
+      url: server.origin,
+      appId: 'app',
+      deviceName: 'Laptop',
+      redirectUri: 'https://app.test/callback',
+    });
+    const redirect = server.authorize(begun.authorizeUrl, { username: 'alice', password: 'pw' });
+    if ('error' in redirect) throw new Error(redirect.error);
+    store.dispose();
+    expect(await store.sync.completeSignIn(redirect)).toEqual({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.openSockets('app')).toBe(0);
+  });
+
+  it('skips the blob step without a blob adapter', async () => {
+    const { store } = await signedInStore('A');
+    server.requests.length = 0;
+    await store.sync.syncNow();
+    expect(server.requests.some((r) => r.path.startsWith('/sync/blobs'))).toBe(false);
+  });
+
+  it('pushes blobs and pulls the referenced ones when the store has a blob adapter', async () => {
+    const a = await signedInStore('A', { collections: [notes], blobs: makeBlobs() });
+    const b = await signedInStore('B', { collections: [notes], blobs: makeBlobs() });
+    server.offline = true;
+    const hash = await a.store.blobs.write(new TextEncoder().encode('photo'), 'image/jpeg');
+    await a.store.collection('notes').create({ id: 'nt-1', title: hash });
+    server.offline = false;
+    await a.store.sync.syncNow();
+    await b.store.sync.syncNow();
+    expect(await b.store.blobs.has(hash)).toBe(true);
+  });
+});
+
+describe('normaliseServerUrl', () => {
+  it('assumes https for a bare host', () => {
+    expect(normaliseServerUrl('sync.example.com')).toBe('https://sync.example.com');
+    expect(normaliseServerUrl('  sync.example.com/ ')).toBe('https://sync.example.com/');
+  });
+
+  it('keeps a scheme that is given', () => {
+    expect(normaliseServerUrl('https://sync.example.com')).toBe('https://sync.example.com');
+    expect(normaliseServerUrl('http://localhost:8787')).toBe('http://localhost:8787');
   });
 });

@@ -82,6 +82,10 @@ export class FakeServer {
   private readonly sockets = new Map<string, Set<FakeSocket>>();
   /** When set, every request fails as if the network were down. */
   offline = false;
+  /** When set, every push is refused with a 400. */
+  refusePushes = false;
+  /** When cleared, signing out leaves the realtime socket open, as when the server closes it later. */
+  closeSocketsOnSignOut = true;
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(
@@ -118,7 +122,7 @@ export class FakeServer {
       });
     }
     if (path === '/auth/signout' && method === 'POST') {
-      this.revoke(auth.token);
+      this.revoke(auth.token, this.closeSocketsOnSignOut);
       return new Response(null, { status: 204 });
     }
     if (path === '/sync/push' && method === 'POST') return this.push(app, auth, init?.body);
@@ -187,10 +191,11 @@ export class FakeServer {
     return token;
   }
 
-  revoke(token: string): void {
+  revoke(token: string, closeSockets = true): void {
     const auth = this.tokens.get(token);
     if (!auth) return;
     this.tokens.delete(token);
+    if (!closeSockets) return;
     for (const socket of this.sockets.get(auth.appId) ?? []) {
       if (socket.token === token) socket.serverClose(1000, 'signed out');
     }
@@ -328,6 +333,7 @@ export class FakeServer {
       documents: Array<{ collection: string; id: string; hlc: string; data: string }>;
     };
     if (!Array.isArray(documents)) return error(400, 'bad_request');
+    if (this.refusePushes) return error(400, 'refused');
     if (documents.length > this.maxPushDocuments) return error(413, 'too_many_documents');
     for (const doc of documents) {
       if (new TextEncoder().encode(doc.data).length > 1_000_000)

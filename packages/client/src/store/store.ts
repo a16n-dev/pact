@@ -51,6 +51,7 @@ import type {
   StoreTasks,
 } from './namespaces';
 import { SyncEngine, type ApplyResult, type HeldEntry } from '../sync/engine';
+import { UnauthorizedError } from '../sync/http';
 import {
   CONFIG,
   HELD,
@@ -83,6 +84,7 @@ const encoder = new TextEncoder();
 export class Store<Defs extends readonly CollectionDefinition[] = readonly CollectionDefinition[]> {
   private readonly adapter: DatabaseAdapter;
   private lens: Lens;
+  private lensVersion = 0;
   private readonly definitions: ReadonlyMap<string, CollectionDefinition>;
   private readonly definitionsByKey: ReadonlyMap<string, CollectionDefinition>;
   private readonly migrator: Migrator;
@@ -174,30 +176,6 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       },
     });
 
-    this.sync = {
-      beginSignIn: (start) => this.syncEngine.beginSignIn(start),
-      completeSignIn: async (input) => {
-        const result = await this.syncEngine.completeSignIn(input);
-        if (result.ok) this.taskRunner.wake();
-        return result;
-      },
-      signOut: () => this.syncEngine.signOut(),
-      session: () => this.syncEngine.session(),
-      registration: () => this.syncEngine.registration(),
-      credentials: () => this.syncEngine.credentials(),
-      pull: () => this.syncEngine.pull(),
-      pullDocument: (collection, id) => this.syncEngine.pullDocument(collection, id),
-      drain: () => this.syncEngine.drain(),
-      push: () => this.syncEngine.push(),
-      pending: () => this.syncEngine.pending(),
-      resync: () => this.syncEngine.resync(),
-      lastSyncedAt: () => this.syncEngine.lastSyncedAt(),
-    };
-
-    this.backup = {
-      create: (opts) => this.createBackup(opts),
-      restore: (archive, opts) => this.restoreBackup(archive, opts),
-    };
     const blobSync = this.blobAdapter
       ? new BlobSync({
           adapter: this.blobAdapter,
@@ -209,6 +187,46 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     const requireBlobs = (): BlobSync => {
       if (!blobSync) throw new Error('This store was created without a BlobAdapter');
       return blobSync;
+    };
+
+    this.sync = {
+      beginSignIn: (start) => this.syncEngine.beginSignIn(start),
+      completeSignIn: async (input) => {
+        const result = await this.syncEngine.completeSignIn(input);
+        if (result.ok) this.taskRunner.wake();
+        return result;
+      },
+      signOut: () => this.syncEngine.signOut(),
+      session: () => this.syncEngine.session(),
+      registration: () => this.syncEngine.registration(),
+      connection: () => this.syncEngine.connection(),
+      credentials: () => this.syncEngine.credentials(),
+      pull: () => this.syncEngine.pull(),
+      pullDocument: (collection, id) => this.syncEngine.pullDocument(collection, id),
+      drain: () => this.syncEngine.drain(),
+      push: () => this.syncEngine.push(),
+      syncNow: async () => {
+        if (!this.syncEngine.signedIn) return;
+        try {
+          await this.syncEngine.drain();
+        } catch (err) {
+          // One write the server keeps refusing must not stop this device from pulling.
+          if (!(err instanceof UnauthorizedError)) await this.syncEngine.pull().catch(() => {});
+          throw err;
+        }
+        await this.syncEngine.pull();
+        if (!blobSync) return;
+        await blobSync.push();
+        await blobSync.pull(await this.referencedBlobHashes());
+      },
+      pending: () => this.syncEngine.pending(),
+      resync: () => this.syncEngine.resync(),
+      lastSyncedAt: () => this.syncEngine.lastSyncedAt(),
+    };
+
+    this.backup = {
+      create: (opts) => this.createBackup(opts),
+      restore: (archive, opts) => this.restoreBackup(archive, opts),
     };
     this.blobs = {
       adapter: this.blobAdapter,
@@ -224,9 +242,13 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
       prune: () => this.pruneBlobs(),
       notifyChanged: () => this.notifyBlobsChanged(),
     };
+    const lensVersion = () => this.lensVersion;
     this.encryption = {
       setKey: (cipher) => this.setKey(cipher),
       moveToKey: (cipher) => this.moveToKey(cipher),
+      get lensVersion() {
+        return lensVersion();
+      },
     };
     const serverDeps = {
       credentials: () => this.syncEngine.credentials(),
@@ -1242,6 +1264,7 @@ export class Store<Defs extends readonly CollectionDefinition[] = readonly Colle
     await this.rememberBlobHashes();
     await this.syncEngine.leaveLens(this.syncedDefinitions().map((def) => this.keyOf(def)));
     this.lens = lens;
+    this.lensVersion += 1;
     this.textCache.clear();
     this.textHandedOut.clear();
     await this.retryHeld(false);

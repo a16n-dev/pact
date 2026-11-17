@@ -458,6 +458,22 @@ describe('key lenses', () => {
     expect(await plain.collection('widgets').list()).toEqual([]);
   });
 
+  it('counts lens switches before reporting them', async () => {
+    const { store } = await setup();
+    const versionsSeen: number[] = [];
+    store.on('change', () => versionsSeen.push(store.encryption.lensVersion));
+    expect(store.encryption.lensVersion).toBe(0);
+    const cipher = await cipherFor('pw');
+    await store.encryption.setKey(cipher);
+    expect(store.encryption.lensVersion).toBe(1);
+    expect(versionsSeen.length).toBeGreaterThan(0);
+    expect(versionsSeen.every((version) => version === 1)).toBe(true);
+    await store.encryption.setKey(cipher);
+    expect(store.encryption.lensVersion).toBe(1);
+    await store.encryption.moveToKey(null);
+    expect(store.encryption.lensVersion).toBe(2);
+  });
+
   it('switches lens at runtime and keeps the same id apart in each', async () => {
     const { store } = await setup();
     const changed: string[] = [];

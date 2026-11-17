@@ -2,6 +2,8 @@ import type { StoredRecord } from '../record';
 
 export const CONFIG = '_config';
 export const OUTBOX = '_outbox';
+// Not stored: the change name reported when this device signs in or out.
+export const SESSION = '_session';
 export const HELD = '_held';
 
 /** Internal `_*` rows reuse the record shape with their payload in `fields` and no clocks. */

@@ -175,6 +175,12 @@ export type DecisionRequest<Q extends Record<string, unknown> = Record<string, u
 
 export type StoreEncryption = {
   /**
+   * Goes up each time the store switches lens, synchronously with the
+   * switch. A read that started under an earlier value may hold documents
+   * from another lens.
+   */
+  readonly lensVersion: number;
+  /**
    * Switches the lens: the store shows the documents sealed under `cipher`,
    * or the plain ones when null. Documents in other lenses stay stored and
    * keep syncing but never interact with this one, so the same id can hold
@@ -212,6 +218,8 @@ export type SignInResult =
 
 export type Registration = { url: string; appId: string; deviceId: string; deviceName: string };
 
+export type SyncConnection = { url: string; deviceName: string };
+
 export type Session = {
   appId: string;
   user: string | null;
@@ -245,6 +253,11 @@ export type StoreSync = {
   /** The persisted registration, no network; null before the first sign-in. */
   registration(): Promise<Registration | null>;
   /**
+   * The server and device name this device is signed in as, no network;
+   * null when signed out. A signed-out device keeps its registration.
+   */
+  connection(): Promise<SyncConnection | null>;
+  /**
    * Origin and token for direct HTTP calls, such as pointing an
    * OpenAI-compatible SDK at `<url>/ai`. Null when not signed in.
    */
@@ -264,6 +277,14 @@ export type StoreSync = {
    * Cost scales with the database; routine sync paths should use `drain()`.
    */
   push(): Promise<void>;
+  /**
+   * Routine sync for app launch, foreground and pull-to-refresh: drains the
+   * outbox, pulls, then pushes blobs and pulls the referenced ones when the
+   * store has a blob adapter. A no-op when signed out. When the drain fails
+   * it still pulls, unless the device was signed out, then throws the
+   * drain's error without the blob step.
+   */
+  syncNow(): Promise<void>;
   /** Documents written locally but not yet accepted by the server. */
   pending(): Promise<number>;
   /**

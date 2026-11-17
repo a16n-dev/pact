@@ -5,37 +5,53 @@ on:
     branches: [main]
     paths:
       - 'packages/client/**'
+      - 'packages/react/**'
       - 'pnpm-workspace.yaml'
       - '.github/workflows/publish.yml'
   workflow_dispatch:
 
 concurrency:
-  group: publish-client
+  group: publish
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: '@a16n/pact-client'
+    name: ${{ matrix.package.name }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the version tag
       id-token: write # npm trusted publishing (OIDC)
+
+    strategy:
+      # One at a time, client first: the React bindings' peer range names the
+      # client version published alongside them.
+      max-parallel: 1
+      matrix:
+        package:
+          - name: '@a16n/pact-client'
+            directory: client
+          - name: '@a16n/pact-react'
+            directory: react
+
+    env:
+      PACKAGE: ${{ matrix.package.name }}
+      DIRECTORY: ${{ matrix.package.directory }}
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Read package version
         id: version
-        run: echo "version=$(node -p "require('./packages/client/package.json').version")" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('./packages/$DIRECTORY/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Check if already published
         id: check
         run: |
-          if npm view "@a16n/pact-client@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
-            echo "::notice::Version ${{ steps.version.outputs.version }} is already on npm — nothing to do."
+          if npm view "$PACKAGE@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::notice::$PACKAGE ${{ steps.version.outputs.version }} is already on npm — nothing to do."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Version ${{ steps.version.outputs.version }} is new — publishing."
+            echo "::notice::$PACKAGE ${{ steps.version.outputs.version }} is new — publishing."
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -55,23 +71,23 @@ jobs:
       - name: Typecheck, lint & test
         if: steps.check.outputs.publish == 'true'
         run: |
-          pnpm --filter @a16n/pact-client tc
-          pnpm --filter @a16n/pact-client check
-          pnpm --filter @a16n/pact-client test
+          pnpm --filter "$PACKAGE" tc
+          pnpm --filter "$PACKAGE" check
+          pnpm --filter "$PACKAGE" test
 
-      # pnpm (not npm) so `catalog:` dependency ranges are rewritten to real versions
-      # in the published manifest. `prepack` runs the build. Auth is npm trusted
-      # publishing via OIDC — no NPM_TOKEN needed.
+      # pnpm (not npm) so `catalog:` and `workspace:` dependency ranges are
+      # rewritten to real versions in the published manifest. `prepack` runs the
+      # build. Auth is npm trusted publishing via OIDC — no NPM_TOKEN needed.
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
-        run: pnpm --filter @a16n/pact-client publish --access public --no-git-checks
+        run: pnpm --filter "$PACKAGE" publish --access public --no-git-checks
 
       - name: Tag release
         if: steps.check.outputs.publish == 'true'
         env:
-          TAG: client-v${{ steps.version.outputs.version }}
+          TAG: ${{ matrix.package.directory }}-v${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "@a16n/pact-client ${{ steps.version.outputs.version }}"
+          git tag -a "$TAG" -m "$PACKAGE ${{ steps.version.outputs.version }}"
           git push origin "$TAG"

@@ -75,6 +75,8 @@ store.on('change', (collection) => {
 });
 ```
 
+Besides collection names, the store reports `_blobs` when local blobs change, `_outbox` when the outbox does, and `_session` when this device signs in or out, including a sign-out forced by a revoked token.
+
 ## Syncing
 
 ### Signing in
@@ -99,13 +101,18 @@ const result = await store.sync.completeSignIn({ code, state });
 - Writes are queued in a local outbox before any network call and pushed as they land. Writes made before sign-in are pushed on the first drain after it.
 - Changes from other devices arrive over a WebSocket and are merged in. Reads also trigger a throttled pull, and `store.sync.pull()` does one on demand.
 - `store.sync.drain()` retries anything the server has not accepted yet; `pending()` says how much that is.
+- `store.sync.syncNow()` is the routine sync for app launch, returning to the foreground and pull-to-refresh: it drains the outbox, then pulls, then pushes blobs and pulls the referenced ones when the store has a blob adapter. Signed out, it does nothing. If the drain fails, it still pulls, so one write the server keeps refusing does not stop the device catching up, then throws the drain's error; a sign-out during the drain throws without pulling.
 - A revoked token, or a 401 from anywhere, clears the session and emits `signedOut`:
 
 ```ts
 store.on('signedOut', () => showSignIn());
 ```
 
-`store.sync.session()`, `registration()` and `credentials()` describe the current session; `credentials()` is also what points an OpenAI-compatible SDK at `<url>/ai`.
+`store.sync.session()`, `registration()`, `connection()` and `credentials()` describe the current session. `connection()` is the server URL and device name to show in settings, or `null` when signed out; `credentials()` is also what points an OpenAI-compatible SDK at `<url>/ai`.
+
+`normaliseServerUrl(input)` turns what a user typed into a server URL for `beginSignIn`, taking a bare host such as `sync.example.com` to mean `https://`.
+
+In React, [`@a16n/pact-react`](../react) provides live reads and wraps sign-in and sync in hooks.
 
 ## Collaborative text
 
