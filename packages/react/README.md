@@ -6,8 +6,6 @@ React bindings for [`@a16n/pact-client`](../client): a provider that opens the s
 pnpm add @a16n/pact-react @a16n/pact-client
 ```
 
-The package is not published to npm yet.
-
 ## Setup
 
 Wrap the app in `PactProvider`. It calls `open` once, renders its children when the store is open, syncs once, and disposes the store on unmount. Create the hooks typed to your store once, with `createPactHooks`.
